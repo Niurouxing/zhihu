@@ -1,0 +1,818 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0A1B2C3D4E5F600100000001 /* iOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000011 /* iOSApp.swift */; };
+		0A1B2C3D4E5F600100000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000012 /* ContentView.swift */; };
+		0A1B2C3D4E5F600100000003 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000013 /* Assets.xcassets */; };
+		0A1B2C3D4E5F600100000004 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000015 /* LaunchScreen.storyboard */; };
+		0A1B2C3D4E5F600100000005 /* AppRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000016 /* AppRouter.swift */; };
+		0A1B2C3D4E5F600100000006 /* KeychainAccountStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000017 /* KeychainAccountStore.swift */; };
+		0A1B2C3D4E5F600100000007 /* NativeLoginLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000018 /* NativeLoginLogic.swift */; };
+		0A1B2C3D4E5F600100000008 /* NativeLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000019 /* NativeLoginView.swift */; };
+		0A1B2C3D4E5F600100000009 /* RiskControlView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60010000001A /* RiskControlView.swift */; };
+		0A1B2C3D4E5F60010000000A /* ArticleHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60010000001B /* ArticleHostView.swift */; };
+		0A1B2C3D4E5F60010000000B /* QrAuthorizationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60010000001C /* QrAuthorizationView.swift */; };
+		0A1B2C3D4E5F60010000000C /* SystemExternalURL.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60010000001D /* SystemExternalURL.swift */; };
+		0A1B2C3D4E5F60010000000D /* SystemAndUpdateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60010000001E /* SystemAndUpdateView.swift */; };
+		0A1B2C3D4E5F60010000000E /* PersonRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60010000001F /* PersonRoute.swift */; };
+		0A1B2C3D4E5F60010000000F /* PersonHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000021 /* PersonHostView.swift */; };
+		0A1B2C3D4E5F600100000301 /* PersonModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000211 /* PersonModels.swift */; };
+		0A1B2C3D4E5F600100000302 /* PersonRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000212 /* PersonRepository.swift */; };
+		0A1B2C3D4E5F600100000303 /* PersonRequestSigner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000213 /* PersonRequestSigner.swift */; };
+		0A1B2C3D4E5F600100000304 /* PersonStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000214 /* PersonStore.swift */; };
+		0A1B2C3D4E5F600100000305 /* PersonProfileHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000215 /* PersonProfileHeader.swift */; };
+		0A1B2C3D4E5F600100000306 /* PersonTabSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000216 /* PersonTabSelector.swift */; };
+		0A1B2C3D4E5F600100000307 /* PersonRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000217 /* PersonRows.swift */; };
+		0A1B2C3D4E5F600100000308 /* PersonNativeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000218 /* PersonNativeView.swift */; };
+		0A1B2C3D4E5F600100000309 /* PersonWebDestinationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000219 /* PersonWebDestinationView.swift */; };
+		0A1B2C3D4E5F600100000101 /* KeychainAccountStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000111 /* KeychainAccountStoreTests.swift */; };
+		0A1B2C3D4E5F600100000102 /* NativeLoginLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000112 /* NativeLoginLogicTests.swift */; };
+		0A1B2C3D4E5F600100000103 /* ArticleRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000113 /* ArticleRoutingTests.swift */; };
+		0A1B2C3D4E5F600100000104 /* PersonRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000114 /* PersonRoutingTests.swift */; };
+		0A1B2C3D4E5F600100000310 /* PersonStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000220 /* PersonStoreTests.swift */; };
+		0A1B2C3D4E5F600100000311 /* PersonRequestSignerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000221 /* PersonRequestSignerTests.swift */; };
+		0A1B2C3D4E5F600100000312 /* PersonRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000222 /* PersonRepositoryTests.swift */; };
+		0B200000000000000000001 /* AnswerNativeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000001 /* AnswerNativeView.swift */; };
+		0B200000000000000000002 /* CommentModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000002 /* CommentModels.swift */; };
+		0B200000000000000000003 /* CommentNativeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000003 /* CommentNativeView.swift */; };
+		0B200000000000000000004 /* CommentRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000004 /* CommentRepository.swift */; };
+		0B200000000000000000005 /* CommentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000005 /* CommentStore.swift */; };
+		0B200000000000000000006 /* CreationNativeFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000006 /* CreationNativeFeature.swift */; };
+		0B200000000000000000007 /* DailyNativeFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000007 /* DailyNativeFeature.swift */; };
+		0B200000000000000000008 /* FeedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000008 /* FeedModels.swift */; };
+		0B200000000000000000009 /* FeedResponseMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000009 /* FeedResponseMapper.swift */; };
+		0B20000000000000000000A /* FeedRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B10000000000000000000A /* FeedRows.swift */; };
+		0B20000000000000000000B /* HomeFollowModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B10000000000000000000B /* HomeFollowModels.swift */; };
+		0B20000000000000000000C /* HomeFollowNativeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B10000000000000000000C /* HomeFollowNativeViews.swift */; };
+		0B20000000000000000000D /* HomeFollowRepositories.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B10000000000000000000D /* HomeFollowRepositories.swift */; };
+		0B20000000000000000000E /* HomeFollowStores.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B10000000000000000000E /* HomeFollowStores.swift */; };
+		0B20000000000000000000F /* HotListNativeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B10000000000000000000F /* HotListNativeView.swift */; };
+		0B200000000000000000010 /* HotSearchRepositories.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000010 /* HotSearchRepositories.swift */; };
+		0B200000000000000000011 /* HotSearchStores.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000011 /* HotSearchStores.swift */; };
+		0B200000000000000000012 /* NativeAccountFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000012 /* NativeAccountFeature.swift */; };
+		0B200000000000000000013 /* NativeAnswerPager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000013 /* NativeAnswerPager.swift */; };
+		0B200000000000000000014 /* NativeAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000014 /* NativeAppIntents.swift */; };
+		0B200000000000000000015 /* NativeAppLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000015 /* NativeAppLock.swift */; };
+		0B200000000000000000016 /* NativeAppShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000016 /* NativeAppShell.swift */; };
+		0B200000000000000000017 /* NativeForegroundSpeech.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000017 /* NativeForegroundSpeech.swift */; };
+		0B200000000000000000018 /* NativeLibraryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000018 /* NativeLibraryModels.swift */; };
+		0B200000000000000000019 /* NativeLibraryRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000019 /* NativeLibraryRepository.swift */; };
+		0B20000000000000000001A /* NativeLibraryStores.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B10000000000000000001A /* NativeLibraryStores.swift */; };
+		0B20000000000000000001B /* NativeLibraryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B10000000000000000001B /* NativeLibraryViews.swift */; };
+		0B20000000000000000001C /* NativeMediaGallery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B10000000000000000001C /* NativeMediaGallery.swift */; };
+		0B20000000000000000001D /* NativeNotificationFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B10000000000000000001D /* NativeNotificationFeature.swift */; };
+		0B20000000000000000001E /* NativeSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B10000000000000000001E /* NativeSettingsView.swift */; };
+		0B20000000000000000001F /* NativeShellPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B10000000000000000001F /* NativeShellPreferences.swift */; };
+		0B200000000000000000020 /* NativeSpotlightIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000020 /* NativeSpotlightIndex.swift */; };
+		0B200000000000000000021 /* NativeSystemIntegrationSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000021 /* NativeSystemIntegrationSettings.swift */; };
+		0B200000000000000000022 /* NativeTranslationAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000022 /* NativeTranslationAvailability.swift */; };
+		0B200000000000000000023 /* PinNativeFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000023 /* PinNativeFeature.swift */; };
+		0B200000000000000000024 /* QABodyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000024 /* QABodyView.swift */; };
+		0B200000000000000000025 /* QARichContentParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000025 /* QARichContentParser.swift */; };
+		0B200000000000000000026 /* QuestionAnswerModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000026 /* QuestionAnswerModels.swift */; };
+		0B200000000000000000027 /* QuestionAnswerRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000027 /* QuestionAnswerRepository.swift */; };
+		0B200000000000000000028 /* QuestionAnswerStores.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000028 /* QuestionAnswerStores.swift */; };
+		0B200000000000000000029 /* QuestionNativeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000029 /* QuestionNativeView.swift */; };
+		0B20000000000000000002A /* SearchNativeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B10000000000000000002A /* SearchNativeView.swift */; };
+		0B20000000000000000002B /* ZhihuAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B10000000000000000002B /* ZhihuAPIClient.swift */; };
+		0B400000000000000000001 /* CommentRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000001 /* CommentRepositoryTests.swift */; };
+		0B400000000000000000002 /* CommentStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000002 /* CommentStoreTests.swift */; };
+		0B400000000000000000003 /* CreationNativeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000003 /* CreationNativeTests.swift */; };
+		0B400000000000000000004 /* DailyPinNativeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000004 /* DailyPinNativeTests.swift */; };
+		0B400000000000000000005 /* FeedInfrastructureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000005 /* FeedInfrastructureTests.swift */; };
+		0B400000000000000000006 /* HomeFollowNativeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000006 /* HomeFollowNativeTests.swift */; };
+		0B400000000000000000007 /* HotSearchStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000007 /* HotSearchStoreTests.swift */; };
+		0B400000000000000000008 /* NativeAccountFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000008 /* NativeAccountFeatureTests.swift */; };
+		0B400000000000000000009 /* NativeAppIntentsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000009 /* NativeAppIntentsTests.swift */; };
+		0B40000000000000000000A /* NativeAppLockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B30000000000000000000A /* NativeAppLockTests.swift */; };
+		0B40000000000000000000B /* NativeForegroundSpeechTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B30000000000000000000B /* NativeForegroundSpeechTests.swift */; };
+		0B40000000000000000000C /* NativeLibraryFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B30000000000000000000C /* NativeLibraryFeatureTests.swift */; };
+		0B40000000000000000000D /* NativeMediaGalleryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B30000000000000000000D /* NativeMediaGalleryTests.swift */; };
+		0B40000000000000000000E /* NativeNotificationFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B30000000000000000000E /* NativeNotificationFeatureTests.swift */; };
+		0B40000000000000000000F /* NativeShellPreferencesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B30000000000000000000F /* NativeShellPreferencesTests.swift */; };
+		0B400000000000000000010 /* NativeSpotlightIndexTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000010 /* NativeSpotlightIndexTests.swift */; };
+		0B400000000000000000011 /* NativeSystemIntegrationSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000011 /* NativeSystemIntegrationSettingsTests.swift */; };
+		0B400000000000000000012 /* NativeTranslationAvailabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000012 /* NativeTranslationAvailabilityTests.swift */; };
+		0B400000000000000000013 /* QuestionAnswerFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000013 /* QuestionAnswerFeatureTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		0A1B2C3D4E5F600100000120 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0A1B2C3D4E5F600100000050 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0A1B2C3D4E5F600100000040;
+			remoteInfo = iosApp;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		0A1B2C3D4E5F600100000010 /* iosApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iosApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		0A1B2C3D4E5F600100000011 /* iOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iOSApp.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000012 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000013 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000014 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000015 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000016 /* AppRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRouter.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000017 /* KeychainAccountStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainAccountStore.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000018 /* NativeLoginLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLoginLogic.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000019 /* NativeLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLoginView.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F60010000001A /* RiskControlView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RiskControlView.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F60010000001B /* ArticleHostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArticleHostView.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F60010000001C /* QrAuthorizationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrAuthorizationView.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F60010000001D /* SystemExternalURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemExternalURL.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F60010000001E /* SystemAndUpdateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemAndUpdateView.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F60010000001F /* PersonRoute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonRoute.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000021 /* PersonHostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonHostView.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000211 /* PersonModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonModels.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000212 /* PersonRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonRepository.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000213 /* PersonRequestSigner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonRequestSigner.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000214 /* PersonStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonStore.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000215 /* PersonProfileHeader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonProfileHeader.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000216 /* PersonTabSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonTabSelector.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000217 /* PersonRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonRows.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000218 /* PersonNativeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonNativeView.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000219 /* PersonWebDestinationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonWebDestinationView.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000110 /* iosAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = iosAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		0A1B2C3D4E5F600100000111 /* KeychainAccountStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainAccountStoreTests.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000112 /* NativeLoginLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLoginLogicTests.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000113 /* ArticleRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArticleRoutingTests.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000114 /* PersonRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonRoutingTests.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000220 /* PersonStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonStoreTests.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000221 /* PersonRequestSignerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonRequestSignerTests.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000222 /* PersonRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonRepositoryTests.swift; sourceTree = "<group>"; };
+		0B100000000000000000001 /* AnswerNativeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnswerNativeView.swift; sourceTree = "<group>"; };
+		0B100000000000000000002 /* CommentModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentModels.swift; sourceTree = "<group>"; };
+		0B100000000000000000003 /* CommentNativeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentNativeView.swift; sourceTree = "<group>"; };
+		0B100000000000000000004 /* CommentRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentRepository.swift; sourceTree = "<group>"; };
+		0B100000000000000000005 /* CommentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentStore.swift; sourceTree = "<group>"; };
+		0B100000000000000000006 /* CreationNativeFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationNativeFeature.swift; sourceTree = "<group>"; };
+		0B100000000000000000007 /* DailyNativeFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailyNativeFeature.swift; sourceTree = "<group>"; };
+		0B100000000000000000008 /* FeedModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedModels.swift; sourceTree = "<group>"; };
+		0B100000000000000000009 /* FeedResponseMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedResponseMapper.swift; sourceTree = "<group>"; };
+		0B10000000000000000000A /* FeedRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedRows.swift; sourceTree = "<group>"; };
+		0B10000000000000000000B /* HomeFollowModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeFollowModels.swift; sourceTree = "<group>"; };
+		0B10000000000000000000C /* HomeFollowNativeViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeFollowNativeViews.swift; sourceTree = "<group>"; };
+		0B10000000000000000000D /* HomeFollowRepositories.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeFollowRepositories.swift; sourceTree = "<group>"; };
+		0B10000000000000000000E /* HomeFollowStores.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeFollowStores.swift; sourceTree = "<group>"; };
+		0B10000000000000000000F /* HotListNativeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotListNativeView.swift; sourceTree = "<group>"; };
+		0B100000000000000000010 /* HotSearchRepositories.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotSearchRepositories.swift; sourceTree = "<group>"; };
+		0B100000000000000000011 /* HotSearchStores.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotSearchStores.swift; sourceTree = "<group>"; };
+		0B100000000000000000012 /* NativeAccountFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAccountFeature.swift; sourceTree = "<group>"; };
+		0B100000000000000000013 /* NativeAnswerPager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAnswerPager.swift; sourceTree = "<group>"; };
+		0B100000000000000000014 /* NativeAppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAppIntents.swift; sourceTree = "<group>"; };
+		0B100000000000000000015 /* NativeAppLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAppLock.swift; sourceTree = "<group>"; };
+		0B100000000000000000016 /* NativeAppShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAppShell.swift; sourceTree = "<group>"; };
+		0B100000000000000000017 /* NativeForegroundSpeech.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeForegroundSpeech.swift; sourceTree = "<group>"; };
+		0B100000000000000000018 /* NativeLibraryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLibraryModels.swift; sourceTree = "<group>"; };
+		0B100000000000000000019 /* NativeLibraryRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLibraryRepository.swift; sourceTree = "<group>"; };
+		0B10000000000000000001A /* NativeLibraryStores.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLibraryStores.swift; sourceTree = "<group>"; };
+		0B10000000000000000001B /* NativeLibraryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLibraryViews.swift; sourceTree = "<group>"; };
+		0B10000000000000000001C /* NativeMediaGallery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMediaGallery.swift; sourceTree = "<group>"; };
+		0B10000000000000000001D /* NativeNotificationFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeNotificationFeature.swift; sourceTree = "<group>"; };
+		0B10000000000000000001E /* NativeSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeSettingsView.swift; sourceTree = "<group>"; };
+		0B10000000000000000001F /* NativeShellPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeShellPreferences.swift; sourceTree = "<group>"; };
+		0B100000000000000000020 /* NativeSpotlightIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeSpotlightIndex.swift; sourceTree = "<group>"; };
+		0B100000000000000000021 /* NativeSystemIntegrationSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeSystemIntegrationSettings.swift; sourceTree = "<group>"; };
+		0B100000000000000000022 /* NativeTranslationAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranslationAvailability.swift; sourceTree = "<group>"; };
+		0B100000000000000000023 /* PinNativeFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinNativeFeature.swift; sourceTree = "<group>"; };
+		0B100000000000000000024 /* QABodyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QABodyView.swift; sourceTree = "<group>"; };
+		0B100000000000000000025 /* QARichContentParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QARichContentParser.swift; sourceTree = "<group>"; };
+		0B100000000000000000026 /* QuestionAnswerModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuestionAnswerModels.swift; sourceTree = "<group>"; };
+		0B100000000000000000027 /* QuestionAnswerRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuestionAnswerRepository.swift; sourceTree = "<group>"; };
+		0B100000000000000000028 /* QuestionAnswerStores.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuestionAnswerStores.swift; sourceTree = "<group>"; };
+		0B100000000000000000029 /* QuestionNativeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuestionNativeView.swift; sourceTree = "<group>"; };
+		0B10000000000000000002A /* SearchNativeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchNativeView.swift; sourceTree = "<group>"; };
+		0B10000000000000000002B /* ZhihuAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZhihuAPIClient.swift; sourceTree = "<group>"; };
+		0B300000000000000000001 /* CommentRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentRepositoryTests.swift; sourceTree = "<group>"; };
+		0B300000000000000000002 /* CommentStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentStoreTests.swift; sourceTree = "<group>"; };
+		0B300000000000000000003 /* CreationNativeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationNativeTests.swift; sourceTree = "<group>"; };
+		0B300000000000000000004 /* DailyPinNativeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailyPinNativeTests.swift; sourceTree = "<group>"; };
+		0B300000000000000000005 /* FeedInfrastructureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedInfrastructureTests.swift; sourceTree = "<group>"; };
+		0B300000000000000000006 /* HomeFollowNativeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeFollowNativeTests.swift; sourceTree = "<group>"; };
+		0B300000000000000000007 /* HotSearchStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotSearchStoreTests.swift; sourceTree = "<group>"; };
+		0B300000000000000000008 /* NativeAccountFeatureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAccountFeatureTests.swift; sourceTree = "<group>"; };
+		0B300000000000000000009 /* NativeAppIntentsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAppIntentsTests.swift; sourceTree = "<group>"; };
+		0B30000000000000000000A /* NativeAppLockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAppLockTests.swift; sourceTree = "<group>"; };
+		0B30000000000000000000B /* NativeForegroundSpeechTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeForegroundSpeechTests.swift; sourceTree = "<group>"; };
+		0B30000000000000000000C /* NativeLibraryFeatureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLibraryFeatureTests.swift; sourceTree = "<group>"; };
+		0B30000000000000000000D /* NativeMediaGalleryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMediaGalleryTests.swift; sourceTree = "<group>"; };
+		0B30000000000000000000E /* NativeNotificationFeatureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeNotificationFeatureTests.swift; sourceTree = "<group>"; };
+		0B30000000000000000000F /* NativeShellPreferencesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeShellPreferencesTests.swift; sourceTree = "<group>"; };
+		0B300000000000000000010 /* NativeSpotlightIndexTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeSpotlightIndexTests.swift; sourceTree = "<group>"; };
+		0B300000000000000000011 /* NativeSystemIntegrationSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeSystemIntegrationSettingsTests.swift; sourceTree = "<group>"; };
+		0B300000000000000000012 /* NativeTranslationAvailabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranslationAvailabilityTests.swift; sourceTree = "<group>"; };
+		0B300000000000000000013 /* QuestionAnswerFeatureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuestionAnswerFeatureTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		0A1B2C3D4E5F600100000020 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0A1B2C3D4E5F600100000123 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0A1B2C3D4E5F600100000030 = {
+			isa = PBXGroup;
+			children = (
+				0A1B2C3D4E5F600100000031 /* iosApp */,
+				0A1B2C3D4E5F600100000033 /* iosAppTests */,
+				0A1B2C3D4E5F600100000032 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		0A1B2C3D4E5F600100000031 /* iosApp */ = {
+			isa = PBXGroup;
+			children = (
+				0A1B2C3D4E5F600100000011 /* iOSApp.swift */,
+				0A1B2C3D4E5F600100000012 /* ContentView.swift */,
+				0A1B2C3D4E5F600100000016 /* AppRouter.swift */,
+				0A1B2C3D4E5F600100000017 /* KeychainAccountStore.swift */,
+				0A1B2C3D4E5F600100000018 /* NativeLoginLogic.swift */,
+				0A1B2C3D4E5F600100000019 /* NativeLoginView.swift */,
+				0A1B2C3D4E5F60010000001A /* RiskControlView.swift */,
+				0A1B2C3D4E5F60010000001B /* ArticleHostView.swift */,
+				0A1B2C3D4E5F60010000001C /* QrAuthorizationView.swift */,
+				0A1B2C3D4E5F60010000001D /* SystemExternalURL.swift */,
+				0A1B2C3D4E5F60010000001E /* SystemAndUpdateView.swift */,
+				0A1B2C3D4E5F60010000001F /* PersonRoute.swift */,
+				0A1B2C3D4E5F600100000021 /* PersonHostView.swift */,
+				0A1B2C3D4E5F600100000211 /* PersonModels.swift */,
+				0A1B2C3D4E5F600100000212 /* PersonRepository.swift */,
+				0A1B2C3D4E5F600100000213 /* PersonRequestSigner.swift */,
+				0A1B2C3D4E5F600100000214 /* PersonStore.swift */,
+				0A1B2C3D4E5F600100000215 /* PersonProfileHeader.swift */,
+				0A1B2C3D4E5F600100000216 /* PersonTabSelector.swift */,
+				0A1B2C3D4E5F600100000217 /* PersonRows.swift */,
+				0A1B2C3D4E5F600100000218 /* PersonNativeView.swift */,
+				0A1B2C3D4E5F600100000219 /* PersonWebDestinationView.swift */,
+				0B100000000000000000001 /* AnswerNativeView.swift */,
+				0B100000000000000000002 /* CommentModels.swift */,
+				0B100000000000000000003 /* CommentNativeView.swift */,
+				0B100000000000000000004 /* CommentRepository.swift */,
+				0B100000000000000000005 /* CommentStore.swift */,
+				0B100000000000000000006 /* CreationNativeFeature.swift */,
+				0B100000000000000000007 /* DailyNativeFeature.swift */,
+				0B100000000000000000008 /* FeedModels.swift */,
+				0B100000000000000000009 /* FeedResponseMapper.swift */,
+				0B10000000000000000000A /* FeedRows.swift */,
+				0B10000000000000000000B /* HomeFollowModels.swift */,
+				0B10000000000000000000C /* HomeFollowNativeViews.swift */,
+				0B10000000000000000000D /* HomeFollowRepositories.swift */,
+				0B10000000000000000000E /* HomeFollowStores.swift */,
+				0B10000000000000000000F /* HotListNativeView.swift */,
+				0B100000000000000000010 /* HotSearchRepositories.swift */,
+				0B100000000000000000011 /* HotSearchStores.swift */,
+				0B100000000000000000012 /* NativeAccountFeature.swift */,
+				0B100000000000000000013 /* NativeAnswerPager.swift */,
+				0B100000000000000000014 /* NativeAppIntents.swift */,
+				0B100000000000000000015 /* NativeAppLock.swift */,
+				0B100000000000000000016 /* NativeAppShell.swift */,
+				0B100000000000000000017 /* NativeForegroundSpeech.swift */,
+				0B100000000000000000018 /* NativeLibraryModels.swift */,
+				0B100000000000000000019 /* NativeLibraryRepository.swift */,
+				0B10000000000000000001A /* NativeLibraryStores.swift */,
+				0B10000000000000000001B /* NativeLibraryViews.swift */,
+				0B10000000000000000001C /* NativeMediaGallery.swift */,
+				0B10000000000000000001D /* NativeNotificationFeature.swift */,
+				0B10000000000000000001E /* NativeSettingsView.swift */,
+				0B10000000000000000001F /* NativeShellPreferences.swift */,
+				0B100000000000000000020 /* NativeSpotlightIndex.swift */,
+				0B100000000000000000021 /* NativeSystemIntegrationSettings.swift */,
+				0B100000000000000000022 /* NativeTranslationAvailability.swift */,
+				0B100000000000000000023 /* PinNativeFeature.swift */,
+				0B100000000000000000024 /* QABodyView.swift */,
+				0B100000000000000000025 /* QARichContentParser.swift */,
+				0B100000000000000000026 /* QuestionAnswerModels.swift */,
+				0B100000000000000000027 /* QuestionAnswerRepository.swift */,
+				0B100000000000000000028 /* QuestionAnswerStores.swift */,
+				0B100000000000000000029 /* QuestionNativeView.swift */,
+				0B10000000000000000002A /* SearchNativeView.swift */,
+				0B10000000000000000002B /* ZhihuAPIClient.swift */,
+				0A1B2C3D4E5F600100000013 /* Assets.xcassets */,
+				0A1B2C3D4E5F600100000014 /* Info.plist */,
+				0A1B2C3D4E5F600100000015 /* LaunchScreen.storyboard */,
+			);
+			path = iosApp;
+			sourceTree = "<group>";
+		};
+		0A1B2C3D4E5F600100000032 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				0A1B2C3D4E5F600100000010 /* iosApp.app */,
+				0A1B2C3D4E5F600100000110 /* iosAppTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		0A1B2C3D4E5F600100000033 /* iosAppTests */ = {
+			isa = PBXGroup;
+			children = (
+				0A1B2C3D4E5F600100000111 /* KeychainAccountStoreTests.swift */,
+				0A1B2C3D4E5F600100000112 /* NativeLoginLogicTests.swift */,
+				0A1B2C3D4E5F600100000113 /* ArticleRoutingTests.swift */,
+				0A1B2C3D4E5F600100000114 /* PersonRoutingTests.swift */,
+				0A1B2C3D4E5F600100000220 /* PersonStoreTests.swift */,
+				0A1B2C3D4E5F600100000221 /* PersonRequestSignerTests.swift */,
+				0A1B2C3D4E5F600100000222 /* PersonRepositoryTests.swift */,
+				0B300000000000000000001 /* CommentRepositoryTests.swift */,
+				0B300000000000000000002 /* CommentStoreTests.swift */,
+				0B300000000000000000003 /* CreationNativeTests.swift */,
+				0B300000000000000000004 /* DailyPinNativeTests.swift */,
+				0B300000000000000000005 /* FeedInfrastructureTests.swift */,
+				0B300000000000000000006 /* HomeFollowNativeTests.swift */,
+				0B300000000000000000007 /* HotSearchStoreTests.swift */,
+				0B300000000000000000008 /* NativeAccountFeatureTests.swift */,
+				0B300000000000000000009 /* NativeAppIntentsTests.swift */,
+				0B30000000000000000000A /* NativeAppLockTests.swift */,
+				0B30000000000000000000B /* NativeForegroundSpeechTests.swift */,
+				0B30000000000000000000C /* NativeLibraryFeatureTests.swift */,
+				0B30000000000000000000D /* NativeMediaGalleryTests.swift */,
+				0B30000000000000000000E /* NativeNotificationFeatureTests.swift */,
+				0B30000000000000000000F /* NativeShellPreferencesTests.swift */,
+				0B300000000000000000010 /* NativeSpotlightIndexTests.swift */,
+				0B300000000000000000011 /* NativeSystemIntegrationSettingsTests.swift */,
+				0B300000000000000000012 /* NativeTranslationAvailabilityTests.swift */,
+				0B300000000000000000013 /* QuestionAnswerFeatureTests.swift */,
+			);
+			path = iosAppTests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0A1B2C3D4E5F600100000040 /* iosApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0A1B2C3D4E5F600100000070 /* Build configuration list for PBXNativeTarget "iosApp" */;
+			buildPhases = (
+				0A1B2C3D4E5F600100000041 /* Sources */,
+				0A1B2C3D4E5F600100000020 /* Frameworks */,
+				0A1B2C3D4E5F600100000042 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = iosApp;
+			productName = iosApp;
+			productReference = 0A1B2C3D4E5F600100000010 /* iosApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+		0A1B2C3D4E5F600100000140 /* iosAppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0A1B2C3D4E5F600100000170 /* Build configuration list for PBXNativeTarget "iosAppTests" */;
+			buildPhases = (
+				0A1B2C3D4E5F600100000122 /* Sources */,
+				0A1B2C3D4E5F600100000123 /* Frameworks */,
+				0A1B2C3D4E5F600100000124 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0A1B2C3D4E5F600100000121 /* PBXTargetDependency */,
+			);
+			name = iosAppTests;
+			productName = iosAppTests;
+			productReference = 0A1B2C3D4E5F600100000110 /* iosAppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		0A1B2C3D4E5F600100000050 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					0A1B2C3D4E5F600100000040 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					0A1B2C3D4E5F600100000140 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = 0A1B2C3D4E5F600100000040;
+					};
+				};
+			};
+			buildConfigurationList = 0A1B2C3D4E5F600100000060 /* Build configuration list for PBXProject "iosApp" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 0A1B2C3D4E5F600100000030;
+			productRefGroup = 0A1B2C3D4E5F600100000032 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				0A1B2C3D4E5F600100000040 /* iosApp */,
+				0A1B2C3D4E5F600100000140 /* iosAppTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		0A1B2C3D4E5F600100000042 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0A1B2C3D4E5F600100000003 /* Assets.xcassets in Resources */,
+				0A1B2C3D4E5F600100000004 /* LaunchScreen.storyboard in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0A1B2C3D4E5F600100000124 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		0A1B2C3D4E5F600100000041 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0A1B2C3D4E5F600100000001 /* iOSApp.swift in Sources */,
+				0A1B2C3D4E5F600100000002 /* ContentView.swift in Sources */,
+				0A1B2C3D4E5F600100000005 /* AppRouter.swift in Sources */,
+				0A1B2C3D4E5F600100000006 /* KeychainAccountStore.swift in Sources */,
+				0A1B2C3D4E5F600100000007 /* NativeLoginLogic.swift in Sources */,
+				0A1B2C3D4E5F600100000008 /* NativeLoginView.swift in Sources */,
+				0A1B2C3D4E5F600100000009 /* RiskControlView.swift in Sources */,
+				0A1B2C3D4E5F60010000000A /* ArticleHostView.swift in Sources */,
+				0A1B2C3D4E5F60010000000B /* QrAuthorizationView.swift in Sources */,
+				0A1B2C3D4E5F60010000000C /* SystemExternalURL.swift in Sources */,
+				0A1B2C3D4E5F60010000000D /* SystemAndUpdateView.swift in Sources */,
+				0A1B2C3D4E5F60010000000E /* PersonRoute.swift in Sources */,
+				0A1B2C3D4E5F60010000000F /* PersonHostView.swift in Sources */,
+				0A1B2C3D4E5F600100000301 /* PersonModels.swift in Sources */,
+				0A1B2C3D4E5F600100000302 /* PersonRepository.swift in Sources */,
+				0A1B2C3D4E5F600100000303 /* PersonRequestSigner.swift in Sources */,
+				0A1B2C3D4E5F600100000304 /* PersonStore.swift in Sources */,
+				0A1B2C3D4E5F600100000305 /* PersonProfileHeader.swift in Sources */,
+				0A1B2C3D4E5F600100000306 /* PersonTabSelector.swift in Sources */,
+				0A1B2C3D4E5F600100000307 /* PersonRows.swift in Sources */,
+				0A1B2C3D4E5F600100000308 /* PersonNativeView.swift in Sources */,
+				0A1B2C3D4E5F600100000309 /* PersonWebDestinationView.swift in Sources */,
+				0B200000000000000000001 /* AnswerNativeView.swift in Sources */,
+				0B200000000000000000002 /* CommentModels.swift in Sources */,
+				0B200000000000000000003 /* CommentNativeView.swift in Sources */,
+				0B200000000000000000004 /* CommentRepository.swift in Sources */,
+				0B200000000000000000005 /* CommentStore.swift in Sources */,
+				0B200000000000000000006 /* CreationNativeFeature.swift in Sources */,
+				0B200000000000000000007 /* DailyNativeFeature.swift in Sources */,
+				0B200000000000000000008 /* FeedModels.swift in Sources */,
+				0B200000000000000000009 /* FeedResponseMapper.swift in Sources */,
+				0B20000000000000000000A /* FeedRows.swift in Sources */,
+				0B20000000000000000000B /* HomeFollowModels.swift in Sources */,
+				0B20000000000000000000C /* HomeFollowNativeViews.swift in Sources */,
+				0B20000000000000000000D /* HomeFollowRepositories.swift in Sources */,
+				0B20000000000000000000E /* HomeFollowStores.swift in Sources */,
+				0B20000000000000000000F /* HotListNativeView.swift in Sources */,
+				0B200000000000000000010 /* HotSearchRepositories.swift in Sources */,
+				0B200000000000000000011 /* HotSearchStores.swift in Sources */,
+				0B200000000000000000012 /* NativeAccountFeature.swift in Sources */,
+				0B200000000000000000013 /* NativeAnswerPager.swift in Sources */,
+				0B200000000000000000014 /* NativeAppIntents.swift in Sources */,
+				0B200000000000000000015 /* NativeAppLock.swift in Sources */,
+				0B200000000000000000016 /* NativeAppShell.swift in Sources */,
+				0B200000000000000000017 /* NativeForegroundSpeech.swift in Sources */,
+				0B200000000000000000018 /* NativeLibraryModels.swift in Sources */,
+				0B200000000000000000019 /* NativeLibraryRepository.swift in Sources */,
+				0B20000000000000000001A /* NativeLibraryStores.swift in Sources */,
+				0B20000000000000000001B /* NativeLibraryViews.swift in Sources */,
+				0B20000000000000000001C /* NativeMediaGallery.swift in Sources */,
+				0B20000000000000000001D /* NativeNotificationFeature.swift in Sources */,
+				0B20000000000000000001E /* NativeSettingsView.swift in Sources */,
+				0B20000000000000000001F /* NativeShellPreferences.swift in Sources */,
+				0B200000000000000000020 /* NativeSpotlightIndex.swift in Sources */,
+				0B200000000000000000021 /* NativeSystemIntegrationSettings.swift in Sources */,
+				0B200000000000000000022 /* NativeTranslationAvailability.swift in Sources */,
+				0B200000000000000000023 /* PinNativeFeature.swift in Sources */,
+				0B200000000000000000024 /* QABodyView.swift in Sources */,
+				0B200000000000000000025 /* QARichContentParser.swift in Sources */,
+				0B200000000000000000026 /* QuestionAnswerModels.swift in Sources */,
+				0B200000000000000000027 /* QuestionAnswerRepository.swift in Sources */,
+				0B200000000000000000028 /* QuestionAnswerStores.swift in Sources */,
+				0B200000000000000000029 /* QuestionNativeView.swift in Sources */,
+				0B20000000000000000002A /* SearchNativeView.swift in Sources */,
+				0B20000000000000000002B /* ZhihuAPIClient.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0A1B2C3D4E5F600100000122 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0A1B2C3D4E5F600100000101 /* KeychainAccountStoreTests.swift in Sources */,
+				0A1B2C3D4E5F600100000102 /* NativeLoginLogicTests.swift in Sources */,
+				0A1B2C3D4E5F600100000103 /* ArticleRoutingTests.swift in Sources */,
+				0A1B2C3D4E5F600100000104 /* PersonRoutingTests.swift in Sources */,
+				0A1B2C3D4E5F600100000310 /* PersonStoreTests.swift in Sources */,
+				0A1B2C3D4E5F600100000311 /* PersonRequestSignerTests.swift in Sources */,
+				0A1B2C3D4E5F600100000312 /* PersonRepositoryTests.swift in Sources */,
+				0B400000000000000000001 /* CommentRepositoryTests.swift in Sources */,
+				0B400000000000000000002 /* CommentStoreTests.swift in Sources */,
+				0B400000000000000000003 /* CreationNativeTests.swift in Sources */,
+				0B400000000000000000004 /* DailyPinNativeTests.swift in Sources */,
+				0B400000000000000000005 /* FeedInfrastructureTests.swift in Sources */,
+				0B400000000000000000006 /* HomeFollowNativeTests.swift in Sources */,
+				0B400000000000000000007 /* HotSearchStoreTests.swift in Sources */,
+				0B400000000000000000008 /* NativeAccountFeatureTests.swift in Sources */,
+				0B400000000000000000009 /* NativeAppIntentsTests.swift in Sources */,
+				0B40000000000000000000A /* NativeAppLockTests.swift in Sources */,
+				0B40000000000000000000B /* NativeForegroundSpeechTests.swift in Sources */,
+				0B40000000000000000000C /* NativeLibraryFeatureTests.swift in Sources */,
+				0B40000000000000000000D /* NativeMediaGalleryTests.swift in Sources */,
+				0B40000000000000000000E /* NativeNotificationFeatureTests.swift in Sources */,
+				0B40000000000000000000F /* NativeShellPreferencesTests.swift in Sources */,
+				0B400000000000000000010 /* NativeSpotlightIndexTests.swift in Sources */,
+				0B400000000000000000011 /* NativeSystemIntegrationSettingsTests.swift in Sources */,
+				0B400000000000000000012 /* NativeTranslationAvailabilityTests.swift in Sources */,
+				0B400000000000000000013 /* QuestionAnswerFeatureTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		0A1B2C3D4E5F600100000121 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0A1B2C3D4E5F600100000040 /* iosApp */;
+			targetProxy = 0A1B2C3D4E5F600100000120 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		0A1B2C3D4E5F600100000061 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		0A1B2C3D4E5F600100000062 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		0A1B2C3D4E5F600100000071 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = iosApp/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.github.kangyun1994.zhplus.swift;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		0A1B2C3D4E5F600100000072 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = iosApp/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.github.kangyun1994.zhplus.swift;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		0A1B2C3D4E5F600100000171 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.github.kangyun1994.zhplus.swiftTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/iosApp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/iosApp";
+				TEST_TARGET_NAME = iosApp;
+			};
+			name = Debug;
+		};
+		0A1B2C3D4E5F600100000172 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.github.kangyun1994.zhplus.swiftTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/iosApp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/iosApp";
+				TEST_TARGET_NAME = iosApp;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0A1B2C3D4E5F600100000060 /* Build configuration list for PBXProject "iosApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0A1B2C3D4E5F600100000061 /* Debug */,
+				0A1B2C3D4E5F600100000062 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		0A1B2C3D4E5F600100000070 /* Build configuration list for PBXNativeTarget "iosApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0A1B2C3D4E5F600100000071 /* Debug */,
+				0A1B2C3D4E5F600100000072 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		0A1B2C3D4E5F600100000170 /* Build configuration list for PBXNativeTarget "iosAppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0A1B2C3D4E5F600100000171 /* Debug */,
+				0A1B2C3D4E5F600100000172 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 0A1B2C3D4E5F600100000050 /* Project object */;
+}

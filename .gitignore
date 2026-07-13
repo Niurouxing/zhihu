@@ -1,0 +1,34 @@
+# macOS
+.DS_Store
+
+# Xcode
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcresult
+*.xcarchive
+*.dSYM
+*.dSYM.zip
+
+# iOS distribution and signing
+*.ipa
+*.mobileprovision
+*.p12
+*.cer
+*.key
+*.pem
+
+# SwiftPM local state
+.build/
+.swiftpm/
+Package.resolved
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+local.properties
+.secret/
+
+# Repository build output
+build/
