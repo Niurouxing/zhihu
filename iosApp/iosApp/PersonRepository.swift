@@ -49,7 +49,7 @@ actor URLSessionPersonRepository: PersonRepository {
                 ),
             ]
         )
-        let data = try await client.data(for: url, authentication: .accountIfAvailable)
+        let data = try await client.data(for: url, authentication: .accountRequired)
         let response = try JSONDecoder.person.decode(ProfileResponse.self, from: data)
         return response.profile(provisionalDisplayName: provisionalDisplayName)
     }
@@ -66,7 +66,7 @@ actor URLSessionPersonRepository: PersonRepository {
         } else {
             url = try initialPageURL(key: key, identity: identity, sort: sort)
         }
-        let data = try await client.data(for: url, authentication: .accountIfAvailable)
+        let data = try await client.data(for: url, authentication: .accountRequired)
         let envelope = try JSONDecoder.person.decode(PageEnvelope.self, from: data)
         let items = try PersonPageMapper.map(data: data, key: key)
         let acceptedNextURL = try envelope.paging?.next.flatMap(URL.init(string:)).map {
@@ -419,6 +419,18 @@ private struct CollectionResponse: Decodable {
     let title: String?
     let answerCount: Int?
     let followerCount: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, answerCount, followerCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeFlexibleString(forKey: .id)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        answerCount = try container.decodeIfPresent(Int.self, forKey: .answerCount)
+        followerCount = try container.decodeIfPresent(Int.self, forKey: .followerCount)
+    }
 }
 
 private struct QuestionResponse: Decodable {
@@ -633,10 +645,12 @@ private enum PersonPageMapper {
         return try rows.map { row in
             let target = row["target"] as? [String: Any]
             let question = target?["question"] as? [String: Any]
+            let targetType = string(target?["type"])?.lowercased()
             let title = try required(
                 string(question?["title"])
                     ?? string(target?["title"])
                     ?? string(target?["name"])
+                    ?? (targetType == "pin" ? "想法" : nil)
             )
             let summary = string(target?["excerpt"])
                 ?? string(target?["excerpt_title"])
@@ -656,9 +670,27 @@ private enum PersonPageMapper {
                     title: title,
                     summary: summary?.nonBlank,
                     details: details,
-                    destination: nil
+                    destination: activityDestination(target: target)
                 )
             )
+        }
+    }
+
+    private static func activityDestination(target: [String: Any]?) -> PersonNavigationIntent? {
+        guard let type = string(target?["type"])?.lowercased(),
+              let rawID = string(target?["id"])
+        else { return nil }
+        switch type {
+        case "answer":
+            return Int64(rawID).map { .article(.init(id: $0, kind: .answer)) }
+        case "article":
+            return Int64(rawID).map { .article(.init(id: $0, kind: .article)) }
+        case "question":
+            return Int64(rawID).map(PersonNavigationIntent.question)
+        case "pin":
+            return Int64(rawID).map(PersonNavigationIntent.pin)
+        default:
+            return nil
         }
     }
 

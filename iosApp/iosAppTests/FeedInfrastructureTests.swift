@@ -36,6 +36,16 @@ final class FeedInfrastructureTests: XCTestCase {
         XCTAssertEqual(item.route, .article(articleID: 81, title: "原生搜索文章"))
     }
 
+    func testSearchProjectionSkipsPromotionalCardWithStructuredDescription() throws {
+        let page = try FeedResponseMapper.page(
+            from: FeedFixtures.searchPageWithStructuredDescription,
+            policy: .search
+        )
+
+        XCTAssertEqual(page.items.count, 1)
+        XCTAssertEqual(page.items.first?.route, .article(articleID: 81, title: "原生搜索文章"))
+    }
+
     func testNonSearchCommercialCardsAreSkippedInsteadOfBecomingNoOpRows() throws {
         let page = try FeedResponseMapper.page(from: FeedFixtures.nonContentSearchPage, policy: .search)
         XCTAssertTrue(page.items.isEmpty)
@@ -75,6 +85,95 @@ final class FeedInfrastructureTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(account.load()).contains(#""captcha_session":"updated""#))
     }
 
+    func testAccountRequiredRejectsSessionWithoutLoginCookieBeforeNetworkRequest() async throws {
+        let recorder = FeedRequestRecorder()
+        FeedURLProtocol.setHandler { request in
+            recorder.record(request)
+            return (200, Data("{}".utf8), [:])
+        }
+        let account = FeedAccountStore(
+            json: #"{"cookies":{"d_c0":"device-cookie"},"userAgent":"feed-agent"}"#
+        )
+        let client = ZhihuAPIClient(accountStore: account, session: makeFeedSession())
+
+        do {
+            _ = try await client.data(
+                for: URL(string: "https://www.zhihu.com/api/v4/me")!,
+                authentication: .accountRequired
+            )
+            XCTFail("Expected the incomplete account session to require login")
+        } catch {
+            XCTAssertEqual(error as? ZhihuAPIError, .authenticationRequired)
+        }
+        XCTAssertNil(recorder.request)
+    }
+
+    func testBlankResponseLoginCookieDoesNotEraseVerifiedSession() throws {
+        let blankLoginCookie = try XCTUnwrap(
+            HTTPCookie(properties: [
+                .name: "z_c0",
+                .value: "",
+                .domain: ".zhihu.com",
+                .path: "/",
+            ])
+        )
+        let source = #"{"login":true,"cookies":{"d_c0":"device-cookie","z_c0":"login-cookie"},"future":7}"#
+
+        let merged = try XCTUnwrap(
+            ZhihuAccountSessionCodec.merging(cookies: [blankLoginCookie], into: source)
+        )
+        let credentials = try XCTUnwrap(ZhihuAccountSessionCodec.credentials(from: merged))
+
+        XCTAssertEqual(credentials.cookies["z_c0"], "login-cookie")
+        XCTAssertEqual(credentials.cookies["d_c0"], "device-cookie")
+        XCTAssertTrue(merged.contains(#""future":7"#))
+    }
+
+    func testAPIClientKeepsLoginCookieWhenSuccessfulResponseAttemptsToClearIt() async throws {
+        FeedURLProtocol.setHandler { _ in
+            (
+                200,
+                Data("{}".utf8),
+                ["Set-Cookie": "z_c0=; Max-Age=0; Path=/; Secure"]
+            )
+        }
+        let account = FeedAccountStore(
+            json: #"{"login":true,"cookies":{"d_c0":"device-cookie","z_c0":"login-cookie"},"userAgent":"feed-agent"}"#
+        )
+        let client = ZhihuAPIClient(accountStore: account, session: makeFeedSession())
+
+        _ = try await client.data(
+            for: URL(string: "https://www.zhihu.com/api/v4/me")!,
+            authentication: .accountRequired
+        )
+        let credentials = try XCTUnwrap(
+            ZhihuAccountSessionCodec.credentials(from: account.load())
+        )
+
+        XCTAssertEqual(credentials.cookies["z_c0"], "login-cookie")
+        XCTAssertEqual(credentials.cookies["d_c0"], "device-cookie")
+    }
+
+    func testAccountSessionCodecPreservesQuotedDeviceCookieRepresentation() throws {
+        let account = [
+            "cookies": [
+                "d_c0": #""quoted-device-cookie""#,
+                "z_c0": "login-cookie",
+            ],
+            "userAgent": "feed-agent",
+        ] as [String: Any]
+        let data = try JSONSerialization.data(withJSONObject: account, options: [.sortedKeys])
+        let credentials = try XCTUnwrap(
+            ZhihuAccountSessionCodec.credentials(from: String(decoding: data, as: UTF8.self))
+        )
+        let deviceCookie = try XCTUnwrap(credentials.cookies["d_c0"])
+
+        XCTAssertEqual(Set(credentials.cookies.keys), ["d_c0", "z_c0"])
+        XCTAssertTrue(deviceCookie.hasPrefix("\""))
+        XCTAssertTrue(deviceCookie.hasSuffix("\""))
+        XCTAssertEqual(deviceCookie.count, 22)
+    }
+
     func testSearchRepositoryBuildsExistingFilterAndMemberRestrictionContract() async throws {
         let recorder = FeedRequestRecorder()
         FeedURLProtocol.setHandler { request in
@@ -82,7 +181,9 @@ final class FeedInfrastructureTests: XCTestCase {
             return (200, FeedFixtures.emptyPage, [:])
         }
         let repository = URLSessionSearchRepository(
-            accountStore: FeedAccountStore(json: nil),
+            accountStore: FeedAccountStore(
+                json: #"{"cookies":{"d_c0":"device-cookie","z_c0":"login-cookie"},"userAgent":"feed-agent"}"#
+            ),
             session: makeFeedSession()
         )
         let criteria = SearchCriteria(
@@ -103,6 +204,69 @@ final class FeedInfrastructureTests: XCTestCase {
         XCTAssertTrue(url.contains("vertical=answer"))
         XCTAssertTrue(url.contains("time_interval=a_week"))
         XCTAssertTrue(url.contains("include="))
+        let request = try XCTUnwrap(recorder.request)
+        XCTAssertTrue(request.value(forHTTPHeaderField: "Cookie")?.contains("z_c0=login-cookie") == true)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-zse-93"), ZhihuRequestSignature.zse93)
+        XCTAssertTrue(request.value(forHTTPHeaderField: "x-zse-96")?.hasPrefix("2.0_") == true)
+    }
+
+    func testSearchSuggestionsUseAuthenticatedSignature() async throws {
+        let recorder = FeedRequestRecorder()
+        FeedURLProtocol.setHandler { request in
+            recorder.record(request)
+            return (200, FeedFixtures.suggestions, [:])
+        }
+        let repository = URLSessionSearchRepository(
+            accountStore: FeedAccountStore(
+                json: #"{"cookies":{"d_c0":"device-cookie","z_c0":"login-cookie"},"userAgent":"feed-agent"}"#
+            ),
+            session: makeFeedSession()
+        )
+
+        let suggestions = try await repository.fetchSuggestions()
+
+        XCTAssertEqual(suggestions.count, 15)
+        let request = try XCTUnwrap(recorder.request)
+        XCTAssertEqual(request.url?.path, "/api/v4/search/hot_search")
+        XCTAssertTrue(request.value(forHTTPHeaderField: "Cookie")?.contains("z_c0=login-cookie") == true)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-zse-93"), ZhihuRequestSignature.zse93)
+        XCTAssertTrue(request.value(forHTTPHeaderField: "x-zse-96")?.hasPrefix("2.0_") == true)
+    }
+
+    func testSearchRepositoryRejectsMissingAccountBeforeNetworkRequest() async {
+        let recorder = FeedRequestRecorder()
+        FeedURLProtocol.setHandler { request in
+            recorder.record(request)
+            return (200, FeedFixtures.emptyPage, [:])
+        }
+        let repository = URLSessionSearchRepository(
+            accountStore: FeedAccountStore(json: nil),
+            session: makeFeedSession()
+        )
+
+        do {
+            _ = try await repository.fetchSuggestions()
+            XCTFail("Expected search suggestion authentication failure")
+        } catch {
+            XCTAssertEqual(error as? ZhihuAPIError, .authenticationRequired)
+        }
+        do {
+            _ = try await repository.fetchPage(
+                criteria: SearchCriteria(
+                    query: "Swift",
+                    restrictedMemberHashID: nil,
+                    sort: .relevance,
+                    contentType: .all,
+                    timeRange: .all
+                ),
+                after: nil
+            )
+            XCTFail("Expected search result authentication failure")
+        } catch {
+            XCTAssertEqual(error as? ZhihuAPIError, .authenticationRequired)
+        }
+
+        XCTAssertNil(recorder.request)
     }
 
     func testAPIRequestPolicyUsesKnownHostAndPathPairs() throws {
@@ -118,6 +282,11 @@ final class FeedInfrastructureTests: XCTestCase {
         )
         XCTAssertTrue(
             ZhihuAPIURLPolicy.allowsAPIRequest(
+                try XCTUnwrap(URL(string: "https://api.zhihu.com/search_v3?offset=20"))
+            )
+        )
+        XCTAssertTrue(
+            ZhihuAPIURLPolicy.allowsAPIRequest(
                 try XCTUnwrap(URL(string: "https://news-at.zhihu.com/api/4/stories/latest"))
             )
         )
@@ -129,6 +298,11 @@ final class FeedInfrastructureTests: XCTestCase {
         XCTAssertFalse(
             ZhihuAPIURLPolicy.allowsAPIRequest(
                 try XCTUnwrap(URL(string: "https://unknown.zhihu.com/api/v4/steal"))
+            )
+        )
+        XCTAssertFalse(
+            ZhihuAPIURLPolicy.allowsAPIRequest(
+                try XCTUnwrap(URL(string: "https://api.zhihu.com/search_v4?offset=20"))
             )
         )
         XCTAssertFalse(
@@ -178,6 +352,10 @@ private enum FeedFixtures {
 
     static let searchPage = Data(
         #"{"data":[{"type":"search_result","id":"result-1","object":{"id":"81","type":"article","title":"原生搜索文章","excerpt":"文章摘要","voteup_count":12,"comment_count":3,"thumbnail_info":{"thumbnails":[{"url":"https://pic.zhimg.com/article.jpg"}]},"author":{"id":"member","url_token":"author","name":"作者","headline":"简介","avatar_url":"https://pic.zhimg.com/avatar.jpg"}}}],"paging":{"is_end":true,"next":null}}"#.utf8
+    )
+
+    static let searchPageWithStructuredDescription = Data(
+        #"{"data":[{"type":"hot_timing","object":{"type":"hot_timing","title":"热点聚合","description":{"type":"question","object":{"id":"9","type":"question","title":"聚合问题"}}}},{"type":"search_result","id":"result-1","object":{"id":"81","type":"article","title":"原生搜索文章","excerpt":"文章摘要","voteup_count":12,"comment_count":3,"thumbnail_info":{"thumbnails":[{"url":"https://pic.zhimg.com/article.jpg"}]},"author":{"id":"member","url_token":"author","name":"作者","headline":"简介","avatar_url":"https://pic.zhimg.com/avatar.jpg"}}}],"paging":{"is_end":true,"next":null}}"#.utf8
     )
 
     static let nonContentSearchPage = Data(

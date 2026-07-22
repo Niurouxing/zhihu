@@ -22,6 +22,20 @@ enum NativeShellRoute: Hashable {
     case systemAndUpdate
 }
 
+extension PersonNavigationIntent {
+    var nativeShellRoute: NativeShellRoute {
+        switch self {
+        case let .article(route):
+            return .answer(.init(contentID: route.id, kind: route.kind == .answer ? .answer : .article))
+        case let .question(id): return .question(.init(questionID: id))
+        case let .pin(id): return .pin(.init(pinID: id))
+        case let .collection(id): return .collectionContent(id)
+        case let .person(payload): return .person(payload)
+        case let .web(route): return .personWeb(route)
+        }
+    }
+}
+
 @MainActor
 final class NativeTabNavigationState: ObservableObject {
     @Published private var paths: [NativeAppTab: [NativeShellRoute]] = [:]
@@ -235,7 +249,7 @@ struct NativeAppShell: View {
             NativePersonRouteView(
                 payload: payload,
                 accountStore: hostModel.accountStore,
-                onNavigate: handlePersonIntent
+                onNavigate: { handlePersonIntent($0, in: tab) }
             )
         case let .personWeb(route):
             PersonWebDestinationView(route: route, accountStore: hostModel.accountStore)
@@ -432,18 +446,14 @@ struct NativeAppShell: View {
         }
     }
 
-    private func handlePersonIntent(_ intent: PersonNavigationIntent) {
-        switch intent {
-        case let .article(route):
-            navigate(.answer(.init(contentID: route.id, kind: route.kind == .answer ? .answer : .article)))
-        case let .person(payload): navigate(.person(payload))
-        case let .web(route): navigate(.personWeb(route))
-        }
+    private func handlePersonIntent(_ intent: PersonNavigationIntent, in tab: NativeAppTab) {
+        navigate(intent.nativeShellRoute, in: tab)
     }
 
     private func handleCommentPersonIntent(_ intent: PersonNavigationIntent) {
+        let tab = selectedTab
         commentPresentation = nil
-        DispatchQueue.main.async { handlePersonIntent(intent) }
+        DispatchQueue.main.async { handlePersonIntent(intent, in: tab) }
     }
 
     private func handleCreationIntent(_ intent: CreationSystemIntent, retry: @escaping () async -> Void) {

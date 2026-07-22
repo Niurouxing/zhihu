@@ -349,11 +349,11 @@ final class PersonStore: ObservableObject {
         case let .activity(value):
             return value.destination
         case let .collection(value):
-            return webIntent(.collection, value.title, "https://www.zhihu.com/collection/\(pathSegment(value.collectionID))")
+            return .collection(value.collectionID)
         case let .question(value):
-            return webIntent(.question, value.title, "https://www.zhihu.com/question/\(value.questionID)")
+            return .question(value.questionID)
         case let .pin(value):
-            return webIntent(.pin, "想法", "https://www.zhihu.com/pin/\(value.pinID)")
+            return .pin(value.pinID)
         case let .column(value):
             return value.destination.map(PersonNavigationIntent.web)
         case let .person(value):
@@ -362,13 +362,8 @@ final class PersonStore: ObservableObject {
             return value.destination.map(PersonNavigationIntent.web)
         case let .followedQuestion(value):
             guard let questionID = value.questionID else { return nil }
-            return webIntent(.question, value.title, "https://www.zhihu.com/question/\(questionID)")
+            return .question(questionID)
         }
-    }
-
-    private func webIntent(_ kind: PersonWebRouteKind, _ title: String, _ value: String) -> PersonNavigationIntent? {
-        guard let url = URL(string: value), let route = PersonWebRoute(kind: kind, title: title, url: url) else { return nil }
-        return .web(route)
     }
 
     private func normalizeOccurrences(

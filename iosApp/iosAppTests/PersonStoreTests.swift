@@ -133,6 +133,105 @@ final class PersonStoreTests: XCTestCase {
         XCTAssertEqual(intents, [.article(.init(id: 42, kind: .answer))])
     }
 
+    func testEveryNavigablePersonPageItemEmitsItsTypedIntent() throws {
+        let columnRoute = try XCTUnwrap(PersonWebRoute(
+            kind: .column,
+            title: "专栏",
+            url: URL(string: "https://www.zhihu.com/column/column-id")!
+        ))
+        let topicRoute = try XCTUnwrap(PersonWebRoute(
+            kind: .topic,
+            title: "话题",
+            url: URL(string: "https://www.zhihu.com/topic/15")!
+        ))
+        let personRoute = try XCTUnwrap(PersonRoutePayload(
+            memberID: "next-member",
+            urlToken: "next-person",
+            displayName: "另一个用户"
+        ))
+        let items: [PersonPageItem] = [
+            answerItem(occurrence: 0),
+            articleItem(),
+            .activity(.init(
+                id: itemID(.activity, "activity"),
+                title: "动态",
+                summary: nil,
+                details: "关注了问题",
+                destination: .question(9)
+            )),
+            .collection(.init(
+                id: itemID(.collection, "collection-id"),
+                collectionID: "collection-id",
+                title: "收藏夹",
+                contentCount: 1,
+                followerCount: 2
+            )),
+            .question(.init(
+                id: itemID(.question, "10"),
+                questionID: 10,
+                title: "问题",
+                answerCount: 3,
+                followerCount: 4
+            )),
+            .pin(.init(
+                id: itemID(.pin, "11"),
+                pinID: 11,
+                excerptPlainText: "想法",
+                likeCount: 5,
+                commentCount: 6
+            )),
+            .column(.init(
+                id: itemID(.column, "column-id"),
+                columnID: "column-id",
+                title: "专栏",
+                description: nil,
+                articleCount: 7,
+                followerCount: 8,
+                destination: columnRoute
+            )),
+            .person(.init(
+                id: itemID(.person, "next-member"),
+                route: personRoute,
+                avatarURL: nil,
+                headline: "简介",
+                primaryOfficialBadge: nil,
+                answerCount: 9,
+                articleCount: 10,
+                followerCount: 11
+            )),
+            .topic(.init(
+                id: itemID(.topic, "15"),
+                topicID: "15",
+                displayName: "话题",
+                avatarURL: nil,
+                destination: topicRoute
+            )),
+            .followedQuestion(.init(
+                id: itemID(.followedQuestion, "12"),
+                rawQuestionID: "12",
+                title: "关注的问题",
+                questionID: 12
+            )),
+        ]
+        var intents: [PersonNavigationIntent] = []
+        let store = makeStore(repository: PersonStoreRepository()) { intents.append($0) }
+
+        items.forEach(store.open)
+
+        XCTAssertEqual(intents, [
+            .article(.init(id: 42, kind: .answer)),
+            .article(.init(id: 8, kind: .article)),
+            .question(9),
+            .collection("collection-id"),
+            .question(10),
+            .pin(11),
+            .web(columnRoute),
+            .person(personRoute),
+            .web(topicRoute),
+            .question(12),
+        ])
+    }
+
     private func makeStore(
         repository: PersonRepository,
         onNavigate: @escaping (PersonNavigationIntent) -> Void = { _ in }
@@ -196,6 +295,10 @@ final class PersonStoreTests: XCTestCase {
                 commentCount: 4
             )
         )
+    }
+
+    private func itemID(_ kind: PersonListItemID.Kind, _ primaryID: String) -> PersonListItemID {
+        PersonListItemID(kind: kind, primaryID: primaryID, contextID: nil, occurrence: 0)
     }
 
     private func waitUntil(

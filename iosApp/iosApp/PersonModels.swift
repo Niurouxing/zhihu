@@ -384,6 +384,9 @@ struct PersonWebRoute: Hashable {
 
 enum PersonNavigationIntent: Hashable {
     case article(PersonArticleRoute)
+    case question(Int64)
+    case pin(Int64)
+    case collection(String)
     case person(PersonRoutePayload)
     case web(PersonWebRoute)
 }

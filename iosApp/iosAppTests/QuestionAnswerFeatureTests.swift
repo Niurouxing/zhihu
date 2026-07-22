@@ -117,6 +117,71 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         XCTAssertTrue(feedRequest.url?.query?.contains("include=") == true)
     }
 
+    func testQuestionAndAnswerReadRequestsUseAuthenticatedSignature() async throws {
+        let recorder = QARequestRecorder()
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            switch request.url?.path {
+            case "/api/v4/questions/7":
+                return (200, QAFixtures.question, [:])
+            case "/api/v4/questions/7/feeds":
+                return (200, QAFixtures.answerPage(next: nil), [:])
+            default:
+                return (200, QAFixtures.answer, [:])
+            }
+        }
+        let repository = makeRepository()
+
+        _ = try await repository.fetchQuestion(QuestionRouteDTO(questionID: 7))
+        _ = try await repository.fetchQuestionAnswers(questionID: 7, sort: .default, after: nil)
+        _ = try await repository.fetchAnswer(
+            AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7)
+        )
+
+        XCTAssertEqual(recorder.requests.count, 3)
+        for request in recorder.requests {
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "d_c0=device; z_c0=login")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "x-zse-93"), ZhihuRequestSignature.zse93)
+            XCTAssertTrue(request.value(forHTTPHeaderField: "x-zse-96")?.hasPrefix("2.0_") == true)
+        }
+    }
+
+    func testQuestionAndAnswerReadRequestsRejectMissingAccountBeforeNetwork() async {
+        let recorder = QARequestRecorder()
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            return (200, Data(), [:])
+        }
+        let repository = makeRepository(accountStore: QAAccountStore(json: nil))
+
+        do {
+            _ = try await repository.fetchQuestion(QuestionRouteDTO(questionID: 7))
+            XCTFail("Expected question authentication failure")
+        } catch {
+            XCTAssertEqual(error as? ZhihuAPIError, .authenticationRequired)
+        }
+        do {
+            _ = try await repository.fetchQuestionAnswers(
+                questionID: 7,
+                sort: .default,
+                after: nil
+            )
+            XCTFail("Expected question feed authentication failure")
+        } catch {
+            XCTAssertEqual(error as? ZhihuAPIError, .authenticationRequired)
+        }
+        do {
+            _ = try await repository.fetchAnswer(
+                AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7)
+            )
+            XCTFail("Expected answer authentication failure")
+        } catch {
+            XCTAssertEqual(error as? ZhihuAPIError, .authenticationRequired)
+        }
+
+        XCTAssertTrue(recorder.requests.isEmpty)
+    }
+
     func testAnswerRepositoryMapsBlocksEndorsementMetadataAndUnknownFavorite() async throws {
         QAURLProtocol.setHandler { _ in (200, QAFixtures.answer, [:]) }
         let repository = makeRepository()
@@ -180,6 +245,44 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
+    }
+
+    func testQuestionContinuationKeepsFeedIncludeContract() async throws {
+        let recorder = QARequestRecorder()
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            let isContinuation = request.url?.query?.contains("offset=20") == true
+            return (
+                200,
+                QAFixtures.answerPage(
+                    next: isContinuation
+                        ? nil
+                        : "https://www.zhihu.com/api/v4/questions/7/feeds?limit=20&order=updated&offset=20"
+                ),
+                [:]
+            )
+        }
+        let repository = makeRepository()
+
+        let firstPage = try await repository.fetchQuestionAnswers(
+            questionID: 7,
+            sort: .updated,
+            after: nil
+        )
+        _ = try await repository.fetchQuestionAnswers(
+            questionID: 7,
+            sort: .updated,
+            after: try XCTUnwrap(firstPage.nextURL)
+        )
+
+        let continuation = try XCTUnwrap(
+            recorder.requests.first { $0.url?.query?.contains("offset=20") == true }
+        )
+        XCTAssertTrue(
+            continuation.url?.query?.contains(
+                "include=data%5B*%5D.content,excerpt,headline,target.author.badge_v2"
+            ) == true
+        )
     }
 
     func testVoteUsesAnswerStatePayloadAndPublishesServerCount() async throws {
@@ -398,11 +501,13 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         XCTAssertEqual(pager.next?.id, 42)
     }
 
-    private func makeRepository() -> URLSessionQuestionAnswerRepository {
+    private func makeRepository(
+        accountStore: AccountJSONStore = QAAccountStore()
+    ) -> URLSessionQuestionAnswerRepository {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [QAURLProtocol.self]
         let client = ZhihuAPIClient(
-            accountStore: QAAccountStore(),
+            accountStore: accountStore,
             session: URLSession(configuration: configuration)
         )
         return URLSessionQuestionAnswerRepository(client: client)
@@ -532,7 +637,10 @@ private final class QAURLProtocol: URLProtocol {
 
 private final class QAAccountStore: AccountJSONStore, @unchecked Sendable {
     private let lock = NSLock()
-    private var json: String? = #"{"cookies":{"d_c0":"device","z_c0":"login"},"userAgent":"qa-test"}"#
+    private var json: String?
+    init(json: String? = #"{"cookies":{"d_c0":"device","z_c0":"login"},"userAgent":"qa-test"}"#) {
+        self.json = json
+    }
     func load() throws -> String? { lock.lock(); defer { lock.unlock() }; return json }
     func save(_ value: String) throws { lock.lock(); json = value; lock.unlock() }
     func clear() throws { lock.lock(); json = nil; lock.unlock() }

@@ -118,7 +118,7 @@ enum FeedResponseMapper {
         case .video:
             guard let videoTitle = target.title?.trimmedNonEmpty else { return nil }
             title = plainText(videoTitle)
-            summary = plainTextOptional(target.excerpt ?? target.description)
+            summary = plainTextOptional(target.excerpt ?? target.description?.text)
             details = metricText(
                 kind: "视频",
                 first: (target.voteCount ?? target.voteupCount).map { "\($0) 赞" },
@@ -218,7 +218,7 @@ private struct FeedTargetPayload: Decodable {
     let name: String?
     let excerpt: String?
     let excerptTitle: String?
-    let description: String?
+    let description: FeedDescriptionPayload?
     let detail: String?
     let voteupCount: Int?
     let voteCount: Int?
@@ -269,6 +269,17 @@ private struct FeedTargetPayload: Decodable {
                 headline: headline ?? ""
             )
         }
+    }
+}
+
+private struct FeedDescriptionPayload: Decodable {
+    let text: String?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        // /api/v4/search_v3 returns video descriptions as text but uses an object
+        // for non-content cards such as hot_timing. See GitHub issue #1.
+        text = try? container.decode(String.self)
     }
 }
 

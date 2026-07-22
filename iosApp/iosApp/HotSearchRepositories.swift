@@ -49,7 +49,7 @@ actor URLSessionSearchRepository: SearchRepository {
     }
 
     func fetchSuggestions() async throws -> [SearchSuggestionDTO] {
-        let data = try await client.data(for: Self.suggestionsURL, authentication: .accountIfAvailable)
+        let data = try await client.data(for: Self.suggestionsURL, authentication: .accountRequired)
         return try FeedResponseMapper.suggestions(from: data)
     }
 
@@ -67,7 +67,7 @@ actor URLSessionSearchRepository: SearchRepository {
             baseURL = try initialURL(criteria: criteria)
         }
         let url = try addingInclude(Self.include, to: baseURL)
-        let data = try await client.data(for: url, authentication: .accountIfAvailable)
+        let data = try await client.data(for: url, authentication: .accountRequired)
         return try FeedResponseMapper.page(from: data, policy: .search)
     }
 

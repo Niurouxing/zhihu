@@ -31,6 +31,8 @@ protocol QuestionAnswerRepository: Sendable {
 actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
     private static let questionInclude =
         "read_count,visit_count,answer_count,voteup_count,comment_count,follower_count,detail,excerpt,author,relationship.is_following,topics"
+    private static let questionFeedInclude =
+        "data[*].content,excerpt,headline,target.author.badge_v2"
     private static let answerInclude =
         ".settings,content,editable_content,paid_info,can_comment,excerpt,thanks_count,favlists_count,voteup_count,comment_count,visited_count,attachment,reaction,relationship,ip_info,pagination_info,endorsements,question.topics,reaction.relation.voting,author.badge_v2,settings.table_of_contents.enabled"
     private static let articleInclude =
@@ -50,7 +52,7 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
             path: "/api/v4/questions/\(route.questionID)",
             query: [URLQueryItem(name: "include", value: Self.questionInclude)]
         )
-        let data = try await client.data(for: url, authentication: .accountIfAvailable)
+        let data = try await client.data(for: url, authentication: .accountRequired)
         do {
             let question = try decoder.decode(QuestionResponse.self, from: data).dto()
             guard question.id == route.questionID else {
@@ -69,7 +71,21 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
     ) async throws -> QuestionAnswerPageDTO {
         let url: URL
         if let nextURL {
-            url = try continuation(nextURL, requiredPrefix: "/api/v4/questions/\(questionID)/feeds")
+            let validated = try continuation(
+                nextURL,
+                requiredPrefix: "/api/v4/questions/\(questionID)/feeds"
+            )
+            guard var components = URLComponents(url: validated, resolvingAgainstBaseURL: false) else {
+                throw QuestionAnswerRepositoryError.invalidURL
+            }
+            var queryItems = components.queryItems ?? []
+            queryItems.removeAll { $0.name == "include" }
+            queryItems.append(URLQueryItem(name: "include", value: Self.questionFeedInclude))
+            components.queryItems = queryItems
+            guard let continuationURL = components.url else {
+                throw QuestionAnswerRepositoryError.invalidURL
+            }
+            url = continuationURL
         } else {
             url = try endpoint(
                 path: "/api/v4/questions/\(questionID)/feeds",
@@ -78,12 +94,12 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
                     URLQueryItem(name: "order", value: sort.rawValue),
                     URLQueryItem(
                         name: "include",
-                        value: "data[*].content,excerpt,headline,target.author.badge_v2"
+                        value: Self.questionFeedInclude
                     ),
                 ]
             )
         }
-        let data = try await client.data(for: url, authentication: .accountIfAvailable)
+        let data = try await client.data(for: url, authentication: .accountRequired)
         do {
             let response = try decoder.decode(QuestionAnswersResponse.self, from: data)
             var seen = Set<Int64>()
@@ -122,7 +138,7 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
         let include = route.kind == .answer ? Self.answerInclude : Self.articleInclude
         let data = try await client.data(
             for: endpoint(path: path, query: [URLQueryItem(name: "include", value: include)]),
-            authentication: .accountIfAvailable
+            authentication: .accountRequired
         )
         do {
             switch route.kind {

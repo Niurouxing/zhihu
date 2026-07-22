@@ -30,7 +30,7 @@ enum ZhihuAPIError: LocalizedError, Equatable {
         case .accountUnavailable:
             return "账号信息读取失败，请重新登录后重试"
         case .authenticationRequired:
-            return "请登录后重试"
+            return "请登录或重新登录后重试"
         case .invalidResponse:
             return "服务器返回了无效响应"
         case let .httpStatus(status):
@@ -70,6 +70,7 @@ enum ZhihuAPIURLPolicy {
                 "/people",
                 "/questions",
                 "/read_history",
+                "/search_v3",
                 "/topstory",
                 "/unify-consumption",
             ].contains { matches(path, root: $0) }
@@ -169,8 +170,10 @@ actor ZhihuAPIClient {
                 if case .accountRequired = authentication { throw ZhihuAPIError.authenticationRequired }
                 return Credentials(cookies: [:], userAgent: Self.defaultUserAgent)
             }
-            if case .accountRequired = authentication, stored.cookies["d_c0"]?.nonBlank == nil {
-                throw ZhihuAPIError.authenticationRequired
+            if case .accountRequired = authentication {
+                guard stored.cookies["d_c0"]?.nonBlank != nil,
+                      stored.cookies["z_c0"]?.nonBlank != nil
+                else { throw ZhihuAPIError.authenticationRequired }
             }
             return Credentials(
                 cookies: stored.cookies,
@@ -246,6 +249,9 @@ enum ZhihuAccountSessionCodec {
     static func merging(cookies incoming: [HTTPCookie], into accountJSON: String?) throws -> String? {
         try updatingCookies(in: accountJSON) { cookies in
             for cookie in incoming where ZhihuAPIURLPolicy.allowsCookieDomain(cookie.domain) {
+                if cookie.name == "z_c0", cookie.value.nonBlank == nil {
+                    continue
+                }
                 if cookie.value.isEmpty || cookie.expiresDate.map({ $0 <= Date() }) == true {
                     cookies.removeValue(forKey: cookie.name)
                 } else {

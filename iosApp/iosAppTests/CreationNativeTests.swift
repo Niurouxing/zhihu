@@ -230,7 +230,7 @@ private final class CreationRequestRecorder: @unchecked Sendable {
 
 private final class CreationAccountStore: AccountJSONStore, @unchecked Sendable {
     private let lock = NSLock()
-    private var json = #"{"cookies":{"d_c0":"device","_xsrf":"token"},"userAgent":"test"}"#
+    private var json = #"{"cookies":{"d_c0":"device","z_c0":"login","_xsrf":"token"},"userAgent":"test"}"#
 
     func load() throws -> String? {
         lock.lock()
