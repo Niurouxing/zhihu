@@ -34,6 +34,12 @@ final class CommentHostModel: ObservableObject, Identifiable {
         openPerson = { [weak self] payload in self?.presentPerson(payload) }
     }
 
+    deinit {
+        MainActor.assumeIsolated {
+            dispose()
+        }
+    }
+
     func dispose() {
         personModel?.dispose()
         personModel = nil
@@ -57,64 +63,39 @@ final class CommentHostModel: ObservableObject, Identifiable {
 }
 
 @available(iOS 16.0, *)
-struct CommentHostView: View {
+struct CommentNavigationPage: View {
     @ObservedObject var model: CommentHostModel
 
     var body: some View {
-        CommentNativeSheetView(
+        CommentThreadContainer(
             store: model.store,
             personModel: model.personModel,
             personBindingChanged: model.personBindingChanged
         )
+        .accessibilityIdentifier("comment_navigation_page")
     }
 }
 
 @available(iOS 16.0, *)
-struct CommentNativeSheetView: View {
+private struct CommentThreadContainer: View {
     @ObservedObject var store: CommentSessionStore
     let personModel: PersonHostModel?
     let personBindingChanged: (Bool) -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    init(
-        store: CommentSessionStore,
-        personModel: PersonHostModel? = nil,
-        personBindingChanged: @escaping (Bool) -> Void = { _ in }
-    ) {
-        self.store = store
-        self.personModel = personModel
-        self.personBindingChanged = personBindingChanged
-    }
 
     var body: some View {
-        Group {
-            if #available(iOS 16, *) {
-                NavigationStack {
-                    CommentLevelView(store: store, level: store.activeLevel, closeSheet: dismiss.callAsFunction)
-                        .navigationDestination(isPresented: personBinding) {
-                            if let personModel { PersonNativeView(model: personModel) }
-                        }
-                }
-            } else {
-                NavigationView {
-                    CommentLevelView(
-                        store: store,
-                        level: store.activeLevel,
-                        closeSheet: dismiss.callAsFunction
-                    )
-                        .background(
-                            NavigationLink(isActive: personBinding) {
-                                if let personModel { PersonNativeView(model: personModel) }
-                            } label: {
-                                EmptyView()
-                            }
-                        )
-                }
-                .navigationViewStyle(.stack)
+        CommentLevelView(store: store, level: .root, close: nil)
+            .navigationDestination(isPresented: rootPersonBinding) {
+                if let personModel { PersonNativeView(model: personModel) }
             }
+        .sheet(item: replyDestinationBinding) { destination in
+            CommentReplySheetView(
+                store: store,
+                level: destination.level,
+                personModel: personModel,
+                personBindingChanged: personBindingChanged,
+                close: closeReplies
+            )
         }
-        .background(Color(uiColor: .systemBackground).ignoresSafeArea())
-        .modifier(CommentSheetPresentationModifier())
         .fullScreenCover(
             item: Binding(
                 get: { store.galleryDestination },
@@ -140,21 +121,133 @@ struct CommentNativeSheetView: View {
             )
         }
         .task { store.start() }
-        .onDisappear {
-            // A full-screen image viewer temporarily covers this sheet and must not
-            // terminate the live comments session beneath it.
-            if store.galleryDestination == nil { store.dispose() }
+    }
+
+    private var rootPersonBinding: Binding<Bool> {
+        Binding(
+            get: { personModel != nil && store.activeLevel == .root },
+            set: { isPresented in
+                if !isPresented, store.activeLevel == .root {
+                    personBindingChanged(false)
+                }
+            }
+        )
+    }
+
+    private var replyDestinationBinding: Binding<CommentReplySheetDestination?> {
+        Binding(
+            get: { CommentReplySheetDestination(level: store.activeLevel) },
+            set: { destination in
+                if destination == nil { closeReplies() }
+            }
+        )
+    }
+
+    private func closeReplies() {
+        personBindingChanged(false)
+        store.dismissReplies()
+    }
+}
+
+private struct CommentReplySheetDestination: Identifiable {
+    let level: CommentLevelKey
+
+    init?(level: CommentLevelKey) {
+        guard case let .replies(rootCommentID) = level else { return nil }
+        self.level = level
+        id = rootCommentID
+    }
+
+    let id: String
+}
+
+@available(iOS 16.0, *)
+private struct CommentReplySheetView: View {
+    @ObservedObject var store: CommentSessionStore
+    let level: CommentLevelKey
+    let personModel: PersonHostModel?
+    let personBindingChanged: (Bool) -> Void
+    let close: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.nativeHapticFeedback) private var hapticFeedback
+
+    var body: some View {
+        GeometryReader { geometry in
+            NavigationStack {
+                CommentLevelView(store: store, level: level, close: close)
+                    .navigationDestination(isPresented: personBinding) {
+                        if let personModel { PersonNativeView(model: personModel) }
+                    }
+            }
+            .contentShape(Rectangle())
+            .simultaneousGesture(edgeDismissGesture(containerWidth: geometry.size.width))
         }
-        .accessibilityIdentifier("comment_native_sheet")
+        .background(Color(uiColor: .systemBackground).ignoresSafeArea())
+        .modifier(CommentSheetPresentationModifier())
+        .accessibilityIdentifier("comment_reply_sheet")
+        .onDisappear(perform: close)
     }
 
     private var personBinding: Binding<Bool> {
         Binding(
-            get: { personModel != nil },
-            set: personBindingChanged
+            get: { personModel != nil && store.activeLevel == level },
+            set: { isPresented in
+                if !isPresented, store.activeLevel == level {
+                    personBindingChanged(false)
+                }
+            }
         )
     }
 
+    private func edgeDismissGesture(containerWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: CommentReplySheetSwipePolicy.minimumDistance)
+            .onEnded { value in
+                guard CommentReplySheetSwipePolicy.shouldDismiss(
+                    startLocation: value.startLocation,
+                    translation: value.translation,
+                    predictedEndTranslation: value.predictedEndTranslation,
+                    containerWidth: containerWidth
+                ) else { return }
+                CommentReplySheetFeedback(action: hapticFeedback).edgeDismissDidCommit(true)
+                var transaction = Transaction()
+                transaction.disablesAnimations = reduceMotion
+                withTransaction(transaction, close)
+            }
+    }
+}
+
+@MainActor
+struct CommentReplySheetFeedback {
+    let action: NativeHapticFeedbackAction
+
+    func edgeDismissDidCommit(_ committed: Bool) {
+        guard committed else { return }
+        action(.dismiss)
+    }
+}
+
+struct CommentReplySheetSwipePolicy {
+    static let minimumDistance: CGFloat = 14
+    static let leadingEdgeWidth: CGFloat = 44
+    static let horizontalIntentRatio: CGFloat = 1.25
+    static let minimumCommitDistance: CGFloat = 72
+    static let commitWidthRatio: CGFloat = 0.22
+
+    static func shouldDismiss(
+        startLocation: CGPoint,
+        translation: CGSize,
+        predictedEndTranslation: CGSize,
+        containerWidth: CGFloat
+    ) -> Bool {
+        guard containerWidth > 0,
+              startLocation.x <= leadingEdgeWidth,
+              translation.width > 0,
+              translation.width > abs(translation.height) * horizontalIntentRatio
+        else { return false }
+
+        let threshold = max(minimumCommitDistance, containerWidth * commitWidthRatio)
+        return translation.width >= threshold || predictedEndTranslation.width >= threshold
+    }
 }
 
 private struct CommentSheetPresentationModifier: ViewModifier {
@@ -179,7 +272,7 @@ private struct CommentSheetPresentationModifier: ViewModifier {
 private struct CommentLevelView: View {
     @ObservedObject var store: CommentSessionStore
     let level: CommentLevelKey
-    let closeSheet: () -> Void
+    let close: (() -> Void)?
     @State private var scrollView: UIScrollView?
 
     var body: some View {
@@ -208,17 +301,19 @@ private struct CommentLevelView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            CommentComposerBar(store: store)
+            CommentComposerBar(store: store, level: level)
         }
         .navigationTitle(level == .root ? "评论" : "回复")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button(action: closeSheet) {
-                    Image(systemName: "xmark")
+            if let close {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(action: close) {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel(level == .root ? "关闭评论" : "关闭回复")
+                    .accessibilityIdentifier(level == .root ? "comment_close" : "comment_reply_close")
                 }
-                .accessibilityLabel("关闭评论")
-                .accessibilityIdentifier("comment_close")
             }
         }
         .accessibilityIdentifier(level == .root ? "comment_root" : "comment_direct_replies")
@@ -275,9 +370,19 @@ private struct CommentLevelView: View {
                 )
                     .id(comment.id)
                     .background(CommentRowOffsetReader(commentID: comment.id, coordinateSpaceName: coordinateSpaceName))
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button {
+                            store.beginReply(to: comment.id, level: level)
+                        } label: {
+                            Label("回复", systemImage: "arrowshape.turn.up.left.fill")
+                        }
+                        .tint(Color.accentColor)
+                        .accessibilityLabel("回复 @\(comment.author.displayName)")
+                        .accessibilityIdentifier("comment_swipe_reply_\(comment.id)")
+                    }
                     .onAppear { store.loadNextIfNeeded(after: comment.id, level: level) }
                 if level == .root {
-                    inlineReplyRows(for: comment)
+                    replyCountFooter(rootComment: comment)
                 }
             }
             pageFooter(page)
@@ -285,94 +390,21 @@ private struct CommentLevelView: View {
     }
 
     @ViewBuilder
-    private func inlineReplyRows(for rootComment: CommentDTO) -> some View {
-        let replyLevel = CommentLevelKey.replies(rootCommentID: rootComment.id)
-        let replyPage = store.pages[replyLevel]
-        let isExpanded = store.expandedReplyRootIDs.contains(rootComment.id)
-        let displaysLoadedReplies = isExpanded && replyPage?.initialLoad == .loaded
-        let displayedReplies = displaysLoadedReplies
-            ? (replyPage?.items ?? [])
-            : rootComment.embeddedReplies
-
-        ForEach(displayedReplies) { reply in
-            CommentRow(
-                store: store,
-                comment: reply,
-                interactionLevel: displaysLoadedReplies ? replyLevel : nil
-            )
-            .id("inline-reply-\(rootComment.id)-\(reply.id)")
-            .listRowInsets(EdgeInsets(top: 4, leading: 42, bottom: 4, trailing: 16))
-            .listRowBackground(Color.secondary.opacity(0.06))
-            .listRowSeparator(.hidden)
-        }
-
-        inlineReplyFooter(
-            rootComment: rootComment,
-            replyPage: replyPage,
-            isExpanded: isExpanded,
-            displayedReplyCount: displayedReplies.count
-        )
-    }
-
-    @ViewBuilder
-    private func inlineReplyFooter(
-        rootComment: CommentDTO,
-        replyPage: CommentPageState?,
-        isExpanded: Bool,
-        displayedReplyCount: Int
-    ) -> some View {
+    private func replyCountFooter(rootComment: CommentDTO) -> some View {
         Group {
-            if isExpanded, replyPage?.initialLoad == .loading {
-                HStack(spacing: 8) {
-                    ProgressView()
-                    Text("正在加载回复")
-                }
-            } else if isExpanded, case let .failed(message) = replyPage?.initialLoad {
-                Button("回复加载失败，点此重试") {
-                    store.openReplies(rootCommentID: rootComment.id)
-                }
-                .foregroundStyle(.red)
-                .accessibilityHint(message)
-            } else if isExpanded, replyPage?.nextPage == .loading {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("正在加载更多回复")
-                }
-            } else if isExpanded, case let .failed(message) = replyPage?.nextPage {
-                Button("更多回复加载失败，点此重试") {
-                    store.loadMoreReplies(rootCommentID: rootComment.id)
-                }
-                .foregroundStyle(.red)
-                .accessibilityHint(message)
-            } else if isExpanded,
-                      replyPage?.initialLoad == .loaded,
-                      replyPage?.isEnd == false,
-                      replyPage?.nextURL != nil {
-                Button {
-                    store.loadMoreReplies(rootCommentID: rootComment.id)
-                } label: {
-                    HStack(spacing: 5) {
-                        Text("加载更多回复")
-                        Image(systemName: "chevron.down")
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-                .fontWeight(.medium)
-                .accessibilityIdentifier("inline_reply_load_more_\(rootComment.id)")
-            } else if !isExpanded, rootComment.childCommentCount > displayedReplyCount {
+            if rootComment.childCommentCount > 0 {
                 Button {
                     store.openReplies(rootCommentID: rootComment.id)
                 } label: {
                     HStack(spacing: 5) {
                         Text("共 \(rootComment.childCommentCount) 条回复")
-                        Image(systemName: "chevron.down")
+                        Image(systemName: "chevron.right")
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .fontWeight(.medium)
-                .accessibilityIdentifier("inline_reply_open_\(rootComment.id)")
+                .accessibilityIdentifier("reply_count_open_\(rootComment.id)")
             }
         }
         .font(.subheadline)
@@ -434,6 +466,22 @@ private struct CommentRow: View {
     }
 
     var body: some View {
+        rowContent
+            .contextMenu {
+                Button(action: beginReply) {
+                    Label("回复 @\(comment.author.displayName)", systemImage: "arrowshape.turn.up.left")
+                }
+                Button {
+                    UIPasteboard.general.string = CommentPlainText.value(from: comment.contentHTML)
+                } label: {
+                    Label("复制评论", systemImage: "doc.on.doc")
+                }
+            }
+            .accessibilityIdentifier("comment_row_\(comment.id)")
+            .accessibilityHint("长按显示评论操作，左滑快速回复")
+    }
+
+    private var rowContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
                 Button { store.openAuthor(commentID: comment.id) } label: {
@@ -473,14 +521,7 @@ private struct CommentRow: View {
             }
 
             CommentRichText(html: comment.contentHTML)
-                .textSelection(.enabled)
                 .contentShape(Rectangle())
-                .simultaneousGesture(
-                    TapGesture().onEnded { store.setReplyTarget(comment.id) }
-                )
-                .accessibilityIdentifier("comment_reply_\(comment.id)")
-                .accessibilityAddTraits(.isButton)
-                .accessibilityHint("轻点回复这条评论")
 
             if !comment.media.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -519,99 +560,38 @@ private struct CommentRow: View {
             .buttonStyle(.borderless)
         }
         .padding(.vertical, 6)
-        .contextMenu {
-            Button {
-                store.setReplyTarget(comment.id)
-            } label: {
-                Label("回复", systemImage: "arrowshape.turn.up.left")
-            }
-        }
-        .accessibilityIdentifier("comment_row_\(comment.id)")
+        .contentShape(Rectangle())
+    }
+
+    private func beginReply() {
+        store.beginReply(to: comment.id, level: interactionLevel)
     }
 }
 
 private struct CommentComposerBar: View {
     @ObservedObject var store: CommentSessionStore
+    let level: CommentLevelKey
     @State private var showsEmojiPicker = false
     @State private var showsPhotoPicker = false
     @State private var photoError: String?
     @FocusState private var isDraftFocused: Bool
 
     var body: some View {
-        VStack(spacing: 6) {
-            if let target = store.activeReplyTargetName {
-                HStack {
-                    Text("回复 \(target)").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("取消", action: store.clearReplyTarget).font(.caption)
-                }
-                .padding(.horizontal, 12)
+        Group {
+            if store.composerPresentation.isActive(for: level) {
+                activeComposer
+            } else {
+                collapsedComposer
             }
-            if let imageData = store.draft.imageData, let image = UIImage(data: imageData) {
-                HStack {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 64, height: 52)
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    Text("待发送图片")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("移除", role: .destructive) { store.setDraftImage(nil) }
-                        .font(.caption)
-                }
-                .padding(.horizontal, 12)
-            }
-            HStack(alignment: .bottom, spacing: 8) {
-                Button { showsEmojiPicker = true } label: {
-                    Image(systemName: "face.smiling")
-                        .frame(width: 32, height: 38)
-                }
-                .accessibilityLabel("选择表情")
-                .accessibilityIdentifier("comment_emoji_picker")
-
-                Button { showsPhotoPicker = true } label: {
-                    Image(systemName: "photo")
-                        .frame(width: 32, height: 38)
-                }
-                .accessibilityLabel("选择图片")
-                .accessibilityIdentifier("comment_photo_picker")
-
-                CommentDraftField(store: store, isFocused: $isDraftFocused)
-                .textFieldStyle(.plain)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-
-                Button {
-                    if case .failed = store.draft.submissionState {
-                        store.retrySubmission()
-                    } else {
-                        store.submitDraft()
-                    }
-                } label: {
-                    if case .submitting = store.draft.submissionState {
-                        ProgressView().frame(width: 28, height: 28)
-                    } else {
-                        Image(systemName: "arrow.up.circle.fill").font(.title2)
-                    }
-                }
-                .disabled(
-                    (store.draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-                        store.draft.imageData == nil) ||
-                        store.draft.submissionState.isSubmitting
-                )
-                .accessibilityLabel("发送评论")
-                .accessibilityIdentifier("comment_submit")
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
         }
         .background(CommentComposerBackground())
-        .onChange(of: store.draft.replyTargetCommentID) { replyTargetCommentID in
-            if replyTargetCommentID != nil { isDraftFocused = true }
+        .onChange(of: store.composerPresentation) { presentation in
+            isDraftFocused = presentation.isActive(for: level)
         }
+        .onAppear {
+            isDraftFocused = store.composerPresentation.isActive(for: level)
+        }
+        .onDisappear { isDraftFocused = false }
         .sheet(isPresented: $showsEmojiPicker) {
             CommentEmojiPicker { emoji in
                 store.appendEmoji(emoji.placeholder)
@@ -634,6 +614,117 @@ private struct CommentComposerBar: View {
         } message: {
             Text(photoError ?? "请稍后重试")
         }
+    }
+
+    private var collapsedComposer: some View {
+        Button {
+            store.beginComment(level: level)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 17, weight: .medium))
+                Text(level == .root ? "写评论…" : "回复这条评论…")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
+            .background(Color.secondary.opacity(0.09), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("comment_composer_open")
+    }
+
+    private var activeComposer: some View {
+        VStack(spacing: 6) {
+            if let target = store.activeReplyTargetName {
+                HStack {
+                    Text("回复 \(target)").font(.subheadline).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("取消") { dismissComposer() }
+                        .font(.subheadline.weight(.medium))
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 4)
+            }
+            if let imageData = store.draft.imageData, let image = UIImage(data: imageData) {
+                HStack {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 64, height: 52)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    Text("待发送图片")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("移除", role: .destructive) { store.setDraftImage(nil) }
+                        .font(.caption)
+                }
+                .padding(.horizontal, 12)
+            }
+            HStack(alignment: .center, spacing: 6) {
+                Button { showsEmojiPicker = true } label: {
+                    Image(systemName: "face.smiling")
+                        .font(.system(size: 21, weight: .medium))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("选择表情")
+                .accessibilityIdentifier("comment_emoji_picker")
+
+                Button { showsPhotoPicker = true } label: {
+                    Image(systemName: "photo")
+                        .font(.system(size: 21, weight: .medium))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("选择图片")
+                .accessibilityIdentifier("comment_photo_picker")
+
+                CommentDraftField(store: store, isFocused: $isDraftFocused)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+                Button {
+                    if case .failed = store.draft.submissionState {
+                        store.retrySubmission()
+                    } else {
+                        store.submitDraft()
+                    }
+                } label: {
+                    if case .submitting = store.draft.submissionState {
+                        ProgressView().frame(width: 44, height: 44)
+                    } else {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 25, weight: .semibold))
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                }
+                .disabled(
+                    (store.draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                        store.draft.imageData == nil) ||
+                        store.draft.submissionState.isSubmitting
+                )
+                .accessibilityLabel("发送评论")
+                .accessibilityIdentifier("comment_submit")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private func dismissComposer() {
+        isDraftFocused = false
+        store.dismissComposer(for: level)
     }
 }
 

@@ -9,18 +9,32 @@ enum NativeAppTab: String, CaseIterable, Identifiable, Codable {
     case history = "OnlineHistory"
     case collections = "MyCollections"
     case account = "Account"
+    case search = "Search"
 
     var id: String { rawValue }
 
+    static let primaryBottomBarTabs: [NativeAppTab] = [
+        .home,
+        .collections,
+        .account,
+    ]
+
+    static let fixedBottomBarTabs: [NativeAppTab] = primaryBottomBarTabs + [.search]
+    static let startTabCandidates = fixedBottomBarTabs
+
+    // Kept for compatibility with the legacy preference migration helpers.
+    static let bottomBarCandidates = fixedBottomBarTabs
+
     var title: String {
         switch self {
-        case .home: return "主页"
+        case .home: return "首页"
         case .follow: return "关注"
         case .hot: return "热榜"
         case .daily: return "日报"
         case .history: return "历史"
-        case .collections: return "收藏夹"
+        case .collections: return "收藏"
         case .account: return "账号"
+        case .search: return "搜索"
         }
     }
 
@@ -33,8 +47,11 @@ enum NativeAppTab: String, CaseIterable, Identifiable, Codable {
         case .history: return "clock.arrow.circlepath"
         case .collections: return "bookmark.fill"
         case .account: return "person.crop.circle"
+        case .search: return "magnifyingglass"
         }
     }
+
+    var usesSearchRole: Bool { self == .search }
 }
 
 enum NativeThemeMode: String, CaseIterable, Identifiable {
@@ -149,11 +166,14 @@ extension EnvironmentValues {
 
 @MainActor
 final class NativeShellPreferences: ObservableObject {
+    private static let currentBottomTabStructureVersion = 3
+
     enum Key {
         static let themeMode = "themeMode"
         static let accountInHome = "duo3_home_account"
         static let selectedTabs = "bottom_bar_items"
         static let tabOrder = "bottom_bar_item_order"
+        static let bottomTabStructureVersion = "nativeBottomTabStructureVersion"
         static let startTab = "startDestination"
         static let autoHideTabBar = "autoHideBottomBar"
         static let contentFontSize = "contentFontSize"
@@ -164,9 +184,10 @@ final class NativeShellPreferences: ObservableObject {
         static let showFeedThumbnail = "showFeedThumbnail"
         static let showSearchHotSearch = "showSearchHotSearch"
         static let showSearchHistory = "showSearchHistory"
-        static let answerSwitchMode = "answerSwitchMode"
         static let topLevelReselect = "nativeTopLevelReselect"
         static let shareActionMode = "shareActionMode"
+        static let hapticsEnabled = "nativeHapticsEnabled"
+        static let hapticStrength = "nativeHapticStrength"
     }
 
     private let defaults: UserDefaults
@@ -184,9 +205,10 @@ final class NativeShellPreferences: ObservableObject {
     @Published private(set) var showsFeedThumbnails: Bool
     @Published private(set) var showsSearchHotSearch: Bool
     @Published private(set) var showsSearchHistory: Bool
-    @Published private(set) var answerSwitchEnabled: Bool
     @Published private(set) var topLevelReselectEnabled: Bool
     @Published private(set) var defaultShareAction: NativeDefaultShareAction
+    @Published private(set) var hapticsEnabled: Bool
+    @Published private(set) var hapticStrength: NativeHapticStrength
 
     var contentPresentation: NativeContentPresentationPreferences {
         NativeContentPresentationPreferences(
@@ -206,13 +228,28 @@ final class NativeShellPreferences: ObservableObject {
         )
     }
 
+    var hapticFeedbackConfiguration: NativeHapticFeedbackConfiguration {
+        NativeHapticFeedbackConfiguration(
+            isEnabled: hapticsEnabled,
+            strength: hapticStrength
+        )
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let accountInHome = defaults.object(forKey: Key.accountInHome) == nil
             ? false
             : defaults.bool(forKey: Key.accountInHome)
-        let selectedKeys = defaults.stringArray(forKey: Key.selectedTabs)
+        var selectedKeys = defaults.stringArray(forKey: Key.selectedTabs)
             ?? Self.defaultSelection(accountInHome: accountInHome).map(\.rawValue)
+        let requiresLegacyAccountMigration = defaults.integer(forKey: Key.bottomTabStructureVersion) < 2
+        if requiresLegacyAccountMigration, accountInHome {
+            if selectedKeys.contains(NativeAppTab.home.rawValue) {
+                selectedKeys.removeAll { $0 == NativeAppTab.account.rawValue }
+            } else if !selectedKeys.contains(NativeAppTab.account.rawValue) {
+                selectedKeys.append(NativeAppTab.account.rawValue)
+            }
+        }
         let preferredOrder = defaults.string(forKey: Key.tabOrder)
             .map { $0.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) } }
             ?? []
@@ -224,10 +261,21 @@ final class NativeShellPreferences: ObservableObject {
 
         self.accountInHome = accountInHome
         selectedTabs = tabs
+        defaults.set(tabs.map(\.rawValue), forKey: Key.selectedTabs)
+        defaults.set(tabs.map(\.rawValue).joined(separator: ","), forKey: Key.tabOrder)
+        defaults.set(Self.currentBottomTabStructureVersion, forKey: Key.bottomTabStructureVersion)
         let rawTheme = defaults.string(forKey: Key.themeMode) ?? NativeThemeMode.system.rawValue
         themeMode = NativeThemeMode(rawValue: rawTheme) ?? .system
-        let preferredStart = defaults.string(forKey: Key.startTab).flatMap(NativeAppTab.init(rawValue:))
-        startTab = preferredStart.flatMap { tabs.contains($0) ? $0 : nil } ?? tabs[0]
+        let storedStart = defaults.string(forKey: Key.startTab)
+        let preferredStart = storedStart.flatMap(NativeAppTab.init(rawValue:))
+        let normalizedStart = preferredStart.flatMap {
+            NativeAppTab.startTabCandidates.contains($0) ? $0 : nil
+        }
+            ?? .home
+        startTab = normalizedStart
+        if storedStart != nil, preferredStart != normalizedStart {
+            defaults.set(normalizedStart.rawValue, forKey: Key.startTab)
+        }
         autoHideTabBar = defaults.object(forKey: Key.autoHideTabBar) == nil
             ? false
             : defaults.bool(forKey: Key.autoHideTabBar)
@@ -248,10 +296,12 @@ final class NativeShellPreferences: ObservableObject {
         showsFeedThumbnails = Self.bool(defaults, key: Key.showFeedThumbnail, defaultValue: true)
         showsSearchHotSearch = Self.bool(defaults, key: Key.showSearchHotSearch, defaultValue: true)
         showsSearchHistory = Self.bool(defaults, key: Key.showSearchHistory, defaultValue: true)
-        answerSwitchEnabled = defaults.string(forKey: Key.answerSwitchMode) != "off"
         topLevelReselectEnabled = Self.bool(defaults, key: Key.topLevelReselect, defaultValue: true)
         defaultShareAction = defaults.string(forKey: Key.shareActionMode)
             .flatMap(NativeDefaultShareAction.init(rawValue:)) ?? .ask
+        hapticsEnabled = Self.bool(defaults, key: Key.hapticsEnabled, defaultValue: true)
+        hapticStrength = defaults.string(forKey: Key.hapticStrength)
+            .flatMap(NativeHapticStrength.init(rawValue:)) ?? .standard
     }
 
     func setThemeMode(_ mode: NativeThemeMode) {
@@ -318,12 +368,6 @@ final class NativeShellPreferences: ObservableObject {
         defaults.set(enabled, forKey: Key.showSearchHistory)
     }
 
-    func setAnswerSwitchEnabled(_ enabled: Bool) {
-        guard answerSwitchEnabled != enabled else { return }
-        answerSwitchEnabled = enabled
-        defaults.set(enabled ? "horizontal" : "off", forKey: Key.answerSwitchMode)
-    }
-
     func setTopLevelReselectEnabled(_ enabled: Bool) {
         guard topLevelReselectEnabled != enabled else { return }
         topLevelReselectEnabled = enabled
@@ -334,6 +378,18 @@ final class NativeShellPreferences: ObservableObject {
         guard defaultShareAction != action else { return }
         defaultShareAction = action
         defaults.set(action.rawValue, forKey: Key.shareActionMode)
+    }
+
+    func setHapticsEnabled(_ enabled: Bool) {
+        guard hapticsEnabled != enabled else { return }
+        hapticsEnabled = enabled
+        defaults.set(enabled, forKey: Key.hapticsEnabled)
+    }
+
+    func setHapticStrength(_ strength: NativeHapticStrength) {
+        guard hapticStrength != strength else { return }
+        hapticStrength = strength
+        defaults.set(strength.rawValue, forKey: Key.hapticStrength)
     }
 
     func setTabEnabled(_ tab: NativeAppTab, enabled: Bool) {
@@ -354,7 +410,7 @@ final class NativeShellPreferences: ObservableObject {
     }
 
     func setStartTab(_ tab: NativeAppTab) {
-        guard selectedTabs.contains(tab), startTab != tab else { return }
+        guard NativeAppTab.startTabCandidates.contains(tab), startTab != tab else { return }
         startTab = tab
         defaults.set(tab.rawValue, forKey: Key.startTab)
     }
@@ -368,8 +424,8 @@ final class NativeShellPreferences: ObservableObject {
         selectedTabs = normalized
         defaults.set(normalized.map(\.rawValue), forKey: Key.selectedTabs)
         defaults.set(normalized.map(\.rawValue).joined(separator: ","), forKey: Key.tabOrder)
-        if !normalized.contains(startTab) {
-            startTab = normalized[0]
+        if !NativeAppTab.startTabCandidates.contains(startTab) {
+            startTab = .home
             defaults.set(startTab.rawValue, forKey: Key.startTab)
         }
     }
@@ -377,35 +433,12 @@ final class NativeShellPreferences: ObservableObject {
     static func normalizedTabs(
         selectedKeys: [String],
         preferredOrder: [String],
-        accountInHome: Bool
+        accountInHome _: Bool
     ) -> [NativeAppTab] {
-        let allowed = Set(NativeAppTab.allCases)
+        let allowed = Set(NativeAppTab.bottomBarCandidates)
         var selection = Set(selectedKeys.compactMap(NativeAppTab.init(rawValue:))).intersection(allowed)
         if selection.isEmpty {
-            selection = Set(defaultSelection(accountInHome: accountInHome))
-        }
-
-        if accountInHome {
-            if selection.contains(.home) {
-                selection.remove(.account)
-            } else {
-                selection.insert(.account)
-            }
-        } else {
-            selection.insert(.account)
-            let removalOrder: [NativeAppTab] = [.hot, .collections, .history, .daily, .follow, .home]
-            while selection.count > 5, let removable = removalOrder.first(where: selection.contains) {
-                selection.remove(removable)
-            }
-        }
-
-        let fillOrder: [NativeAppTab] = accountInHome
-            ? (selection.contains(.home)
-                ? [.follow, .daily, .hot, .history]
-                : [.follow, .daily, .hot, .history, .home])
-            : [.home, .follow, .daily, .hot, .history, .collections, .account]
-        for tab in fillOrder where selection.count < 3 {
-            selection.insert(tab)
+            selection.insert(.home)
         }
 
         var ordered: [NativeAppTab] = []
@@ -413,16 +446,14 @@ final class NativeShellPreferences: ObservableObject {
             where selection.contains(tab) && !ordered.contains(tab) {
             ordered.append(tab)
         }
-        for tab in NativeAppTab.allCases where selection.contains(tab) && !ordered.contains(tab) {
+        for tab in NativeAppTab.bottomBarCandidates where selection.contains(tab) && !ordered.contains(tab) {
             ordered.append(tab)
         }
         return ordered
     }
 
-    private static func defaultSelection(accountInHome: Bool) -> [NativeAppTab] {
-        accountInHome
-            ? [.home, .follow, .daily]
-            : [.home, .follow, .daily, .history, .account]
+    private static func defaultSelection(accountInHome _: Bool) -> [NativeAppTab] {
+        NativeAppTab.bottomBarCandidates
     }
 
     private static func bool(_ defaults: UserDefaults, key: String, defaultValue: Bool) -> Bool {

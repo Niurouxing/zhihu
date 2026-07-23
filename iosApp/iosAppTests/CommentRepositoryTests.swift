@@ -77,6 +77,31 @@ final class CommentRepositoryTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "x-zse-93"), ZhihuRequestSignature.zse93)
     }
 
+    func testRootContinuationUsesSelectedSortInsteadOfStalePagingSort() async throws {
+        let requests = CommentRequestRecorder()
+        CommentURLProtocol.setHandler { request in
+            requests.record(request)
+            return (200, Data(Self.pageJSON(next: nil).utf8), [:])
+        }
+        let repository = makeRepository()
+        let nextURL = try XCTUnwrap(
+            URL(string: "https://www.zhihu.com/api/v4/comment_v5/answers/42/root_comment?offset=cursor&order_by=score")
+        )
+
+        _ = try await repository.fetchPage(
+            route: CommentThreadRouteDTO(subject: .answer(42)),
+            level: .root,
+            sort: .time,
+            nextURL: nextURL
+        )
+
+        let queryItems = try XCTUnwrap(
+            URLComponents(url: try XCTUnwrap(requests.requests.first?.url), resolvingAgainstBaseURL: false)?.queryItems
+        )
+        XCTAssertEqual(queryItems.filter { $0.name == "order_by" }.map(\.value), ["ts"])
+        XCTAssertEqual(queryItems.first(where: { $0.name == "offset" })?.value, "cursor")
+    }
+
     func testInlineReplyInitialRequestUsesFiveItemPage() async throws {
         let requests = CommentRequestRecorder()
         CommentURLProtocol.setHandler { request in

@@ -66,6 +66,28 @@ iOS 16–18/25 会使用系统提供的兼容样式；iOS 26+ 才会启用 Liqui
 
 ## 构建与安装
 
+### 通过 SideStore 安装与更新正式版
+
+[一键添加到 SideStore](sidestore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2Fkangyun1994%2Fzhihu-plus-plus-swift%2Fmain%2Fsidestore-source.json)
+
+也可以在 SideStore 的来源页面手动添加：
+
+```text
+https://raw.githubusercontent.com/kangyun1994/zhihu-plus-plus-swift/main/sidestore-source.json
+```
+
+更新源只需添加一次。首次从来源安装后，后续正式版本会随
+[GitHub Releases](https://github.com/kangyun1994/zhihu-plus-plus-swift/releases)
+发布，并通过同一来源在 SideStore 中显示更新。正式 IPA 始终使用
+`com.github.zly2006.zhplus.ios`，可以在现有正式版上更新；请勿为更新版改用不同的
+Bundle Identifier，否则 iOS 和 SideStore 会将其视为另一个 App。
+
+SideStore 检查到新版本后会下载 GitHub Release 中的未签名 IPA，并使用设备上的
+Apple Account 重新签名安装。版本更新与 SideStore 的日常签名刷新是两件事：添加来源
+用于发现新版本，7 天签名有效期仍由 SideStore 按其正常流程刷新。
+
+### 从源码构建
+
 克隆仓库并打开 Xcode 工程：
 
 ```bash

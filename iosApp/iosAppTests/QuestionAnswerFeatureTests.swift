@@ -8,16 +8,134 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         super.tearDown()
     }
 
-    func testReadingPreferencesConsumeAnswerSwitchMode() throws {
+    func testReadingPreferencesIgnoreLegacyAnswerSwitchMode() throws {
         let suiteName = "QuestionAnswerFeatureTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
+        let baseline = QAReadingPreferences(defaults: defaults)
         defaults.set("off", forKey: "answerSwitchMode")
-        XCTAssertFalse(QAReadingPreferences(defaults: defaults).answerSwitchEnabled)
 
-        defaults.set("horizontal", forKey: "answerSwitchMode")
-        XCTAssertTrue(QAReadingPreferences(defaults: defaults).answerSwitchEnabled)
+        XCTAssertEqual(QAReadingPreferences(defaults: defaults), baseline)
+    }
+
+    func testAnswerPagerGestureArbitrationPrioritizesSystemBackAtLeadingEdge() {
+        let right = CGPoint(x: 120, y: 10)
+        let left = CGPoint(x: -120, y: 10)
+        let vertical = CGPoint(x: 10, y: 120)
+
+        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
+            translation: right,
+            velocity: .zero,
+            startLocationX: 20,
+            containerWidth: 390,
+            hasPreviousAnswer: true,
+            canNavigateBack: true,
+            layoutDirection: .leftToRight
+        ), .systemBack)
+        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
+            translation: right,
+            velocity: .zero,
+            startLocationX: 120,
+            containerWidth: 390,
+            hasPreviousAnswer: true,
+            canNavigateBack: true,
+            layoutDirection: .leftToRight
+        ), .pager)
+        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
+            translation: right,
+            velocity: .zero,
+            startLocationX: 120,
+            containerWidth: 390,
+            hasPreviousAnswer: false,
+            canNavigateBack: true,
+            layoutDirection: .leftToRight
+        ), .systemBack)
+        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
+            translation: left,
+            velocity: .zero,
+            startLocationX: 20,
+            containerWidth: 390,
+            hasPreviousAnswer: false,
+            canNavigateBack: true,
+            layoutDirection: .leftToRight
+        ), .pager)
+        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
+            translation: vertical,
+            velocity: .zero,
+            startLocationX: 20,
+            containerWidth: 390,
+            hasPreviousAnswer: false,
+            canNavigateBack: true,
+            layoutDirection: .leftToRight
+        ), .undecided)
+
+        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
+            translation: right,
+            velocity: .zero,
+            startLocationX: 20,
+            containerWidth: 390,
+            hasPreviousAnswer: true,
+            canNavigateBack: false,
+            layoutDirection: .leftToRight
+        ), .pager)
+    }
+
+    func testAnswerPagerGestureArbitrationUsesLeadingDirectionInRTL() {
+        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
+            translation: CGPoint(x: -120, y: 5),
+            velocity: .zero,
+            startLocationX: 370,
+            containerWidth: 390,
+            hasPreviousAnswer: true,
+            canNavigateBack: true,
+            layoutDirection: .rightToLeft
+        ), .systemBack)
+        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
+            translation: CGPoint(x: -120, y: 5),
+            velocity: .zero,
+            startLocationX: 260,
+            containerWidth: 390,
+            hasPreviousAnswer: true,
+            canNavigateBack: true,
+            layoutDirection: .rightToLeft
+        ), .pager)
+
+        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
+            translation: CGPoint(x: -120, y: 5),
+            velocity: .zero,
+            startLocationX: 370,
+            containerWidth: 390,
+            hasPreviousAnswer: false,
+            canNavigateBack: false,
+            layoutDirection: .rightToLeft
+        ), .pager)
+
+        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
+            translation: CGPoint(x: 120, y: 5),
+            velocity: .zero,
+            startLocationX: 370,
+            containerWidth: 390,
+            hasPreviousAnswer: false,
+            canNavigateBack: true,
+            layoutDirection: .rightToLeft
+        ), .pager)
+    }
+
+    @MainActor
+    func testAnswerPagerFeedbackOnlyEmitsForSemanticCompletion() {
+        var events: [NativeHapticFeedbackEvent] = []
+        let action = NativeHapticFeedbackAction(configuration: .init()) { event, _ in
+            events.append(event)
+        }
+        let feedback = NativeAnswerPagerFeedback(action: action)
+
+        feedback.pageDidCommit(false)
+        feedback.forwardBoundaryDidPublish(false)
+        feedback.pageDidCommit(true)
+        feedback.forwardBoundaryDidPublish(true)
+
+        XCTAssertEqual(events, [.selection, .navigationBoundary])
     }
 
     func testRichContentParserProjectsSemanticBlocksAndPreservesTypedLinks() throws {
@@ -454,12 +572,13 @@ final class QuestionAnswerFeatureTests: XCTestCase {
             openedHistory: StubOpenedHistory()
         )
         XCTAssertEqual(endPager.forwardAvailability, .loading)
-        endPager.reportForwardBoundaryReached()
+        XCTAssertFalse(endPager.reportForwardBoundaryReached())
         XCTAssertNil(endPager.boundaryNotice)
         await endPager.prepare()
         XCTAssertEqual(endPager.forwardAvailability, .end)
-        endPager.reportForwardBoundaryReached()
+        XCTAssertTrue(endPager.reportForwardBoundaryReached())
         XCTAssertEqual(endPager.boundaryNotice, "没有更多了")
+        XCTAssertFalse(endPager.reportForwardBoundaryReached())
 
         let failedRepository = StubQuestionAnswerRepository()
         failedRepository.answerResult = .success(QAFixtures.answerDTO)

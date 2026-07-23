@@ -1,11 +1,5 @@
 import Foundation
 
-struct HomeHeaderDTO: Equatable, Sendable {
-    let displayName: String
-    let avatarURL: URL?
-    let unreadCount: Int
-}
-
 struct FollowingUserDTO: Identifiable, Hashable, Sendable {
     let id: String
     let urlToken: String
@@ -48,12 +42,4 @@ struct FollowPageState: Sendable {
     var canLoadMore: Bool { hasLoaded && !isEnd && nextURL != nil && !isLoading }
     var hasNextPage: Bool { hasLoaded && !isEnd && nextURL != nil }
     var nextPageLoadID: String? { nextURL?.absoluteString }
-}
-
-enum HomeEntryIntent: Hashable, Sendable {
-    case search
-    case profile
-    case account
-    case notifications
-    case create
 }

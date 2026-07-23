@@ -385,9 +385,13 @@ final class AnswerPagerStore: ObservableObject {
         await prepareNextIfNeeded(force: true)
     }
 
-    func reportForwardBoundaryReached() {
-        guard case .end = forwardAvailability else { return }
+    @discardableResult
+    func reportForwardBoundaryReached() -> Bool {
+        guard case .end = forwardAvailability,
+              boundaryNotice != "没有更多了"
+        else { return false }
         boundaryNotice = "没有更多了"
+        return true
     }
 
     private func updateNeighbors() {

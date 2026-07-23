@@ -4,6 +4,78 @@ import XCTest
 
 @MainActor
 final class HotSearchStoreTests: XCTestCase {
+    func testHotPaginationAndFailedRefreshKeepLastSuccessfulRefreshTime() async {
+        let initialDate = Date(timeIntervalSince1970: 3_000)
+        var now = initialDate
+        let suite = "HotRefreshMetadataTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let persistence = UserDefaultsFeedChannelRefreshMetadataPersistence(defaults: defaults)
+        let first = item(id: 1)
+        let second = item(id: 2)
+        let next = URL(string: "https://www.zhihu.com/api/v3/hot?page=2")!
+        let repository = HotRepositoryStub(results: [
+            .success(FeedPageDTO(items: [first], nextURL: next, isEnd: false)),
+            .success(FeedPageDTO(items: [second], nextURL: nil, isEnd: true)),
+            .failure(StoreTestError.network),
+        ])
+        let store = HotFeedStore(
+            repository: repository,
+            refreshMetadataPersistence: persistence,
+            now: { now }
+        )
+
+        await store.loadInitialIfNeeded()
+        XCTAssertEqual(store.refreshMetadata.lastSuccessfulRefreshAt, initialDate)
+
+        now = initialDate.addingTimeInterval(10)
+        await store.loadNextPage()
+        XCTAssertEqual(store.refreshMetadata.lastSuccessfulRefreshAt, initialDate)
+
+        now = initialDate.addingTimeInterval(20)
+        await store.refresh()
+        XCTAssertEqual(store.items, [first, second])
+        XCTAssertEqual(store.refreshMetadata.lastSuccessfulRefreshAt, initialDate)
+    }
+
+    func testHotSuccessfulRefreshUpdatesMetadataAndCancellationKeepsNewTime() async {
+        let initialDate = Date(timeIntervalSince1970: 3_500)
+        let refreshedDate = initialDate.addingTimeInterval(60)
+        var now = initialDate
+        let suite = "HotSuccessfulRefreshTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let initial = item(id: 1)
+        let refreshed = item(id: 2)
+        let store = HotFeedStore(
+            repository: HotRepositoryStub(results: [
+                .success(FeedPageDTO(items: [initial], nextURL: nil, isEnd: true)),
+                .success(FeedPageDTO(items: [refreshed], nextURL: nil, isEnd: true)),
+                .failure(URLError(.cancelled)),
+            ]),
+            refreshMetadataPersistence: UserDefaultsFeedChannelRefreshMetadataPersistence(
+                defaults: defaults
+            ),
+            now: { now }
+        )
+
+        await store.loadInitialIfNeeded()
+        now = refreshedDate
+        await store.refresh()
+
+        XCTAssertEqual(store.items, [refreshed])
+        XCTAssertEqual(store.refreshMetadata.lastSuccessfulRefreshAt, refreshedDate)
+        XCTAssertFalse(store.isRefreshing)
+
+        now = refreshedDate.addingTimeInterval(60)
+        await store.refresh()
+
+        XCTAssertEqual(store.items, [refreshed])
+        XCTAssertEqual(store.refreshMetadata.lastSuccessfulRefreshAt, refreshedDate)
+        XCTAssertFalse(store.isRefreshing)
+        XCTAssertNil(store.errorMessage)
+    }
+
     func testHotNextFailureKeepsItemsAndRetryAppendsWithoutDuplicates() async {
         let first = item(id: 1)
         let second = item(id: 2)

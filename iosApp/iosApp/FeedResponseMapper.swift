@@ -1,17 +1,36 @@
 import Foundation
 import UIKit
 
+#if DEBUG
+import os
+#endif
+
 enum FeedProjectionPolicy: Equatable {
     case hot
     case search
 }
 
+enum FeedResponseEndpointCategory: String {
+    case unspecified = "unspecified"
+    case followRecommendations = "follow.recommendations"
+    case followMoments = "follow.moments"
+}
+
 enum FeedResponseMapper {
-    static func page(from data: Data, policy: FeedProjectionPolicy) throws -> FeedPageDTO {
+    static func page(
+        from data: Data,
+        policy: FeedProjectionPolicy,
+        endpointCategory: FeedResponseEndpointCategory = .unspecified
+    ) throws -> FeedPageDTO {
         let envelope: FeedAPIEnvelope
         do {
             envelope = try JSONDecoder.zhihuFeed.decode(FeedAPIEnvelope.self, from: data)
         } catch {
+            #if DEBUG
+            if let decodingError = error as? DecodingError {
+                logDecodingFailure(decodingError, endpointCategory: endpointCategory)
+            }
+            #endif
             throw ZhihuAPIError.malformedPayload
         }
 
@@ -20,12 +39,19 @@ enum FeedResponseMapper {
             .flatMap(\.flattenedEntries)
             .compactMap { item(from: $0, policy: policy) }
             .filter { seen.insert($0.id).inserted }
+        let rawNextURL = envelope.paging?.next
+        let parsedNextURL = rawNextURL.flatMap(URL.init(string:))
         let nextURL: URL?
         do {
-            nextURL = try ZhihuAPIURLPolicy.validatedPagingURL(
-                envelope.paging?.next.flatMap(URL.init(string:))
-            )
+            nextURL = try ZhihuAPIURLPolicy.validatedPagingURL(parsedNextURL)
         } catch {
+            #if DEBUG
+            logPagingValidationFailure(
+                parsedURL: parsedNextURL,
+                endpointCategory: endpointCategory,
+                error: error
+            )
+            #endif
             throw ZhihuAPIError.malformedPayload
         }
         return FeedPageDTO(
@@ -34,6 +60,88 @@ enum FeedResponseMapper {
             isEnd: envelope.paging?.isEnd ?? true
         )
     }
+
+    #if DEBUG
+    private static let diagnosticsLogger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.github.zly2006.zhplus.ios",
+        category: "FeedDecodeDiagnostics"
+    )
+
+    private static func logDecodingFailure(
+        _ error: DecodingError,
+        endpointCategory: FeedResponseEndpointCategory
+    ) {
+        let details = decodingErrorDetails(error)
+        diagnosticsLogger.debug(
+            "FeedDecodeDiagnostics decode_failure endpoint=\(endpointCategory.rawValue, privacy: .public) case=\(details.caseName, privacy: .public) codingPath=\(details.codingPath, privacy: .public) debugDescription=\(details.debugDescription, privacy: .public) expectedType=\(details.expectedType, privacy: .public) underlyingType=\(details.underlyingType, privacy: .public)"
+        )
+    }
+
+    private static func logPagingValidationFailure(
+        parsedURL: URL?,
+        endpointCategory: FeedResponseEndpointCategory,
+        error: Error
+    ) {
+        let host = parsedURL?.host ?? "none"
+        let path = parsedURL?.path.isEmpty == false ? parsedURL?.path ?? "none" : "none"
+        let isRelative = parsedURL.map { $0.scheme == nil } ?? false
+        let errorType = String(reflecting: type(of: error))
+        diagnosticsLogger.debug(
+            "FeedDecodeDiagnostics paging_validation_failure endpoint=\(endpointCategory.rawValue, privacy: .public) host=\(host, privacy: .public) path=\(path, privacy: .public) isRelative=\(isRelative, privacy: .public) errorType=\(errorType, privacy: .public)"
+        )
+    }
+
+    private static func decodingErrorDetails(
+        _ error: DecodingError
+    ) -> (
+        caseName: String,
+        codingPath: String,
+        debugDescription: String,
+        expectedType: String,
+        underlyingType: String
+    ) {
+        let caseName: String
+        let context: DecodingError.Context
+        let expectedType: String
+        switch error {
+        case let .typeMismatch(type, errorContext):
+            caseName = "typeMismatch"
+            context = errorContext
+            expectedType = String(reflecting: type)
+        case let .valueNotFound(type, errorContext):
+            caseName = "valueNotFound"
+            context = errorContext
+            expectedType = String(reflecting: type)
+        case let .keyNotFound(key, errorContext):
+            caseName = "keyNotFound"
+            context = errorContext
+            expectedType = key.stringValue
+        case let .dataCorrupted(errorContext):
+            caseName = "dataCorrupted"
+            context = errorContext
+            expectedType = "none"
+        @unknown default:
+            caseName = "unknown"
+            context = DecodingError.Context(
+                codingPath: [],
+                debugDescription: "Unknown DecodingError case"
+            )
+            expectedType = "none"
+        }
+        let codingPath = context.codingPath
+            .map { key in key.intValue.map { "[\($0)]" } ?? key.stringValue }
+            .joined(separator: ".")
+        let underlyingType = context.underlyingError
+            .map { String(reflecting: type(of: $0)) } ?? "none"
+        return (
+            caseName,
+            codingPath.isEmpty ? "root" : codingPath,
+            context.debugDescription,
+            expectedType,
+            underlyingType
+        )
+    }
+    #endif
 
     static func suggestions(from data: Data) throws -> [SearchSuggestionDTO] {
         do {
@@ -106,7 +214,7 @@ enum FeedResponseMapper {
             )
             route = .question(questionID: numericID, title: title)
         case .pin:
-            title = target.author?.name.trimmedNonEmpty.map { "\(plainText($0))的想法" } ?? "想法"
+            title = target.decodedAuthor?.name.trimmedNonEmpty.map { "\(plainText($0))的想法" } ?? "想法"
             summary = plainTextOptional(target.excerptTitle ?? target.excerpt)
             details = metricText(
                 kind: "想法",
@@ -135,7 +243,7 @@ enum FeedResponseMapper {
             summary: summary,
             details: details,
             sourceLabel: entry.sourceLabel.map(plainText),
-            author: policy == .hot ? nil : target.author?.dto,
+            author: policy == .hot ? nil : target.decodedAuthor?.dto,
             thumbnailURL: policy == .hot ? nil : target.thumbnailURL,
             route: route
         )
@@ -228,8 +336,10 @@ private struct FeedTargetPayload: Decodable {
     let answerCount: Int?
     let thumbnail: String?
     let thumbnailInfo: ThumbnailInfo?
-    let author: Author?
+    let author: AuthorField?
     let question: Question?
+
+    var decodedAuthor: Author? { author?.value }
 
     var thumbnailURL: URL? {
         (thumbnail ?? thumbnailInfo?.thumbnails.first?.url)
@@ -248,6 +358,35 @@ private struct FeedTargetPayload: Decodable {
         let id: JSONIdentifier?
         let title: String?
         let name: String?
+    }
+
+    struct AuthorField: Decodable {
+        let value: Author?
+
+        init(from decoder: Decoder) throws {
+            do {
+                _ = try decoder.container(keyedBy: ShapeKey.self)
+            } catch DecodingError.typeMismatch {
+                value = nil
+                return
+            }
+            value = try Author(from: decoder)
+        }
+
+        private struct ShapeKey: CodingKey {
+            let stringValue: String
+            let intValue: Int?
+
+            init?(stringValue: String) {
+                self.stringValue = stringValue
+                intValue = nil
+            }
+
+            init?(intValue: Int) {
+                stringValue = String(intValue)
+                self.intValue = intValue
+            }
+        }
     }
 
     struct Author: Decodable {

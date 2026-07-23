@@ -1,0 +1,56 @@
+{
+  "version": 2,
+  "name": "Zhihu++ Swift",
+  "identifier": "com.github.zly2006.zhplus.ios",
+  "subtitle": "面向 iPhone 和 iPad 的第三方知乎客户端",
+  "description": "Zhihu++ 的原生 Swift 版本。首次添加此源后，可在 SideStore 中获取来自 GitHub Release 的正式更新。",
+  "iconURL": "https://raw.githubusercontent.com/kangyun1994/zhihu-plus-plus-swift/main/iosApp/iosApp/Assets.xcassets/AppIcon.appiconset/icon-1024.png",
+  "website": "https://github.com/kangyun1994/zhihu-plus-plus-swift",
+  "tintColor": "#66CCFF",
+  "featuredApps": [
+    "com.github.zly2006.zhplus.ios"
+  ],
+  "apps": [
+    {
+      "name": "Zhihu++",
+      "bundleIdentifier": "com.github.zly2006.zhplus.ios",
+      "developerName": "zly2006 与社区贡献者",
+      "subtitle": "原生 Swift 第三方知乎客户端",
+      "localizedDescription": "支持推荐、关注、热榜、日报、搜索、问题、回答、文章、想法、评论、收藏及个人主页等功能。",
+      "iconURL": "https://raw.githubusercontent.com/kangyun1994/zhihu-plus-plus-swift/main/iosApp/iosApp/Assets.xcassets/AppIcon.appiconset/icon-1024.png",
+      "tintColor": "#66CCFF",
+      "category": "social",
+      "versions": [
+        {
+          "version": "0.2.0",
+          "buildVersion": "3",
+          "date": "2026-07-23",
+          "localizedDescription": "首页支持推荐、关注、热榜和日报横向切换，增加一小时闲置自动刷新、更新时间提示和首页双击刷新；优化回答、评论及图片手势，修复推荐详情返回位置和系统边缘返回冲突。推荐流每页请求 40 条。",
+          "downloadURL": "https://github.com/kangyun1994/zhihu-plus-plus-swift/releases/download/v0.2.0/ZhihuPlusPlus-0.2.0-unsigned-final.ipa",
+          "size": 2840557,
+          "sha256": "794dac479967282b55f3f4f1fd69db25ad76313951637b6ae5ca23231515b28b",
+          "minOSVersion": "16.0"
+        },
+        {
+          "version": "0.1.1",
+          "buildVersion": "2",
+          "date": "2026-07-22",
+          "localizedDescription": "修复搜索结构化推广卡、个人主页内容导航、自己主页收藏夹格式、登录态 Cookie 保留和问题回答分页。",
+          "downloadURL": "https://github.com/kangyun1994/zhihu-plus-plus-swift/releases/download/v0.1.1/ZhihuPlusPlus-0.1.1-unsigned-final.ipa",
+          "size": 2686112,
+          "sha256": "db7a5761acd89063979d7df213fdeaba22cb47476d9ff3f036efee2aa1213f27",
+          "minOSVersion": "16.0"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {
+          "NSCameraUsageDescription": "用于扫描知乎网页上的登录授权二维码",
+          "NSFaceIDUsageDescription": "用于解锁本机上的知乎++内容",
+          "NSPhotoLibraryAddUsageDescription": "用于将回答和评论中的图片保存到照片"
+        }
+      }
+    }
+  ],
+  "news": []
+}

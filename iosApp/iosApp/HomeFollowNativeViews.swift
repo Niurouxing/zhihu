@@ -1,5 +1,138 @@
 import SwiftUI
 
+struct NativeChannelTaskIdentity: Hashable {
+    let isActive: Bool
+    let value: String?
+}
+
+private struct NativeHomeFeedListLayout: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        content.environment(\.defaultMinListRowHeight, 1)
+    }
+}
+
+private struct NativeHomeFeedScrollTracking: ViewModifier {
+    @Binding var collapseProgress: CGFloat
+    let isActive: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollGeometryChange(for: CGFloat.self) { geometry in
+                NativeHomeFeedScrollMetrics.collapseProgress(
+                    contentOffsetY: geometry.contentOffset.y,
+                    contentInsetTop: geometry.contentInsets.top
+                )
+            } action: { _, newProgress in
+                guard isActive else { return }
+                collapseProgress = newProgress
+            }
+        } else {
+            content
+        }
+    }
+}
+
+enum NativeHomeFeedScrollMetrics {
+    static let collapseDistance = NativeHomeHeaderLayoutPolicy.expandedHeaderHeight
+    static let fallbackCollapseDistance: CGFloat = collapseDistance
+
+    static func collapseProgress(
+        contentOffsetY: CGFloat,
+        contentInsetTop: CGFloat
+    ) -> CGFloat {
+        let effectiveOffset = contentOffsetY + contentInsetTop
+        return min(max(effectiveOffset / collapseDistance, 0), 1)
+    }
+}
+
+struct NativeScrollToTopRequestPolicy {
+    static func shouldHandleChange(
+        previousRequest: UInt,
+        newRequest: UInt
+    ) -> Bool {
+        newRequest > 0 && newRequest != previousRequest
+    }
+}
+
+struct NativeHomeHeaderLayoutPolicy {
+    static let expandedTitleHeight: CGFloat = 76
+    static let channelSelectorHeight: CGFloat = 60
+    static let expandedHeaderHeight = expandedTitleHeight + channelSelectorHeight
+
+    static func normalized(_ collapseProgress: CGFloat) -> CGFloat {
+        min(max(collapseProgress, 0), 1)
+    }
+
+    static func visibleHeaderHeight(collapseProgress: CGFloat) -> CGFloat {
+        expandedHeaderHeight * (1 - normalized(collapseProgress))
+    }
+
+    static func listViewportOrigin(collapseProgress _: CGFloat) -> CGFloat {
+        0
+    }
+
+    static func scrollAnchor(for channel: HomeChannel) -> HomeChannel {
+        channel
+    }
+}
+
+struct NativeRootHeaderVisibility {
+    static let compactThreshold: CGFloat = 0.5
+    static let crossfadeLowerBound: CGFloat = 0.35
+    static let crossfadeUpperBound: CGFloat = 0.65
+
+    static func expandedOpacity(collapseProgress: CGFloat) -> Double {
+        1 - compactOpacity(collapseProgress: collapseProgress)
+    }
+
+    static func compactOpacity(collapseProgress: CGFloat) -> Double {
+        let progress = normalized(collapseProgress)
+        guard progress > crossfadeLowerBound else { return 0 }
+        guard progress < crossfadeUpperBound else { return 1 }
+
+        let range = crossfadeUpperBound - crossfadeLowerBound
+        let fraction = (progress - crossfadeLowerBound) / range
+        return Double(fraction * fraction * (3 - 2 * fraction))
+    }
+
+    static func usesCompactSemantics(collapseProgress: CGFloat) -> Bool {
+        normalized(collapseProgress) >= compactThreshold
+    }
+
+    private static func normalized(_ collapseProgress: CGFloat) -> CGFloat {
+        min(max(collapseProgress, 0), 1)
+    }
+}
+
+struct NativeHomeRefreshIndicatorPresentation {
+    static let minimumPullDistance: CGFloat = 8
+
+    static func isVisible(
+        pullDistance: CGFloat,
+        isRefreshing: Bool
+    ) -> Bool {
+        isRefreshing || pullDistance >= minimumPullDistance
+    }
+}
+
+extension View {
+    func nativeHomeFeedListLayout() -> some View {
+        modifier(NativeHomeFeedListLayout())
+    }
+
+    func nativeHomeFeedScrollTracking(
+        collapseProgress: Binding<CGFloat>,
+        isActive: Bool
+    ) -> some View {
+        modifier(NativeHomeFeedScrollTracking(
+            collapseProgress: collapseProgress,
+            isActive: isActive
+        ))
+    }
+}
+
 private struct NativeRootTitleOffsetKey: PreferenceKey {
     static var defaultValue: CGFloat = .nan
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -10,24 +143,57 @@ private struct NativeRootTitleOffsetKey: PreferenceKey {
 struct NativeRootLargeTitle: View {
     let title: String
     let coordinateSpaceName: String
+    let displaysTitle: Bool
+    let isActive: Bool
+    let isRefreshing: Bool
     @Binding var collapseProgress: CGFloat
+    @State private var latestMinY: CGFloat = .nan
+    @State private var fallbackIsCollapsed = false
 
     init(
         _ title: String,
         coordinateSpaceName: String = "home-root-scroll",
+        displaysTitle: Bool = true,
+        isActive: Bool = true,
+        isRefreshing: Bool = false,
         collapseProgress: Binding<CGFloat>
     ) {
         self.title = title
         self.coordinateSpaceName = coordinateSpaceName
+        self.displaysTitle = displaysTitle
+        self.isActive = isActive
+        self.isRefreshing = isRefreshing
         _collapseProgress = collapseProgress
     }
 
     var body: some View {
-        Text(title)
-            .font(.largeTitle.bold())
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .opacity(1 - collapseProgress)
-            .offset(y: -6 * collapseProgress)
+        Group {
+            if displaysTitle {
+                Text(title)
+                    .font(.largeTitle.bold())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .opacity(1 - collapseProgress)
+                    .offset(y: -6 * collapseProgress)
+            } else {
+                Color.clear
+                    .frame(height: NativeHomeHeaderLayoutPolicy.expandedHeaderHeight)
+                    .overlay(alignment: .top) {
+                        if NativeHomeRefreshIndicatorPresentation.isVisible(
+                            pullDistance: pullDistance,
+                            isRefreshing: isRefreshing
+                        ) {
+                            // The native refresh control lives above this transparent spacer
+                            // and is covered by the fixed opaque header. Keeping one indicator
+                            // inside the spacer makes it enter the revealed overscroll region.
+                            ProgressView()
+                                .controlSize(.regular)
+                                .padding(.top, 14)
+                                .accessibilityLabel("正在更新")
+                                .accessibilityIdentifier("home_refresh_indicator")
+                        }
+                    }
+            }
+        }
             .background {
                 GeometryReader { geometry in
                     Color.clear.preference(
@@ -38,234 +204,336 @@ struct NativeRootLargeTitle: View {
             }
             .onPreferenceChange(NativeRootTitleOffsetKey.self) { minY in
                 guard minY.isFinite else { return }
-                collapseProgress = min(max(-minY / 44, 0), 1)
+                latestMinY = minY
+                reportCollapseProgress(minY: minY)
             }
-            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            .onChange(of: isActive) { active in
+                guard active, latestMinY.isFinite else { return }
+                reportCollapseProgress(minY: latestMinY)
+            }
+            .listRowInsets(displaysTitle
+                ? EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16)
+                : EdgeInsets())
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
+            .accessibilityHidden(!displaysTitle)
             .accessibilityAddTraits(.isHeader)
     }
+
+    private func reportCollapseProgress(minY: CGFloat) {
+        guard isActive else { return }
+        if #available(iOS 18.0, *) { return }
+        let progress = min(
+            max(-minY / NativeHomeFeedScrollMetrics.fallbackCollapseDistance, 0),
+            1
+        )
+        if progress >= 1 {
+            fallbackIsCollapsed = true
+            collapseProgress = 1
+            return
+        }
+        if fallbackIsCollapsed {
+            // A virtualized probe can emit its default value after leaving the List.
+            // Keep the collapsed state until the real probe re-enters from above.
+            if minY > 0 {
+                fallbackIsCollapsed = false
+                collapseProgress = 0
+                return
+            }
+            guard minY < 0 else { return }
+            fallbackIsCollapsed = false
+        }
+        collapseProgress = progress
+    }
+
+    private var pullDistance: CGFloat {
+        guard latestMinY.isFinite else { return 0 }
+        return max(latestMinY, 0)
+    }
+
 }
 
 struct NativeRootCompactTitle: View {
     let title: String
+    let subtitle: String?
     let collapseProgress: CGFloat
 
-    init(_ title: String, collapseProgress: CGFloat) {
+    init(_ title: String, subtitle: String? = nil, collapseProgress: CGFloat) {
         self.title = title
+        self.subtitle = subtitle
         self.collapseProgress = collapseProgress
     }
 
     static func shouldRender(collapseProgress: CGFloat) -> Bool {
-        collapseProgress >= 0.2
+        NativeRootHeaderVisibility.usesCompactSemantics(
+            collapseProgress: collapseProgress
+        )
     }
 
     var body: some View {
-        Text(title)
-            .font(.headline)
-            .opacity(collapseProgress)
-            .offset(y: 3 * (1 - collapseProgress))
-            .accessibilityHidden(collapseProgress < 0.5)
+        VStack(spacing: 0) {
+            Text(title)
+                .font(.headline)
+
+            if let subtitle {
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .opacity(
+                NativeRootHeaderVisibility.compactOpacity(
+                    collapseProgress: collapseProgress
+                )
+            )
+            .accessibilityHidden(
+                !NativeRootHeaderVisibility.usesCompactSemantics(
+                    collapseProgress: collapseProgress
+                )
+            )
     }
 }
 
 @available(iOS 16.0, *)
 struct HomeNativeView: View {
-    @StateObject private var store: HomeFeedNativeStore
-    @State private var titleCollapseProgress: CGFloat = 0
-    let header: HomeHeaderDTO?
+    @ObservedObject private var store: HomeFeedNativeStore
+    @Environment(\.nativeChannelIsActive) private var isActiveChannel
+    @Environment(\.nativeHapticFeedback) private var hapticFeedback
+    @Binding private var collapseProgress: CGFloat
+    @State private var observedScrollToTopRequest: UInt
+    let scrollToTopRequest: UInt
     let onOpen: (FeedItemRoute) -> Void
-    let onEntry: (HomeEntryIntent) -> Void
 
     init(
-        repository: HomeFeedRepository,
-        header: HomeHeaderDTO?,
-        onOpen: @escaping (FeedItemRoute) -> Void,
-        onEntry: @escaping (HomeEntryIntent) -> Void
+        store: HomeFeedNativeStore,
+        collapseProgress: Binding<CGFloat> = .constant(0),
+        scrollToTopRequest: UInt,
+        onOpen: @escaping (FeedItemRoute) -> Void
     ) {
-        _store = StateObject(wrappedValue: HomeFeedNativeStore(repository: repository))
-        self.header = header
+        _store = ObservedObject(wrappedValue: store)
+        _collapseProgress = collapseProgress
+        _observedScrollToTopRequest = State(initialValue: scrollToTopRequest)
+        self.scrollToTopRequest = scrollToTopRequest
         self.onOpen = onOpen
-        self.onEntry = onEntry
     }
 
     var body: some View {
-        List {
-            NativeRootLargeTitle("首页", collapseProgress: $titleCollapseProgress)
+        ScrollViewReader { proxy in
+            List {
+                NativeRootLargeTitle(
+                    "首页",
+                    displaysTitle: false,
+                    isActive: isActiveChannel,
+                    isRefreshing: store.isRefreshing,
+                    collapseProgress: $collapseProgress
+                )
+                    .id(NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .recommendation))
 
-            if store.items.isEmpty, store.isLoading {
-                HStack { Spacer(); ProgressView("正在加载推荐"); Spacer() }
-                    .listRowSeparator(.hidden)
-            }
+                if store.items.isEmpty, store.isLoading {
+                    HStack { Spacer(); ProgressView("正在加载推荐"); Spacer() }
+                        .listRowSeparator(.hidden)
+                }
 
-            ForEach(store.items) { item in
-                FeedItemRow(item: item, showsThumbnail: true) { route in
-                    store.opened(item)
-                    onOpen(route)
+                ForEach(store.items) { item in
+                    FeedItemRow(item: item, showsThumbnail: true) { route in
+                        store.opened(item)
+                        onOpen(route)
+                    }
+                    .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
+                }
+
+                if let message = store.errorMessage {
+                    FeedRetryRow(message: message) { Task { await store.retry() } }
+                } else if store.hasNextPage {
+                    let taskID = NativeChannelTaskIdentity(
+                        isActive: isActiveChannel,
+                        value: store.nextPageLoadID
+                    )
+                    NativeFeedPaginationLoadingRow(title: "正在加载更多推荐")
+                        .listRowSeparator(.hidden)
+                        .task(id: taskID) {
+                            guard taskID.isActive,
+                                  taskID.value == store.nextPageLoadID
+                            else { return }
+                            await store.loadMore()
+                        }
+                } else if store.items.isEmpty, !store.isLoading {
+                    Label("暂无推荐", systemImage: "sparkles")
+                        .foregroundStyle(.secondary)
                 }
             }
-
-            if let message = store.errorMessage {
-                FeedRetryRow(message: message) { Task { await store.retry() } }
-            } else if store.hasNextPage {
-                NativeFeedPaginationLoadingRow(title: "正在加载更多推荐")
-                    .listRowSeparator(.hidden)
-                    .task(id: store.nextPageLoadID) { await store.loadMore() }
-            } else if store.items.isEmpty, !store.isLoading {
-                Label("暂无推荐", systemImage: "sparkles")
-                    .foregroundStyle(.secondary)
+            .listStyle(.plain)
+            .nativeHomeFeedListLayout()
+            .coordinateSpace(name: "home-root-scroll")
+            .nativeHomeFeedScrollTracking(
+                collapseProgress: $collapseProgress,
+                isActive: isActiveChannel
+            )
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .refreshable {
+                guard isActiveChannel else { return }
+                let previousSuccessfulRefresh = store.refreshMetadata.lastSuccessfulRefreshAt
+                await store.refresh()
+                if !Task.isCancelled,
+                   NativeRefreshHapticPolicy.shouldEmit(
+                    previousSuccessfulRefreshAt: previousSuccessfulRefresh,
+                    currentSuccessfulRefreshAt: store.refreshMetadata.lastSuccessfulRefreshAt
+                   ) {
+                    hapticFeedback(.refreshSucceeded)
+                }
+            }
+            .onAppear {
+                // A request token records an action that already happened. Returning
+                // from a pushed answer must not replay it and destroy List's retained
+                // scroll position. New requests are handled by onChange below.
+                observedScrollToTopRequest = scrollToTopRequest
+            }
+            .onChange(of: scrollToTopRequest) { newRequest in
+                let shouldScroll = NativeScrollToTopRequestPolicy.shouldHandleChange(
+                    previousRequest: observedScrollToTopRequest,
+                    newRequest: newRequest
+                )
+                observedScrollToTopRequest = newRequest
+                if shouldScroll {
+                    scrollToTop(proxy, animated: true)
+                }
+            }
+            .task(id: isActiveChannel) {
+                guard isActiveChannel else { return }
+                await store.loadInitialIfNeeded()
             }
         }
-        .listStyle(.plain)
-        .coordinateSpace(name: "home-root-scroll")
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .refreshable { await store.refresh() }
-        .toolbar {
-            if NativeRootCompactTitle.shouldRender(collapseProgress: titleCollapseProgress) {
-                if #available(iOS 26.0, *) {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        NativeRootCompactTitle("首页", collapseProgress: titleCollapseProgress)
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                } else {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        NativeRootCompactTitle("首页", collapseProgress: titleCollapseProgress)
-                    }
-                }
-            }
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button { onEntry(.search) } label: {
-                    Label("搜索", systemImage: "magnifyingglass")
-                }
-                .accessibilityIdentifier("home_search_entry")
-
-                Button { onEntry(.create) } label: {
-                    Label("创作", systemImage: "square.and.pencil")
-                }
-                .accessibilityIdentifier("home_creation_entry")
-
-                Button { onEntry(.notifications) } label: {
-                    notificationIcon
-                }
-                .accessibilityLabel(notificationAccessibilityLabel)
-                .accessibilityIdentifier("home_notifications_entry")
-
-                Button { onEntry(.profile) } label: {
-                    accountAvatar
-                }
-                .accessibilityLabel(header?.displayName ?? "账号")
-                .accessibilityIdentifier("home_account_entry")
-            }
-        }
-        .task { await store.loadInitialIfNeeded() }
         .accessibilityIdentifier("home_native")
     }
 
-    private var notificationAccessibilityLabel: String {
-        guard let count = header?.unreadCount, count > 0 else { return "通知" }
-        return "通知，\(count) 条未读"
-    }
-
-    private var notificationIcon: some View {
-        Image(systemName: "bell")
-            .overlay(alignment: .topTrailing) {
-                if let count = header?.unreadCount, count > 0 {
-                    Text(count > 99 ? "99+" : "\(count)")
-                        .font(.caption2.bold())
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 4)
-                        .background(.red, in: Capsule())
-                        .offset(x: 9, y: -8)
+    private func scrollToTop(_ proxy: ScrollViewProxy, animated: Bool) {
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation {
+                    proxy.scrollTo(
+                        NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .recommendation),
+                        anchor: .top
+                    )
                 }
+            } else {
+                proxy.scrollTo(
+                    NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .recommendation),
+                    anchor: .top
+                )
             }
-    }
-
-    @ViewBuilder
-    private var accountAvatar: some View {
-        if let url = header?.avatarURL {
-            AsyncImage(url: url) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                Image(systemName: "person.crop.circle")
-            }
-            .frame(width: 28, height: 28)
-            .clipShape(Circle())
-        } else {
-            Image(systemName: "person.crop.circle")
         }
     }
 }
 
 struct FollowNativeView: View {
-    @StateObject private var store: FollowNativeStore
+    @ObservedObject private var store: FollowNativeStore
+    @Environment(\.nativeChannelIsActive) private var isActiveChannel
+    @Environment(\.nativeHapticFeedback) private var hapticFeedback
+    @Binding private var collapseProgress: CGFloat
+    let scrollToTopRequest: UInt
     let onOpen: (FeedItemRoute) -> Void
     let onOpenPerson: (PersonRoutePayload) -> Void
 
     init(
-        repository: FollowRepository,
+        store: FollowNativeStore,
+        collapseProgress: Binding<CGFloat> = .constant(0),
+        scrollToTopRequest: UInt,
         onOpen: @escaping (FeedItemRoute) -> Void,
         onOpenPerson: @escaping (PersonRoutePayload) -> Void
     ) {
-        _store = StateObject(wrappedValue: FollowNativeStore(repository: repository))
+        _store = ObservedObject(wrappedValue: store)
+        _collapseProgress = collapseProgress
+        self.scrollToTopRequest = scrollToTopRequest
         self.onOpen = onOpen
         self.onOpenPerson = onOpenPerson
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("关注内容", selection: sectionBinding) {
-                ForEach(FollowSection.allCases) { section in
-                    Text(section.title).tag(section)
+        ScrollViewReader { proxy in
+            List {
+                NativeRootLargeTitle(
+                    "首页",
+                    coordinateSpaceName: followCoordinateSpaceName,
+                    displaysTitle: false,
+                    isActive: isActiveChannel,
+                    isRefreshing: store.isMomentsRefreshing,
+                    collapseProgress: $collapseProgress
+                )
+                    .id(NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .following))
+
+                recentUsers
+
+                if store.moments.items.isEmpty, store.moments.isLoading {
+                    HStack { Spacer(); ProgressView("正在加载关注内容"); Spacer() }
+                        .listRowSeparator(.hidden)
+                }
+
+                ForEach(store.moments.items) { item in
+                    FeedItemRow(item: item, showsThumbnail: true, onOpen: onOpen)
+                        .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
+                }
+
+                if let message = store.moments.errorMessage {
+                    FeedRetryRow(message: message) {
+                        Task { await store.retry(section: .moments) }
+                    }
+                } else if store.moments.hasNextPage {
+                    let taskID = NativeChannelTaskIdentity(
+                        isActive: isActiveChannel,
+                        value: store.moments.nextPageLoadID
+                    )
+                    NativeFeedPaginationLoadingRow(title: "正在加载更多关注内容")
+                        .listRowSeparator(.hidden)
+                        .task(id: taskID) {
+                            guard taskID.isActive,
+                                  taskID.value == store.moments.nextPageLoadID
+                            else { return }
+                            await store.loadMore(section: .moments)
+                        }
+                } else if store.moments.items.isEmpty, !store.moments.isLoading {
+                    Label("暂无关注内容", systemImage: "person.2")
+                        .foregroundStyle(.secondary)
                 }
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-
-            TabView(selection: sectionBinding) {
-                followList(section: .recommendations)
-                    .tag(FollowSection.recommendations)
-                followList(section: .moments)
-                    .tag(FollowSection.moments)
+            .listStyle(.plain)
+            .nativeHomeFeedListLayout()
+            .coordinateSpace(name: followCoordinateSpaceName)
+            .nativeHomeFeedScrollTracking(
+                collapseProgress: $collapseProgress,
+                isActive: isActiveChannel
+            )
+            .refreshable {
+                guard isActiveChannel else { return }
+                let previousSuccessfulRefresh = store.refreshMetadata.lastSuccessfulRefreshAt
+                await store.refresh(section: .moments)
+                if !Task.isCancelled,
+                   NativeRefreshHapticPolicy.shouldEmit(
+                    previousSuccessfulRefreshAt: previousSuccessfulRefresh,
+                    currentSuccessfulRefreshAt: store.refreshMetadata.lastSuccessfulRefreshAt
+                   ) {
+                    hapticFeedback(.refreshSucceeded)
+                }
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
+            .onAppear {
+                if scrollToTopRequest > 0 { scrollToTop(proxy, animated: false) }
+            }
+            .onChange(of: scrollToTopRequest) { _ in scrollToTop(proxy, animated: true) }
         }
-        .navigationTitle("关注")
-        .task { await store.loadInitialIfNeeded() }
+        .navigationTitle("")
+        .task(id: NativeChannelTaskIdentity(
+            isActive: isActiveChannel,
+            value: FollowSection.moments.rawValue
+        )) {
+            guard isActiveChannel else { return }
+            await store.loadMomentsIfNeeded()
+        }
         .accessibilityIdentifier("follow_native")
     }
 
-    private func followList(section: FollowSection) -> some View {
-        let page = section == .recommendations ? store.recommendations : store.moments
-        return List {
-            if section == .recommendations { recentUsers }
-
-            if page.items.isEmpty, page.isLoading {
-                HStack { Spacer(); ProgressView("正在加载关注内容"); Spacer() }
-                    .listRowSeparator(.hidden)
-            }
-
-            ForEach(page.items) { item in
-                FeedItemRow(item: item, showsThumbnail: true, onOpen: onOpen)
-            }
-
-            if let message = page.errorMessage {
-                FeedRetryRow(message: message) {
-                    Task { await store.retry(section: section) }
-                }
-            } else if page.hasNextPage {
-                NativeFeedPaginationLoadingRow(title: "正在加载更多关注内容")
-                    .listRowSeparator(.hidden)
-                    .task(id: page.nextPageLoadID) { await store.loadMore(section: section) }
-            } else if page.items.isEmpty, !page.isLoading {
-                Label("暂无关注内容", systemImage: "person.2")
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .listStyle(.plain)
-        .refreshable { await store.refresh(section: section) }
-    }
+    private let followCoordinateSpaceName = "follow-moments-root-scroll"
 
     @ViewBuilder
     private var recentUsers: some View {
@@ -305,6 +573,7 @@ struct FollowNativeView: View {
                     }
                     .padding(.vertical, 4)
                 }
+                .nativeChannelSwipeExclusion()
             }
         } else if let error = store.recentUsersErrorMessage {
             Section("最近动态") {
@@ -313,14 +582,22 @@ struct FollowNativeView: View {
         }
     }
 
-    private var sectionBinding: Binding<FollowSection> {
-        Binding(
-            get: { store.selectedSection },
-            set: { section in
-                store.select(section)
-                Task { await store.loadIfNeeded(section: section) }
+    private func scrollToTop(_ proxy: ScrollViewProxy, animated: Bool) {
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation {
+                    proxy.scrollTo(
+                        NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .following),
+                        anchor: .top
+                    )
+                }
+            } else {
+                proxy.scrollTo(
+                    NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .following),
+                    anchor: .top
+                )
             }
-        )
+        }
     }
 }
 

@@ -6,18 +6,34 @@ final class HotFeedStore: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var isRefreshing = false
     @Published private(set) var errorMessage: String?
+    @Published private(set) var refreshMetadata: FeedChannelRefreshMetadata
 
     private let repository: HotFeedRepository
+    private let refreshTracker: FeedChannelRefreshTracker
     private var nextURL: URL?
     private var isEnd = false
     private var hasLoaded = false
     private var failedOperation: FailedOperation?
 
-    init(repository: HotFeedRepository) {
+    init(
+        repository: HotFeedRepository,
+        refreshMetadataPersistence: FeedChannelRefreshMetadataPersisting = UserDefaultsFeedChannelRefreshMetadataPersistence(),
+        refreshPolicy: FeedChannelRefreshPolicy = .oneHour,
+        now: @escaping () -> Date = Date.init
+    ) {
         self.repository = repository
+        let refreshTracker = FeedChannelRefreshTracker(
+            channel: .hot,
+            persistence: refreshMetadataPersistence,
+            policy: refreshPolicy,
+            now: now
+        )
+        self.refreshTracker = refreshTracker
+        refreshMetadata = refreshTracker.load()
     }
 
     var canLoadNextPage: Bool { hasLoaded && !isEnd && nextURL != nil }
+    var nextPageLoadID: String? { nextURL?.absoluteString }
 
     func loadInitialIfNeeded() async {
         guard !hasLoaded else { return }
@@ -26,6 +42,22 @@ final class HotFeedStore: ObservableObject {
 
     func refresh() async {
         await replacePage(isRefresh: true)
+    }
+
+    func recordLastViewed() {
+        refreshMetadata = refreshTracker.recordingLastViewed(in: refreshMetadata)
+    }
+
+    func recordLastViewed(at date: Date) {
+        refreshMetadata = refreshTracker.recordingLastViewed(in: refreshMetadata, at: date)
+    }
+
+    func needsRefreshAfterIdle() -> Bool {
+        refreshTracker.needsRefreshAfterIdle(metadata: refreshMetadata)
+    }
+
+    func needsRefreshAfterIdle(at date: Date) -> Bool {
+        refreshTracker.needsRefreshAfterIdle(metadata: refreshMetadata, at: date)
     }
 
     func loadNextPage() async {
@@ -70,6 +102,7 @@ final class HotFeedStore: ObservableObject {
             isEnd = page.isEnd
             hasLoaded = true
             failedOperation = nil
+            refreshMetadata = refreshTracker.recordingSuccessfulRefresh(in: refreshMetadata)
         } catch {
             if error.isNativeRequestCancellation {
                 isLoading = false

@@ -3,11 +3,9 @@ import UIKit
 
 struct QAReadingPreferences: Equatable {
     let pinAnswerDate: Bool
-    let answerSwitchEnabled: Bool
 
     init(defaults: UserDefaults = .standard) {
         pinAnswerDate = defaults.bool(forKey: "pinAnswerDate")
-        answerSwitchEnabled = defaults.string(forKey: "answerSwitchMode") != "off"
     }
 }
 
@@ -15,12 +13,14 @@ struct NativeAnswerPager: View {
     @ObservedObject var store: AnswerPagerStore
     let preferences: QAReadingPreferences
     let onNavigate: (QANavigationIntent) -> Void
+    @Environment(\.nativeHapticFeedback) private var hapticFeedback
 
     var body: some View {
         QAAnswerPagerSurface(
             pager: store,
             answer: store.current,
             preferences: preferences,
+            hapticFeedback: hapticFeedback,
             onNavigate: onNavigate
         )
         .task { await store.prepare() }
@@ -31,6 +31,7 @@ private struct QAAnswerPagerSurface: View {
     @ObservedObject var pager: AnswerPagerStore
     @ObservedObject var answer: AnswerStore
     let preferences: QAReadingPreferences
+    let hapticFeedback: NativeHapticFeedbackAction
     let onNavigate: (QANavigationIntent) -> Void
 
     var body: some View {
@@ -38,7 +39,7 @@ private struct QAAnswerPagerSurface: View {
             QAAnswerPageController(
                 pager: pager,
                 pinAnswerDate: preferences.pinAnswerDate,
-                answerSwitchEnabled: preferences.answerSwitchEnabled,
+                hapticFeedback: hapticFeedback,
                 onNavigate: onNavigate
             )
             if let error = pager.switchError {
@@ -110,6 +111,11 @@ private final class NativeAnswerInteractivePopObserverController: UIViewControll
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        if #available(iOS 26.0, *) {
+            // iOS 26 owns both back-swipe delegates. The answer pager coordinates
+            // with them only through Apple's supported failure requirements.
+            return
+        }
         guard let navigationController,
               navigationController.viewControllers.count > 1,
               let gesture = navigationController.interactivePopGestureRecognizer
@@ -130,21 +136,112 @@ private final class NativeAnswerInteractivePopObserverController: UIViewControll
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        navigationController?.viewControllers.count ?? 0 > 1
+        guard navigationController?.viewControllers.count ?? 0 > 1 else { return false }
+        return previousDelegate?.gestureRecognizerShouldBegin?(gestureRecognizer) ?? true
+    }
+}
+
+enum AnswerPagerLayoutDirection: Equatable {
+    case leftToRight
+    case rightToLeft
+}
+
+enum AnswerPagerHorizontalGestureOwner: Equatable {
+    case pager
+    case systemBack
+    case undecided
+}
+
+struct AnswerPagerGestureArbitrationPolicy {
+    static let horizontalIntentRatio: CGFloat = 1.15
+    static let systemLeadingEdgeWidth: CGFloat = 44
+
+    static func isLeadingToTrailing(
+        horizontalMovement: CGFloat,
+        layoutDirection: AnswerPagerLayoutDirection
+    ) -> Bool {
+        switch layoutDirection {
+        case .leftToRight: horizontalMovement > 0
+        case .rightToLeft: horizontalMovement < 0
+        }
+    }
+
+    static func owner(
+        translation: CGPoint,
+        velocity: CGPoint,
+        startLocationX: CGFloat,
+        containerWidth: CGFloat,
+        hasPreviousAnswer: Bool,
+        canNavigateBack: Bool,
+        layoutDirection: AnswerPagerLayoutDirection
+    ) -> AnswerPagerHorizontalGestureOwner {
+        let movement = abs(velocity.x) > 0.5 || abs(velocity.y) > 0.5
+            ? velocity
+            : translation
+        guard abs(movement.x) > abs(movement.y) * horizontalIntentRatio else {
+            return .undecided
+        }
+        let isLeadingToTrailing = isLeadingToTrailing(
+            horizontalMovement: movement.x,
+            layoutDirection: layoutDirection
+        )
+        guard isLeadingToTrailing else { return .pager }
+        if canNavigateBack,
+           startsInSystemLeadingEdge(
+               locationX: startLocationX,
+               containerWidth: containerWidth,
+               layoutDirection: layoutDirection
+           ) {
+            return .systemBack
+        }
+        guard hasPreviousAnswer else {
+            return canNavigateBack ? .systemBack : .pager
+        }
+        return .pager
+    }
+
+    static func startsInSystemLeadingEdge(
+        locationX: CGFloat,
+        containerWidth: CGFloat,
+        layoutDirection: AnswerPagerLayoutDirection
+    ) -> Bool {
+        guard containerWidth > 0 else { return false }
+        let clampedLocation = min(max(locationX, 0), containerWidth)
+        switch layoutDirection {
+        case .leftToRight:
+            return clampedLocation <= systemLeadingEdgeWidth
+        case .rightToLeft:
+            return clampedLocation >= containerWidth - systemLeadingEdgeWidth
+        }
+    }
+}
+
+@MainActor
+struct NativeAnswerPagerFeedback {
+    let action: NativeHapticFeedbackAction
+
+    func pageDidCommit(_ committed: Bool) {
+        guard committed else { return }
+        action(.selection)
+    }
+
+    func forwardBoundaryDidPublish(_ published: Bool) {
+        guard published else { return }
+        action(.navigationBoundary)
     }
 }
 
 private struct QAAnswerPageController: UIViewControllerRepresentable {
     @ObservedObject var pager: AnswerPagerStore
     let pinAnswerDate: Bool
-    let answerSwitchEnabled: Bool
+    let hapticFeedback: NativeHapticFeedbackAction
     let onNavigate: (QANavigationIntent) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             pager: pager,
             pinAnswerDate: pinAnswerDate,
-            answerSwitchEnabled: answerSwitchEnabled,
+            hapticFeedback: hapticFeedback,
             onNavigate: onNavigate
         )
     }
@@ -173,7 +270,7 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
         context.coordinator.pager = pager
         context.coordinator.onNavigate = onNavigate
         context.coordinator.updatePinAnswerDate(pinAnswerDate)
-        context.coordinator.updateAnswerSwitchEnabled(answerSwitchEnabled)
+        context.coordinator.feedback = NativeAnswerPagerFeedback(action: hapticFeedback)
         context.coordinator.establishSystemEdgePrecedence(in: controller)
         guard let visible = controller.viewControllers?.first as? QAHostedAnswerController else { return }
         if visible.answerID != pager.current.id, !context.coordinator.isTransitioning {
@@ -189,11 +286,12 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate
+    final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate,
+        UIGestureRecognizerDelegate
     {
         var pager: AnswerPagerStore
         var pinAnswerDate: Bool
-        var answerSwitchEnabled: Bool
+        var feedback: NativeAnswerPagerFeedback
         var onNavigate: (QANavigationIntent) -> Void
         var isTransitioning = false
         private var controllers: [Int64: QAHostedAnswerController] = [:]
@@ -202,6 +300,7 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
         private weak var pagingPanGesture: UIPanGestureRecognizer?
         private weak var pageController: UIPageViewController?
         private weak var pagingScrollView: UIScrollView?
+        private var contentPopGate: UIPanGestureRecognizer?
         private var recordedCurrentID: Int64?
         private var recordedPreviousID: Int64?
         private var recordedNextID: Int64?
@@ -209,12 +308,12 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
         init(
             pager: AnswerPagerStore,
             pinAnswerDate: Bool,
-            answerSwitchEnabled: Bool,
+            hapticFeedback: NativeHapticFeedbackAction,
             onNavigate: @escaping (QANavigationIntent) -> Void
         ) {
             self.pager = pager
             self.pinAnswerDate = pinAnswerDate
-            self.answerSwitchEnabled = answerSwitchEnabled
+            feedback = NativeAnswerPagerFeedback(action: hapticFeedback)
             self.onNavigate = onNavigate
         }
 
@@ -237,12 +336,6 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
             guard pinAnswerDate != value else { return }
             pinAnswerDate = value
             refreshHostedRoots()
-        }
-
-        func updateAnswerSwitchEnabled(_ value: Bool) {
-            guard answerSwitchEnabled != value else { return }
-            answerSwitchEnabled = value
-            pagingScrollView?.isScrollEnabled = value
         }
 
         func recordPagingAvailability() {
@@ -287,7 +380,7 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
                 .first
             else { return }
             self.pagingScrollView = pagingScrollView
-            pagingScrollView.isScrollEnabled = answerSwitchEnabled
+            pagingScrollView.isScrollEnabled = true
             let pagePan = pagingScrollView.panGestureRecognizer
 
             if pagingPanGesture !== pagePan {
@@ -303,9 +396,42 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
             if navigationController.viewControllers.count > 1 {
                 interactivePop.isEnabled = true
             }
-            pagePan.require(toFail: interactivePop)
+            if #available(iOS 26.0, *),
+               let contentPop = navigationController.interactiveContentPopGestureRecognizer
+            {
+                let gate = contentPopGate ?? makeContentPopGate(in: pagingScrollView)
+                interactivePop.require(toFail: gate)
+                contentPop.require(toFail: gate)
+                pagePan.require(toFail: interactivePop)
+                pagePan.require(toFail: contentPop)
+            } else {
+                pagePan.require(toFail: interactivePop)
+            }
             relatedNavigationController = navigationController
             relatedPagingPan = pagePan
+        }
+
+        private func makeContentPopGate(in scrollView: UIScrollView) -> UIPanGestureRecognizer {
+            let gate = UIPanGestureRecognizer(target: nil, action: nil)
+            gate.delegate = self
+            gate.cancelsTouchesInView = false
+            gate.delaysTouchesBegan = false
+            gate.delaysTouchesEnded = false
+            gate.name = "zhpp.answer-pager-content-pop-gate"
+            scrollView.addGestureRecognizer(gate)
+            contentPopGate = gate
+            return gate
+        }
+
+        func tearDownGestureCoordination() {
+            pagingPanGesture?.removeTarget(self, action: #selector(handlePagePan(_:)))
+            if let gate = contentPopGate {
+                gate.view?.removeGestureRecognizer(gate)
+            }
+            contentPopGate = nil
+            pagingPanGesture = nil
+            relatedPagingPan = nil
+            relatedNavigationController = nil
         }
 
         @objc private func handlePagePan(_ gesture: UIPanGestureRecognizer) {
@@ -322,8 +448,16 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
             guard abs(translation.x) > 72, abs(translation.x) > abs(translation.y),
                   pager.current.initialRoute.kind == .answer
             else { return }
-            if translation.x < 0, case .end = pager.forwardAvailability {
-                pager.reportForwardBoundaryReached()
+            let layoutDirection: AnswerPagerLayoutDirection =
+                gesture.view?.effectiveUserInterfaceLayoutDirection == .rightToLeft
+                ? .rightToLeft
+                : .leftToRight
+            let isForward = !AnswerPagerGestureArbitrationPolicy.isLeadingToTrailing(
+                horizontalMovement: translation.x,
+                layoutDirection: layoutDirection
+            )
+            if isForward, case .end = pager.forwardAvailability {
+                feedback.forwardBoundaryDidPublish(pager.reportForwardBoundaryReached())
             }
         }
 
@@ -367,10 +501,64 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
             isTransitioning = false
             guard completed, let visible = pageViewController.viewControllers?.first else { return }
             guard let visible = visible as? QAHostedAnswerController else { return }
-            guard pager.commitDisplayedAnswer(answerID: visible.answerID) else { return }
+            let committed = pager.commitDisplayedAnswer(answerID: visible.answerID)
+            feedback.pageDidCommit(committed)
+            guard committed else { return }
             recordPagingAvailability()
             Task { await pager.prepareDisplayedAnswer() }
         }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard gestureRecognizer === contentPopGate,
+                  let pan = gestureRecognizer as? UIPanGestureRecognizer,
+                  let view = pan.view
+            else { return true }
+            return gestureOwner(for: pan, in: view) == .pager
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            guard gestureRecognizer === contentPopGate || otherGestureRecognizer === contentPopGate else {
+                return false
+            }
+            let peer = gestureRecognizer === contentPopGate ? otherGestureRecognizer : gestureRecognizer
+            guard peer === pagingPanGesture,
+                  let gate = contentPopGate,
+                  let view = gate.view
+            else { return false }
+            return gestureOwner(for: gate, in: view) == .pager
+        }
+
+        private func gestureOwner(
+            for gesture: UIPanGestureRecognizer,
+            in view: UIView
+        ) -> AnswerPagerHorizontalGestureOwner {
+            let referenceView = pageController?.navigationController?.view ?? view
+            let direction: AnswerPagerLayoutDirection =
+                referenceView.effectiveUserInterfaceLayoutDirection == .rightToLeft
+                ? .rightToLeft
+                : .leftToRight
+            let translation = gesture.translation(in: referenceView)
+            let currentLocation = gesture.location(in: referenceView)
+            return AnswerPagerGestureArbitrationPolicy.owner(
+                translation: translation,
+                velocity: gesture.velocity(in: referenceView),
+                startLocationX: currentLocation.x - translation.x,
+                containerWidth: referenceView.bounds.width,
+                hasPreviousAnswer: pager.previous != nil,
+                canNavigateBack: (pageController?.navigationController?.viewControllers.count ?? 0) > 1,
+                layoutDirection: direction
+            )
+        }
+    }
+
+    static func dismantleUIViewController(
+        _ uiViewController: UIPageViewController,
+        coordinator: Coordinator
+    ) {
+        coordinator.tearDownGestureCoordination()
     }
 }
 

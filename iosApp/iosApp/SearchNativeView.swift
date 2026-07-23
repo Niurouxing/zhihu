@@ -3,8 +3,9 @@ import SwiftUI
 struct SearchNativeView: View {
     @StateObject private var store: SearchStore
     @FocusState private var isSearchFieldFocused: Bool
-    @State private var didRequestInitialFocus = false
+    @State private var lastConsumedFocusRequestToken: UInt = 0
     @Environment(\.nativeSearchPresentation) private var searchPresentation
+    private let focusRequest: NativeSearchFocusRequest
     private let onOpen: (FeedItemRoute) -> Void
 
     init(
@@ -12,6 +13,7 @@ struct SearchNativeView: View {
         repository: SearchRepository,
         historyPersistence: SearchHistoryPersistence = UserDefaultsSearchHistoryPersistence(),
         defaults: UserDefaults = .standard,
+        focusRequest: NativeSearchFocusRequest = .inactive,
         onOpen: @escaping (FeedItemRoute) -> Void
     ) {
         _store = StateObject(
@@ -22,6 +24,7 @@ struct SearchNativeView: View {
                 defaults: defaults
             )
         )
+        self.focusRequest = focusRequest
         self.onOpen = onOpen
     }
 
@@ -62,12 +65,7 @@ struct SearchNativeView: View {
             }
         }
         .task { await store.loadInitialIfNeeded() }
-        .task {
-            guard !didRequestInitialFocus else { return }
-            didRequestInitialFocus = true
-            await Task.yield()
-            isSearchFieldFocused = true
-        }
+        .task(id: focusRequest) { await consumeFocusRequest(focusRequest) }
         .task(id: searchPresentation) {
             await store.updateSuggestionVisibility(searchPresentation)
         }
@@ -81,6 +79,7 @@ struct SearchNativeView: View {
                 .foregroundStyle(.secondary)
             TextField(searchPrompt, text: $store.queryText)
                 .focused($isSearchFieldFocused)
+                .accessibilityIdentifier("search_input")
                 .submitLabel(.search)
                 .textInputAutocapitalization(.never)
                 .disableAutocorrection(true)
@@ -101,6 +100,24 @@ struct SearchNativeView: View {
         .background(.quaternary, in: Capsule())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("search_field")
+    }
+
+    @MainActor
+    private func consumeFocusRequest(_ request: NativeSearchFocusRequest) async {
+        guard NativeSearchFocusRequestPolicy.shouldConsume(
+            request,
+            lastConsumedToken: lastConsumedFocusRequestToken
+        ) else { return }
+        await Task.yield()
+        guard !Task.isCancelled,
+              focusRequest == request,
+              NativeSearchFocusRequestPolicy.shouldConsume(
+                  request,
+                  lastConsumedToken: lastConsumedFocusRequestToken
+              )
+        else { return }
+        lastConsumedFocusRequestToken = request.token
+        isSearchFieldFocused = true
     }
 
     private var searchPrompt: String {

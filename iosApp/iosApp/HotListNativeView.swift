@@ -2,78 +2,131 @@ import SwiftUI
 
 @available(iOS 16.0, *)
 struct HotListNativeView: View {
-    @StateObject private var store: HotFeedStore
-    @State private var titleCollapseProgress: CGFloat = 0
+    @ObservedObject private var store: HotFeedStore
+    @Environment(\.nativeChannelIsActive) private var isActiveChannel
+    @Environment(\.nativeHapticFeedback) private var hapticFeedback
+    @Binding private var collapseProgress: CGFloat
+    private let scrollToTopRequest: UInt
     private let onOpen: (FeedItemRoute) -> Void
 
-    init(repository: HotFeedRepository, onOpen: @escaping (FeedItemRoute) -> Void) {
-        _store = StateObject(wrappedValue: HotFeedStore(repository: repository))
+    init(
+        store: HotFeedStore,
+        collapseProgress: Binding<CGFloat> = .constant(0),
+        scrollToTopRequest: UInt = 0,
+        onOpen: @escaping (FeedItemRoute) -> Void
+    ) {
+        _store = ObservedObject(wrappedValue: store)
+        _collapseProgress = collapseProgress
+        self.scrollToTopRequest = scrollToTopRequest
         self.onOpen = onOpen
     }
 
     var body: some View {
-        List {
-            NativeRootLargeTitle(
-                "热榜",
-                coordinateSpaceName: "hot-root-scroll",
-                collapseProgress: $titleCollapseProgress
+        ScrollViewReader { proxy in
+            List {
+                NativeRootLargeTitle(
+                    "首页",
+                    coordinateSpaceName: "hot-root-scroll",
+                    displaysTitle: false,
+                    isActive: isActiveChannel,
+                    isRefreshing: store.isRefreshing,
+                    collapseProgress: $collapseProgress
+                )
+                .id(NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .hot))
+
+                if store.items.isEmpty, store.isLoading {
+                    HStack {
+                        Spacer()
+                        ProgressView("正在加载热榜")
+                        Spacer()
+                    }
+                    .listRowSeparator(.hidden)
+                }
+
+                ForEach(Array(store.items.enumerated()), id: \.element.id) { index, item in
+                    HStack(alignment: .top, spacing: 12) {
+                        Text("\(index + 1)")
+                            .font(.headline.monospacedDigit())
+                            .foregroundStyle(index < 3 ? Color.accentColor : Color.secondary)
+                            .frame(minWidth: 26, alignment: .trailing)
+                            .padding(.top, 5)
+                            .accessibilityHidden(true)
+                        FeedItemRow(item: item, showsThumbnail: false, onOpen: onOpen)
+                    }
+                    .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 18))
+                }
+
+                if let errorMessage = store.errorMessage {
+                    FeedRetryRow(message: errorMessage) {
+                        Task { await store.retry() }
+                    }
+                } else if store.canLoadNextPage {
+                    let taskID = NativeChannelTaskIdentity(
+                        isActive: isActiveChannel,
+                        value: store.nextPageLoadID
+                    )
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                    .listRowSeparator(.hidden)
+                    .task(id: taskID) {
+                        guard taskID.isActive,
+                              taskID.value == store.nextPageLoadID
+                        else { return }
+                        await store.loadNextPage()
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .nativeHomeFeedListLayout()
+            .coordinateSpace(name: "hot-root-scroll")
+            .nativeHomeFeedScrollTracking(
+                collapseProgress: $collapseProgress,
+                isActive: isActiveChannel
             )
-
-            if store.items.isEmpty, store.isLoading {
-                HStack {
-                    Spacer()
-                    ProgressView("正在加载热榜")
-                    Spacer()
-                }
-                .listRowSeparator(.hidden)
-            }
-
-            ForEach(Array(store.items.enumerated()), id: \.element.id) { index, item in
-                HStack(alignment: .top, spacing: 12) {
-                    Text("\(index + 1)")
-                        .font(.headline.monospacedDigit())
-                        .foregroundStyle(index < 3 ? Color.accentColor : Color.secondary)
-                        .frame(minWidth: 26, alignment: .trailing)
-                        .padding(.top, 5)
-                        .accessibilityHidden(true)
-                    FeedItemRow(item: item, showsThumbnail: false, onOpen: onOpen)
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .refreshable {
+                guard isActiveChannel else { return }
+                let previousSuccessfulRefresh = store.refreshMetadata.lastSuccessfulRefreshAt
+                await store.refresh()
+                if !Task.isCancelled,
+                   NativeRefreshHapticPolicy.shouldEmit(
+                    previousSuccessfulRefreshAt: previousSuccessfulRefresh,
+                    currentSuccessfulRefreshAt: store.refreshMetadata.lastSuccessfulRefreshAt
+                   ) {
+                    hapticFeedback(.refreshSucceeded)
                 }
             }
-
-            if let errorMessage = store.errorMessage {
-                FeedRetryRow(message: errorMessage) {
-                    Task { await store.retry() }
-                }
-            } else if store.canLoadNextPage {
-                HStack {
-                    Spacer()
-                    ProgressView()
-                    Spacer()
-                }
-                .listRowSeparator(.hidden)
-                .task { await store.loadNextPage() }
+            .onAppear {
+                if scrollToTopRequest > 0 { scrollToTop(proxy, animated: false) }
+            }
+            .onChange(of: scrollToTopRequest) { _ in scrollToTop(proxy, animated: true) }
+            .task(id: isActiveChannel) {
+                guard isActiveChannel else { return }
+                await store.loadInitialIfNeeded()
             }
         }
-        .listStyle(.plain)
-        .coordinateSpace(name: "hot-root-scroll")
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if NativeRootCompactTitle.shouldRender(collapseProgress: titleCollapseProgress) {
-                if #available(iOS 26.0, *) {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        NativeRootCompactTitle("热榜", collapseProgress: titleCollapseProgress)
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                } else {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        NativeRootCompactTitle("热榜", collapseProgress: titleCollapseProgress)
-                    }
-                }
-            }
-        }
-        .refreshable { await store.refresh() }
-        .task { await store.loadInitialIfNeeded() }
         .accessibilityIdentifier("hot_list")
+    }
+
+    private func scrollToTop(_ proxy: ScrollViewProxy, animated: Bool) {
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation {
+                    proxy.scrollTo(
+                        NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .hot),
+                        anchor: .top
+                    )
+                }
+            } else {
+                proxy.scrollTo(
+                    NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .hot),
+                    anchor: .top
+                )
+            }
+        }
     }
 }

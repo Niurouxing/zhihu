@@ -15,7 +15,10 @@ struct AppHostView: View {
     var body: some View {
         ZStack {
             if #available(iOS 16.0, *) {
-                NativeAppShell(hostModel: hostModel)
+                NativeAppShell(
+                    hostModel: hostModel,
+                    isAppUnlocked: appLock.state == .unlocked
+                )
             } else {
                 VStack(spacing: 14) {
                     Image(systemName: "iphone.gen3").font(.largeTitle)

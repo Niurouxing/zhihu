@@ -19,6 +19,173 @@ final class DailyNativeContractTests: XCTestCase {
     }
 }
 
+@MainActor
+final class DailyNativeStoreRefreshTests: XCTestCase {
+    func testDailyLatestSuccessUpdatesMetadataButPaginationAndFailureDoNot() async {
+        let initialDate = Date(timeIntervalSince1970: 4_000)
+        var now = initialDate
+        let suite = "DailyRefreshMetadataTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let persistence = UserDefaultsFeedChannelRefreshMetadataPersistence(defaults: defaults)
+        let latest = DailySectionDTO(date: "20260722", stories: [dailyStory(1)])
+        let older = DailySectionDTO(date: "20260721", stories: [dailyStory(2)])
+        let repository = DailyRefreshRepositoryStub(
+            latestResults: [.success(latest), .failure(DailyRefreshTestError.network)],
+            beforeResults: [.success(older)]
+        )
+        let store = DailyNativeStore(
+            repository: repository,
+            refreshMetadataPersistence: persistence,
+            now: { now }
+        )
+
+        await store.loadInitialIfNeeded()
+        XCTAssertEqual(store.refreshMetadata.lastSuccessfulRefreshAt, initialDate)
+
+        now = initialDate.addingTimeInterval(10)
+        await store.loadMore()
+        XCTAssertEqual(store.refreshMetadata.lastSuccessfulRefreshAt, initialDate)
+
+        now = initialDate.addingTimeInterval(20)
+        await store.refresh()
+        XCTAssertEqual(store.sections, [latest, older])
+        XCTAssertEqual(store.refreshMetadata.lastSuccessfulRefreshAt, initialDate)
+        XCTAssertEqual(persistence.load(for: .daily), store.refreshMetadata)
+    }
+
+    func testDailySuccessfulRefreshUpdatesMetadataAndCancellationKeepsNewTime() async {
+        let initialDate = Date(timeIntervalSince1970: 4_500)
+        let refreshedDate = initialDate.addingTimeInterval(60)
+        var now = initialDate
+        let suite = "DailySuccessfulRefreshTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let initial = DailySectionDTO(date: "20260722", stories: [dailyStory(1)])
+        let refreshed = DailySectionDTO(date: "20260723", stories: [dailyStory(2)])
+        let store = DailyNativeStore(
+            repository: DailyRefreshRepositoryStub(
+                latestResults: [
+                    .success(initial),
+                    .success(refreshed),
+                    .failure(URLError(.cancelled)),
+                ],
+                beforeResults: []
+            ),
+            refreshMetadataPersistence: UserDefaultsFeedChannelRefreshMetadataPersistence(
+                defaults: defaults
+            ),
+            now: { now }
+        )
+
+        await store.loadInitialIfNeeded()
+        now = refreshedDate
+        await store.refresh()
+
+        XCTAssertEqual(store.sections, [refreshed])
+        XCTAssertEqual(store.refreshMetadata.lastSuccessfulRefreshAt, refreshedDate)
+        XCTAssertFalse(store.isRefreshing)
+
+        now = refreshedDate.addingTimeInterval(60)
+        await store.refresh()
+
+        XCTAssertEqual(store.sections, [refreshed])
+        XCTAssertEqual(store.refreshMetadata.lastSuccessfulRefreshAt, refreshedDate)
+        XCTAssertFalse(store.isRefreshing)
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testDailyURLCancellationDoesNotPublishFooterError() async {
+        let latest = DailySectionDTO(date: "20260722", stories: [dailyStory(1)])
+        let repository = DailyRefreshRepositoryStub(
+            latestResults: [.success(latest)],
+            beforeResults: [.failure(URLError(.cancelled))]
+        )
+        let store = DailyNativeStore(repository: repository)
+
+        await store.loadInitialIfNeeded()
+        await store.loadMore()
+
+        XCTAssertEqual(store.sections, [latest])
+        XCTAssertEqual(store.nextPageLoadID, latest.date)
+        XCTAssertFalse(store.isLoadingMore)
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testDailyInitialURLCancellationLeavesSilentRetryableState() async {
+        let repository = DailyRefreshRepositoryStub(
+            latestResults: [.failure(URLError(.cancelled))],
+            beforeResults: []
+        )
+        let store = DailyNativeStore(repository: repository)
+
+        await store.loadInitialIfNeeded()
+
+        XCTAssertTrue(store.sections.isEmpty)
+        XCTAssertFalse(store.isLoading)
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testDailyRealPaginationFailureKeepsFriendlyRetryError() async {
+        let latest = DailySectionDTO(date: "20260722", stories: [dailyStory(1)])
+        let repository = DailyRefreshRepositoryStub(
+            latestResults: [.success(latest)],
+            beforeResults: [.failure(DailyRefreshTestError.network)]
+        )
+        let store = DailyNativeStore(repository: repository)
+
+        await store.loadInitialIfNeeded()
+        await store.loadMore()
+
+        XCTAssertEqual(store.sections, [latest])
+        XCTAssertFalse(store.isLoadingMore)
+        XCTAssertEqual(store.errorMessage, "网络失败，请重试")
+    }
+
+    private func dailyStory(_ id: Int64) -> DailyStoryDTO {
+        DailyStoryDTO(
+            id: id,
+            title: "日报 \(id)",
+            sourceURL: URL(string: "https://daily.zhihu.com/story/\(id)")!,
+            hint: "日报",
+            imageURL: nil
+        )
+    }
+}
+
+private enum DailyRefreshTestError: LocalizedError {
+    case network
+
+    var errorDescription: String? { "网络失败，请重试" }
+}
+
+private actor DailyRefreshRepositoryStub: DailyRepository {
+    private var latestResults: [Result<DailySectionDTO, Error>]
+    private var beforeResults: [Result<DailySectionDTO, Error>]
+
+    init(
+        latestResults: [Result<DailySectionDTO, Error>],
+        beforeResults: [Result<DailySectionDTO, Error>]
+    ) {
+        self.latestResults = latestResults
+        self.beforeResults = beforeResults
+    }
+
+    func fetchLatest() async throws -> DailySectionDTO {
+        guard !latestResults.isEmpty else { throw DailyRefreshTestError.network }
+        return try latestResults.removeFirst().get()
+    }
+
+    func fetchBefore(_ date: String) async throws -> DailySectionDTO {
+        guard !beforeResults.isEmpty else { throw DailyRefreshTestError.network }
+        return try beforeResults.removeFirst().get()
+    }
+
+    func resolveDestination(for story: DailyStoryDTO) async -> DailyStoryDestination {
+        .external(story.sourceURL)
+    }
+}
+
 final class PinNativeContractTests: XCTestCase {
     func testPinMapperPreservesBlocksPollRelationshipAndCounts() throws {
         let data = Data(

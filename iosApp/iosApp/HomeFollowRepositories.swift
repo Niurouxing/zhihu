@@ -6,7 +6,7 @@ protocol HomeFeedRepository: Sendable {
 }
 
 actor URLSessionHomeFeedRepository: HomeFeedRepository {
-    private static let initialURL = URL(string: "https://api.zhihu.com/topstory/recommend?limit=20")!
+    private static let initialURL = URL(string: "https://api.zhihu.com/topstory/recommend")!
     private static let touchURL = URL(string: "https://www.zhihu.com/lastread/touch")!
 
     private let client: ZhihuAPIClient
@@ -17,7 +17,9 @@ actor URLSessionHomeFeedRepository: HomeFeedRepository {
 
     func fetchPage(after nextURL: URL?) async throws -> FeedPageDTO {
         let baseURL = try ZhihuAPIURLPolicy.validatedPagingURL(nextURL) ?? Self.initialURL
-        let url = try HomeFollowRequestURL.addingFeedParameters(to: baseURL)
+        let url = try HomeFollowRequestURL.addingRecommendationFeedParameters(
+            to: baseURL
+        )
         let data = try await client.data(for: url, authentication: .accountIfAvailable)
         return try FeedResponseMapper.page(from: data, policy: .search)
     }
@@ -63,7 +65,14 @@ actor URLSessionFollowRepository: FollowRepository {
         let baseURL = try ZhihuAPIURLPolicy.validatedPagingURL(nextURL) ?? initial
         let url = try HomeFollowRequestURL.addingFeedParameters(to: baseURL)
         let data = try await client.data(for: url, authentication: .accountRequired)
-        return try FeedResponseMapper.page(from: data, policy: .search)
+        let endpointCategory: FeedResponseEndpointCategory = section == .recommendations
+            ? .followRecommendations
+            : .followMoments
+        return try FeedResponseMapper.page(
+            from: data,
+            policy: .search,
+            endpointCategory: endpointCategory
+        )
     }
 
     func fetchRecentUsers() async throws -> [FollowingUserDTO] {
@@ -74,9 +83,24 @@ actor URLSessionFollowRepository: FollowRepository {
 
 enum HomeFollowRequestURL {
     private static let include = "data[*].content,excerpt,headline,target.author.badge_v2"
-    private static let pageSize = "20"
+    private static let standardPageSize = "20"
+    private static let recommendationPageSize = "40"
+
+    static func addingRecommendationFeedParameters(to url: URL) throws -> URL {
+        try addingFeedParameters(
+            to: url,
+            pageSize: recommendationPageSize
+        )
+    }
 
     static func addingFeedParameters(to url: URL) throws -> URL {
+        try addingFeedParameters(to: url, pageSize: standardPageSize)
+    }
+
+    private static func addingFeedParameters(
+        to url: URL,
+        pageSize: String
+    ) throws -> URL {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             throw ZhihuAPIError.malformedPayload
         }

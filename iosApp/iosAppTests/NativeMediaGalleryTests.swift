@@ -34,6 +34,13 @@ final class NativeMediaGalleryTests: XCTestCase {
                 viewportHeight: 800
             )
         )
+        XCTAssertFalse(
+            NativeMediaDismissalPolicy.shouldDismiss(
+                translation: CGSize(width: 4, height: 30),
+                predictedEndTranslation: CGSize(width: 6, height: 50),
+                viewportHeight: 800
+            )
+        )
     }
 
     func testPagingUsesViewportWidthAndStopsAtBothBoundaries() {
@@ -67,5 +74,31 @@ final class NativeMediaGalleryTests: XCTestCase {
             ),
             2
         )
+        XCTAssertEqual(
+            NativeMediaPagingPolicy.targetIndex(
+                currentIndex: 1,
+                pageCount: 3,
+                translationWidth: 30,
+                predictedEndTranslationWidth: 40,
+                pageWidth: 400
+            ),
+            1
+        )
+    }
+
+    @MainActor
+    func testGalleryFeedbackOnlyEmitsForChangedPageAndCommittedVerticalDismiss() {
+        var events: [NativeHapticFeedbackEvent] = []
+        let action = NativeHapticFeedbackAction(configuration: .init()) { event, _ in
+            events.append(event)
+        }
+        let feedback = NativeMediaGalleryFeedback(action: action)
+
+        feedback.pageDidCommit(from: 1, to: 1)
+        feedback.verticalDismissDidCommit(false)
+        feedback.pageDidCommit(from: 1, to: 2)
+        feedback.verticalDismissDidCommit(true)
+
+        XCTAssertEqual(events, [.selection, .dismiss])
     }
 }

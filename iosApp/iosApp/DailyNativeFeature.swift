@@ -152,15 +152,33 @@ final class DailyNativeStore: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var isLoadingMore = false
     @Published private(set) var errorMessage: String?
+    @Published private(set) var refreshMetadata: FeedChannelRefreshMetadata
 
     private let repository: DailyRepository
+    private let refreshTracker: FeedChannelRefreshTracker
     private var nextDate: String?
     private var hasLoaded = false
     private var generation: UInt64 = 0
 
-    init(repository: DailyRepository) {
+    init(
+        repository: DailyRepository,
+        refreshMetadataPersistence: FeedChannelRefreshMetadataPersisting = UserDefaultsFeedChannelRefreshMetadataPersistence(),
+        refreshPolicy: FeedChannelRefreshPolicy = .oneHour,
+        now: @escaping () -> Date = Date.init
+    ) {
         self.repository = repository
+        let refreshTracker = FeedChannelRefreshTracker(
+            channel: .daily,
+            persistence: refreshMetadataPersistence,
+            policy: refreshPolicy,
+            now: now
+        )
+        self.refreshTracker = refreshTracker
+        refreshMetadata = refreshTracker.load()
     }
+
+    var isRefreshing: Bool { isLoading && hasLoaded }
+    var nextPageLoadID: String? { nextDate }
 
     func loadInitialIfNeeded() async {
         guard !hasLoaded else { return }
@@ -168,7 +186,27 @@ final class DailyNativeStore: ObservableObject {
     }
 
     func loadLatest() async {
-        await replace { try await repository.fetchLatest() }
+        await replace(recordsSuccessfulRefresh: true) { try await repository.fetchLatest() }
+    }
+
+    func refresh() async {
+        await loadLatest()
+    }
+
+    func recordLastViewed() {
+        refreshMetadata = refreshTracker.recordingLastViewed(in: refreshMetadata)
+    }
+
+    func recordLastViewed(at date: Date) {
+        refreshMetadata = refreshTracker.recordingLastViewed(in: refreshMetadata, at: date)
+    }
+
+    func needsRefreshAfterIdle() -> Bool {
+        refreshTracker.needsRefreshAfterIdle(metadata: refreshMetadata)
+    }
+
+    func needsRefreshAfterIdle(at date: Date) -> Bool {
+        refreshTracker.needsRefreshAfterIdle(metadata: refreshMetadata, at: date)
     }
 
     func load(date: Date, calendar: Calendar = .current) async {
@@ -178,22 +216,27 @@ final class DailyNativeStore: ObservableObject {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd"
         let value = formatter.string(from: requestDate)
-        await replace { try await repository.fetchBefore(value) }
+        await replace(recordsSuccessfulRefresh: false) { try await repository.fetchBefore(value) }
     }
 
     func loadMore() async {
-        guard !isLoadingMore, let nextDate else { return }
+        guard !isLoading, !isLoadingMore, let nextDate else { return }
         isLoadingMore = true
         do {
             let section = try await repository.fetchBefore(nextDate)
+            guard !Task.isCancelled else {
+                isLoadingMore = false
+                return
+            }
             if !section.stories.isEmpty, !sections.contains(where: { $0.id == section.id }) {
                 sections.append(section)
             }
             self.nextDate = section.date
-        } catch is CancellationError {
-            isLoadingMore = false
-            return
         } catch {
+            if Task.isCancelled || error.isNativeRequestCancellation {
+                isLoadingMore = false
+                return
+            }
             errorMessage = error.localizedDescription
         }
         isLoadingMore = false
@@ -203,7 +246,11 @@ final class DailyNativeStore: ObservableObject {
         await repository.resolveDestination(for: story)
     }
 
-    private func replace(operation: () async throws -> DailySectionDTO) async {
+    private func replace(
+        recordsSuccessfulRefresh: Bool,
+        operation: () async throws -> DailySectionDTO
+    ) async {
+        guard !isLoading, !isLoadingMore else { return }
         generation &+= 1
         let current = generation
         isLoading = true
@@ -211,14 +258,22 @@ final class DailyNativeStore: ObservableObject {
         do {
             let section = try await operation()
             guard current == generation else { return }
+            guard !Task.isCancelled else {
+                isLoading = false
+                return
+            }
             sections = section.stories.isEmpty ? [] : [section]
             nextDate = section.date
             hasLoaded = true
-        } catch is CancellationError {
-            if current == generation { isLoading = false }
-            return
+            if recordsSuccessfulRefresh {
+                refreshMetadata = refreshTracker.recordingSuccessfulRefresh(in: refreshMetadata)
+            }
         } catch {
             guard current == generation else { return }
+            if Task.isCancelled || error.isNativeRequestCancellation {
+                isLoading = false
+                return
+            }
             errorMessage = error.localizedDescription
         }
         if current == generation { isLoading = false }
@@ -226,96 +281,163 @@ final class DailyNativeStore: ObservableObject {
 }
 
 struct DailyNativeView: View {
-    @StateObject private var store: DailyNativeStore
-    @State private var selectedDate = Date()
-    @State private var showsDatePicker = false
+    @ObservedObject private var store: DailyNativeStore
+    @Environment(\.nativeChannelIsActive) private var isActiveChannel
+    @Environment(\.nativeHapticFeedback) private var hapticFeedback
+    @Binding private var collapseProgress: CGFloat
+    @State private var navigationTask: Task<Void, Never>?
+    @State private var supplementalLoadTask: Task<Void, Never>?
+    let scrollToTopRequest: UInt
     let onOpen: (DailyStoryDestination) -> Void
 
-    init(repository: DailyRepository, onOpen: @escaping (DailyStoryDestination) -> Void) {
-        _store = StateObject(wrappedValue: DailyNativeStore(repository: repository))
+    init(
+        store: DailyNativeStore,
+        collapseProgress: Binding<CGFloat> = .constant(0),
+        scrollToTopRequest: UInt,
+        onOpen: @escaping (DailyStoryDestination) -> Void
+    ) {
+        _store = ObservedObject(wrappedValue: store)
+        _collapseProgress = collapseProgress
+        self.scrollToTopRequest = scrollToTopRequest
         self.onOpen = onOpen
     }
 
     var body: some View {
-        List {
-            if store.sections.isEmpty, store.isLoading {
-                HStack { Spacer(); ProgressView("正在加载日报"); Spacer() }
-                    .listRowSeparator(.hidden)
-            }
-            ForEach(store.sections) { section in
-                Section(formatted(section.date)) {
-                    ForEach(section.stories) { story in
-                        Button {
-                            Task { onOpen(await store.destination(for: story)) }
-                        } label: {
-                            HStack(alignment: .top, spacing: 12) {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(story.title).font(.headline).foregroundStyle(.primary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    Text(story.hint).font(.caption).foregroundStyle(.secondary)
+        ScrollViewReader { proxy in
+            List {
+                NativeRootLargeTitle(
+                    "首页",
+                    coordinateSpaceName: "daily-root-scroll",
+                    displaysTitle: false,
+                    isActive: isActiveChannel,
+                    isRefreshing: store.isRefreshing,
+                    collapseProgress: $collapseProgress
+                )
+                    .id(NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .daily))
+
+                if store.sections.isEmpty, store.isLoading {
+                    HStack { Spacer(); ProgressView("正在加载日报"); Spacer() }
+                        .listRowSeparator(.hidden)
+                }
+                ForEach(store.sections) { section in
+                    Section(formatted(section.date)) {
+                        ForEach(section.stories) { story in
+                            Button {
+                                navigationTask?.cancel()
+                                navigationTask = Task {
+                                    let destination = await store.destination(for: story)
+                                    guard !Task.isCancelled else { return }
+                                    onOpen(destination)
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                if let imageURL = story.imageURL {
-                                    AsyncImage(url: imageURL) { image in
-                                        image.resizable().scaledToFill()
-                                    } placeholder: {
-                                        Color.secondary.opacity(0.12)
+                            } label: {
+                                HStack(alignment: .top, spacing: 12) {
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(story.title).font(.headline).foregroundStyle(.primary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                        Text(story.hint).font(.caption).foregroundStyle(.secondary)
                                     }
-                                    .frame(width: 92, height: 68)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    if let imageURL = story.imageURL {
+                                        AsyncImage(url: imageURL) { image in
+                                            image.resizable().scaledToFill()
+                                        } placeholder: {
+                                            Color.secondary.opacity(0.12)
+                                        }
+                                        .frame(width: 92, height: 68)
+                                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                    }
                                 }
                             }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-            if let error = store.errorMessage {
-                FeedRetryRow(message: error) { Task { await store.loadLatest() } }
-            } else if !store.sections.isEmpty {
-                HStack { Spacer(); ProgressView(); Spacer() }
-                    .listRowSeparator(.hidden)
-                    .task { await store.loadMore() }
-            } else if !store.isLoading {
-                Text("暂无日报内容").foregroundStyle(.secondary)
-            }
-        }
-        .listStyle(.plain)
-        .navigationTitle("知乎日报")
-        .refreshable { await store.loadLatest() }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { showsDatePicker = true } label: {
-                    Label("选择日期", systemImage: "calendar")
-                }
-            }
-        }
-        .sheet(isPresented: $showsDatePicker) {
-            NavigationView {
-                DatePicker("日期", selection: $selectedDate, in: ...Date(), displayedComponents: .date)
-                    .datePickerStyle(.graphical)
-                    .padding()
-                    .navigationTitle("选择日期")
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("取消") { showsDatePicker = false }
-                        }
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("查看") {
-                                showsDatePicker = false
-                                Task { await store.load(date: selectedDate) }
-                            }
+                            .buttonStyle(.plain)
+                            .listRowInsets(EdgeInsets(top: 6, leading: 18, bottom: 6, trailing: 18))
                         }
                     }
+                }
+                if let error = store.errorMessage {
+                    FeedRetryRow(message: error) {
+                        supplementalLoadTask?.cancel()
+                        supplementalLoadTask = Task { await store.loadLatest() }
+                    }
+                } else if !store.sections.isEmpty {
+                    let taskID = NativeChannelTaskIdentity(
+                        isActive: isActiveChannel,
+                        value: store.nextPageLoadID
+                    )
+                    HStack { Spacer(); ProgressView(); Spacer() }
+                        .listRowSeparator(.hidden)
+                        .task(id: taskID) {
+                            guard taskID.isActive,
+                                  taskID.value == store.nextPageLoadID
+                            else { return }
+                            await store.loadMore()
+                        }
+                } else if !store.isLoading {
+                    Text("暂无日报内容").foregroundStyle(.secondary)
+                }
+            }
+            .listStyle(.plain)
+            .nativeHomeFeedListLayout()
+            .coordinateSpace(name: "daily-root-scroll")
+            .nativeHomeFeedScrollTracking(
+                collapseProgress: $collapseProgress,
+                isActive: isActiveChannel
+            )
+            .navigationTitle("")
+            .refreshable {
+                guard isActiveChannel else { return }
+                let previousSuccessfulRefresh = store.refreshMetadata.lastSuccessfulRefreshAt
+                await store.refresh()
+                if !Task.isCancelled,
+                   NativeRefreshHapticPolicy.shouldEmit(
+                    previousSuccessfulRefreshAt: previousSuccessfulRefresh,
+                    currentSuccessfulRefreshAt: store.refreshMetadata.lastSuccessfulRefreshAt
+                   ) {
+                    hapticFeedback(.refreshSucceeded)
+                }
+            }
+            .onAppear {
+                if scrollToTopRequest > 0 { scrollToTop(proxy, animated: false) }
+            }
+            .onChange(of: scrollToTopRequest) { _ in scrollToTop(proxy, animated: true) }
+            .task(id: isActiveChannel) {
+                guard isActiveChannel else { return }
+                await store.loadInitialIfNeeded()
+            }
+            .onChange(of: isActiveChannel) { isActive in
+                if !isActive {
+                    navigationTask?.cancel()
+                    supplementalLoadTask?.cancel()
+                }
+            }
+            .onDisappear {
+                navigationTask?.cancel()
+                supplementalLoadTask?.cancel()
             }
         }
-        .task { await store.loadInitialIfNeeded() }
         .accessibilityIdentifier("daily_native")
     }
 
     private func formatted(_ date: String) -> String {
         guard date.count == 8 else { return date }
         return "\(date.prefix(4)) 年 \(date.dropFirst(4).prefix(2)) 月 \(date.suffix(2)) 日"
+    }
+
+    private func scrollToTop(_ proxy: ScrollViewProxy, animated: Bool) {
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation {
+                    proxy.scrollTo(
+                        NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .daily),
+                        anchor: .top
+                    )
+                }
+            } else {
+                proxy.scrollTo(
+                    NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .daily),
+                    anchor: .top
+                )
+            }
+        }
     }
 }
 

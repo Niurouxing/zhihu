@@ -1,11 +1,26 @@
 import SwiftUI
 
+enum SideStoreUpdateSource {
+    static let sourceURLString =
+        "https://raw.githubusercontent.com/kangyun1994/zhihu-plus-plus-swift/main/sidestore-source.json"
+    static let sourceURL = URL(string: sourceURLString)!
+    static let addSourceURL: URL = {
+        let unreservedCharacters = CharacterSet.alphanumerics
+            .union(CharacterSet(charactersIn: "-._~"))
+        let encodedSourceURL = sourceURLString.addingPercentEncoding(
+            withAllowedCharacters: unreservedCharacters
+        )!
+        return URL(string: "sidestore://source?url=\(encodedSourceURL)")!
+    }()
+}
+
 @available(iOS 16.0, *)
 struct NativeSettingsView: View {
     @ObservedObject var preferences: NativeShellPreferences
     @ObservedObject var notificationPreferences: NativeNotificationPreferences
     @ObservedObject var systemSettings: NativeSystemIntegrationSettings
     @ObservedObject var appLock: NativeAppLockCoordinator
+    @Environment(\.nativeHapticFeedback) private var hapticFeedback
     let setAppLock: (Bool) -> Void
     @AppStorage("pinAnswerDate") private var pinAnswerDate = false
 
@@ -66,8 +81,14 @@ struct NativeSettingsView: View {
             }
 
             Section {
-                Toggle("左右滑动切换回答", isOn: answerSwitchBinding)
                 Toggle("再次点击当前标签回到顶部或刷新", isOn: topLevelReselectBinding)
+                Toggle("触觉反馈", isOn: hapticsEnabledBinding)
+                Picker("反馈力度", selection: hapticStrengthBinding) {
+                    ForEach(NativeHapticStrength.allCases) { strength in
+                        Text(strength.title).tag(strength)
+                    }
+                }
+                .disabled(!preferences.hapticsEnabled)
                 Picker("默认分享动作", selection: shareActionBinding) {
                     ForEach(NativeDefaultShareAction.allCases) { action in
                         Text(action.title).tag(action)
@@ -79,30 +100,34 @@ struct NativeSettingsView: View {
                 Text("再次点击当前标签时：列表不在顶部则先回到顶部；已经在顶部或连续再次点击则刷新。")
             }
 
-            Section {
-                NavigationLink {
-                    NativeTabConfigurationView(preferences: preferences)
-                } label: {
-                    LabeledContent("底部标签", value: "\(preferences.selectedTabs.count) 个")
-                }
+            Section("App 布局") {
                 Picker("启动时打开", selection: startTabBinding) {
-                    ForEach(preferences.selectedTabs) { tab in
+                    ForEach(NativeAppTab.fixedBottomBarTabs) { tab in
                         Text(tab.title).tag(tab)
                     }
                 }
-                if #available(iOS 26.0, *) {
-                    Toggle("滚动时自动收起标签栏", isOn: autoHideBinding)
-                }
-            } header: {
-                Text("App 布局")
-            } footer: {
-                Text("每个标签保留各自的浏览位置与返回记录。账号入口位于主页头像时，底部不会保留空的账号标签。")
             }
 
             Section("通知") {
                 NavigationLink(value: NativeShellRoute.notificationSettings) {
-                    Label("应用内通知", systemImage: "bell.badge")
+                    Text("应用内通知")
                 }
+            }
+
+            Section("更新") {
+                Link(destination: SideStoreUpdateSource.addSourceURL) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("添加 SideStore 更新源")
+                            .foregroundStyle(.primary)
+                        Text("首次添加后可接收 GitHub Release 更新")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("将在 SideStore 中打开")
             }
 
             Section("系统") {
@@ -114,7 +139,7 @@ struct NativeSettingsView: View {
                     .disabled(!appLock.settingPresentation.canEnable && systemSettings.appLock != true)
                 }
                 NavigationLink(value: NativeShellRoute.systemAndUpdate) {
-                    Label("系统与更新", systemImage: "info.circle")
+                    Text("系统与更新")
                 }
             }
         }
@@ -128,10 +153,6 @@ struct NativeSettingsView: View {
 
     private var startTabBinding: Binding<NativeAppTab> {
         Binding(get: { preferences.startTab }, set: preferences.setStartTab)
-    }
-
-    private var autoHideBinding: Binding<Bool> {
-        Binding(get: { preferences.autoHideTabBar }, set: preferences.setAutoHideTabBar)
     }
 
     private var fontSizeBinding: Binding<Double> {
@@ -175,12 +196,29 @@ struct NativeSettingsView: View {
         Binding(get: { preferences.showsSearchHistory }, set: preferences.setShowsSearchHistory)
     }
 
-    private var answerSwitchBinding: Binding<Bool> {
-        Binding(get: { preferences.answerSwitchEnabled }, set: preferences.setAnswerSwitchEnabled)
-    }
-
     private var topLevelReselectBinding: Binding<Bool> {
         Binding(get: { preferences.topLevelReselectEnabled }, set: preferences.setTopLevelReselectEnabled)
+    }
+
+    private var hapticsEnabledBinding: Binding<Bool> {
+        Binding(get: { preferences.hapticsEnabled }, set: preferences.setHapticsEnabled)
+    }
+
+    private var hapticStrengthBinding: Binding<NativeHapticStrength> {
+        Binding(
+            get: { preferences.hapticStrength },
+            set: previewAndSetHapticStrength
+        )
+    }
+
+    private func previewAndSetHapticStrength(_ strength: NativeHapticStrength) {
+        guard NativeHapticStrengthSelectionPolicy.shouldPreview(
+            current: preferences.hapticStrength,
+            selected: strength,
+            isHapticsEnabled: preferences.hapticsEnabled
+        ) else { return }
+        preferences.setHapticStrength(strength)
+        hapticFeedback.previewStrength(strength)
     }
 
     private var shareActionBinding: Binding<NativeDefaultShareAction> {
@@ -200,54 +238,6 @@ struct NativeSettingsView: View {
                 .accessibilityLabel(title)
                 .accessibilityValue(valueText)
         }
-    }
-}
-
-struct NativeTabConfigurationView: View {
-    @ObservedObject var preferences: NativeShellPreferences
-
-    var body: some View {
-        List {
-            Section {
-                ForEach(availableTabs) { tab in
-                    Button {
-                        preferences.setTabEnabled(tab, enabled: !preferences.selectedTabs.contains(tab))
-                    } label: {
-                        HStack {
-                            Label(tab.title, systemImage: tab.systemImage).foregroundStyle(.primary)
-                            Spacer()
-                            if preferences.selectedTabs.contains(tab) {
-                                Image(systemName: "checkmark").foregroundColor(.accentColor)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(preferences.selectedTabs.contains(tab) && preferences.selectedTabs.count <= 3)
-                }
-            } header: {
-                Text("显示的标签")
-            } footer: {
-                Text("至少保留三个标签。主页头像承担账号入口时，账号标签会从底部实际移除。")
-            }
-
-            Section("排列顺序") {
-                ForEach(preferences.selectedTabs) { tab in
-                    Label(tab.title, systemImage: tab.systemImage)
-                }
-                .onMove(perform: preferences.moveTabs)
-            }
-        }
-        .navigationTitle("底部标签")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { EditButton() }
-    }
-
-    private var availableTabs: [NativeAppTab] {
-        if preferences.accountInHome, preferences.selectedTabs.contains(.home) {
-            return NativeAppTab.allCases.filter { $0 != .account }
-        }
-        return NativeAppTab.allCases
     }
 }
 

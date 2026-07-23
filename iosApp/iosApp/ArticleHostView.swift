@@ -5,7 +5,6 @@ import SwiftUI
 struct ArticleHostView: View {
     @StateObject private var pager: AnswerPagerStore
     @AppStorage("pinAnswerDate") private var pinAnswerDate = false
-    @AppStorage("answerSwitchMode") private var answerSwitchMode = "horizontal"
     let onNavigate: (QANavigationIntent) -> Void
 
     init(
@@ -27,18 +26,14 @@ struct ArticleHostView: View {
     var body: some View {
         NativeAnswerPager(
             store: pager,
-            preferences: QAReadingPreferences(
-                pinAnswerDate: pinAnswerDate,
-                answerSwitchEnabled: answerSwitchMode != "off"
-            ),
+            preferences: QAReadingPreferences(pinAnswerDate: pinAnswerDate),
             onNavigate: onNavigate
         )
     }
 }
 
 extension QAReadingPreferences {
-    init(pinAnswerDate: Bool, answerSwitchEnabled: Bool) {
+    init(pinAnswerDate: Bool) {
         self.pinAnswerDate = pinAnswerDate
-        self.answerSwitchEnabled = answerSwitchEnabled
     }
 }

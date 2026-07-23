@@ -1,5 +1,14 @@
 import Foundation
 
+enum CommentComposerPresentation: Equatable {
+    case hidden
+    case active(level: CommentLevelKey)
+
+    func isActive(for level: CommentLevelKey) -> Bool {
+        self == .active(level: level)
+    }
+}
+
 @MainActor
 final class CommentSessionStore: ObservableObject {
     let sessionID: CommentSessionID
@@ -12,7 +21,7 @@ final class CommentSessionStore: ObservableObject {
     @Published private(set) var message: CommentUserMessage?
     @Published private(set) var galleryDestination: CommentMediaGalleryDestination?
     @Published private(set) var scrollToStartLevel: CommentLevelKey?
-    @Published private(set) var expandedReplyRootIDs: Set<String> = []
+    @Published private(set) var composerPresentation: CommentComposerPresentation = .hidden
 
     private let repository: CommentRepository
     private let onOpenPerson: (PersonRoutePayload) -> Void
@@ -103,24 +112,26 @@ final class CommentSessionStore: ObservableObject {
               comment(withID: rootCommentID, in: pages[.root]?.items ?? []) != nil
         else { return }
         let level = CommentLevelKey.replies(rootCommentID: rootCommentID)
-        expandedReplyRootIDs.insert(rootCommentID)
+        navigationPathChanged([level])
         if pages[level] == nil {
             pages[level] = newPage(for: level, generation: 0)
         }
         loadInitial(level: level, invalidating: false)
     }
 
-    func loadMoreReplies(rootCommentID: String) {
-        guard expandedReplyRootIDs.contains(rootCommentID) else { return }
-        loadNext(level: .replies(rootCommentID: rootCommentID))
+    func dismissReplies() {
+        guard activeLevel != .root else { return }
+        navigationPathChanged([])
     }
 
     func navigationPathChanged(_ path: [CommentLevelKey]) {
         guard !isDisposed else { return }
         cancelActiveSubmissionForLevelChange()
+        dismissComposer(for: activeLevel)
         preserveActiveDraft()
         navigationPath = Array(path.prefix(1))
         draft = drafts[activeLevel] ?? CommentComposerDraft()
+        draft.replyTargetCommentID = nil
     }
 
     func setDraftText(_ text: String) {
@@ -143,13 +154,35 @@ final class CommentSessionStore: ObservableObject {
         }
     }
 
-    func setReplyTarget(_ commentID: String) {
-        guard !isDisposed, commentInSession(withID: commentID) != nil else { return }
+    func beginReply(to commentID: String, level requestedLevel: CommentLevelKey? = nil) {
+        let level = requestedLevel ?? activeLevel
+        guard !isDisposed,
+              level == activeLevel,
+              (comment(withID: commentID, in: pages[level]?.items ?? []) != nil
+                || commentInSession(withID: commentID) != nil)
+        else { return }
         draft.replyTargetCommentID = commentID
+        composerPresentation = .active(level: level)
     }
 
-    func clearReplyTarget() {
+    func beginComment(level requestedLevel: CommentLevelKey? = nil) {
+        let level = requestedLevel ?? activeLevel
+        guard !isDisposed, level == activeLevel else { return }
+        switch level {
+        case .root:
+            draft.replyTargetCommentID = nil
+        case let .replies(rootCommentID):
+            guard commentInSession(withID: rootCommentID) != nil else { return }
+            draft.replyTargetCommentID = rootCommentID
+        }
+        composerPresentation = .active(level: level)
+    }
+
+    func dismissComposer(for requestedLevel: CommentLevelKey? = nil) {
+        let level = requestedLevel ?? activeLevel
+        guard level == activeLevel else { return }
         draft.replyTargetCommentID = nil
+        composerPresentation = .hidden
     }
 
     func toggleLike(commentID: String, level requestedLevel: CommentLevelKey? = nil) {
@@ -326,6 +359,8 @@ final class CommentSessionStore: ObservableObject {
     func dispose() {
         guard !isDisposed else { return }
         isDisposed = true
+        composerPresentation = .hidden
+        draft.replyTargetCommentID = nil
         pageTasks.values.forEach { $0.cancel() }
         likeTasks.values.forEach { $0.cancel() }
         submissionTask?.cancel()

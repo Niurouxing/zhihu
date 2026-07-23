@@ -55,7 +55,8 @@ actor URLSessionCommentRepository: CommentRepository {
             level: level,
             sort: sort
         )
-        let url = try applyingInlineReplyPageSize(to: candidateURL, level: level)
+        let sortedURL = try applyingRequestedSort(to: candidateURL, level: level, sort: sort)
+        let url = try applyingInlineReplyPageSize(to: sortedURL, level: level)
         let data = try await client.data(for: url, authentication: .accountRequired)
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let rawData = root["data"] as? [Any]
@@ -241,6 +242,22 @@ actor URLSessionCommentRepository: CommentRepository {
         components.queryItems = queryItems
         guard let sizedURL = components.url else { throw CommentRepositoryError.invalidURL }
         return sizedURL
+    }
+
+    private func applyingRequestedSort(
+        to url: URL,
+        level: CommentLevelKey,
+        sort: CommentSortDTO
+    ) throws -> URL {
+        guard level == .root,
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return url }
+        var queryItems = components.queryItems ?? []
+        queryItems.removeAll { $0.name == "order_by" }
+        queryItems.append(URLQueryItem(name: "order_by", value: sort.queryValue))
+        components.queryItems = queryItems
+        guard let sortedURL = components.url else { throw CommentRepositoryError.invalidURL }
+        return sortedURL
     }
 
     private func rootURL(subject: CommentSubjectDTO) throws -> URL {

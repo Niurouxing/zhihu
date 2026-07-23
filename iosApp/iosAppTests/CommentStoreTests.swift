@@ -19,6 +19,24 @@ final class CommentStoreTests: XCTestCase {
         XCTAssertTrue(store.pages[.root]?.isEnd == true)
     }
 
+    func testChangingRootSortInvalidatesPageAndRequestsLatestSort() async {
+        let repository = CommentRepositoryStub(pages: [
+            .success(CommentPageResult(items: [fixtureComment(id: "hot")], nextURL: nil, isEnd: true)),
+            .success(CommentPageResult(items: [fixtureComment(id: "latest")], nextURL: nil, isEnd: true)),
+        ])
+        let store = makeStore(repository: repository)
+        store.start()
+        await waitUntil { store.pages[.root]?.items.first?.id == "hot" }
+        let scoreGeneration = store.pages[.root]?.acceptanceKey.generation
+
+        store.changeSort(.time)
+        await waitUntil { store.pages[.root]?.items.first?.id == "latest" }
+
+        let requestedSorts = await repository.requestedSorts()
+        XCTAssertEqual(requestedSorts, [.score, .time])
+        XCTAssertEqual(store.pages[.root]?.acceptanceKey.generation, scoreGeneration.map { $0 + 1 })
+    }
+
     func testNextPageFailureRetainsRowsAndRetryContinuesSamePage() async {
         let next = URL(string: "https://www.zhihu.com/api/v4/comment_v5/answers/1/root_comment?page=2")!
         let repository = CommentRepositoryStub(pages: [
@@ -84,7 +102,7 @@ final class CommentStoreTests: XCTestCase {
         XCTAssertEqual(store.scrollToStartLevel, .root)
     }
 
-    func testInlineRepliesKeepRootLevelAndContextReplyTargetsRootComment() async {
+    func testReplySheetUsesReplyLevelAndTargetsRootComment() async {
         let root = fixtureComment(id: "root", childCount: 1)
         let repository = CommentRepositoryStub(
             pages: [
@@ -98,9 +116,12 @@ final class CommentStoreTests: XCTestCase {
         await waitUntil { store.pages[.root]?.items.count == 1 }
         store.openReplies(rootCommentID: "root")
         await waitUntil { store.pages[.replies(rootCommentID: "root")]?.initialLoad == .loaded }
-        XCTAssertTrue(store.expandedReplyRootIDs.contains("root"))
-        XCTAssertEqual(store.navigationPath, [])
-        store.setReplyTarget("root")
+        XCTAssertEqual(store.navigationPath, [.replies(rootCommentID: "root")])
+        store.beginReply(to: "root")
+        XCTAssertEqual(
+            store.composerPresentation,
+            .active(level: .replies(rootCommentID: "root"))
+        )
         store.setDraftText("回复内容")
 
         store.submitDraft()
@@ -110,10 +131,109 @@ final class CommentStoreTests: XCTestCase {
 
         let snapshots = await repository.submissionSnapshots()
         XCTAssertEqual(snapshots.first?.replyToCommentID, "root")
-        XCTAssertEqual(snapshots.first?.level, .root)
+        XCTAssertEqual(snapshots.first?.level, .replies(rootCommentID: "root"))
         XCTAssertEqual(store.pages[.root]?.items.first?.id, "root")
         XCTAssertEqual(store.pages[.root]?.items.first?.childCommentCount, 2)
         XCTAssertEqual(store.pages[.root]?.items.first?.embeddedReplies.last?.id, "reply")
+    }
+
+    func testReplySheetDismissClearsTargetAndHidesComposerWhilePreservingDraftText() async {
+        let root = fixtureComment(id: "root", childCount: 1)
+        let repository = CommentRepositoryStub(pages: [
+            .success(CommentPageResult(items: [root], nextURL: nil, isEnd: true)),
+            .success(CommentPageResult(items: [], nextURL: nil, isEnd: true)),
+        ])
+        let store = makeStore(repository: repository)
+        store.start()
+        await waitUntil { store.pages[.root]?.initialLoad == .loaded }
+        store.setDraftText("一级草稿")
+        store.beginReply(to: "root")
+
+        store.openReplies(rootCommentID: "root")
+        XCTAssertEqual(store.activeLevel, .replies(rootCommentID: "root"))
+        XCTAssertEqual(store.composerPresentation, .hidden)
+        XCTAssertNil(store.draft.replyTargetCommentID)
+        store.setDraftText("二级草稿")
+        store.beginReply(to: "root")
+        XCTAssertEqual(store.draft.replyTargetCommentID, "root")
+
+        store.dismissReplies()
+        XCTAssertEqual(store.activeLevel, .root)
+        XCTAssertEqual(store.draft.text, "一级草稿")
+        XCTAssertNil(store.draft.replyTargetCommentID)
+        XCTAssertEqual(store.composerPresentation, .hidden)
+
+        store.openReplies(rootCommentID: "root")
+        XCTAssertEqual(store.draft.text, "二级草稿")
+        XCTAssertNil(store.draft.replyTargetCommentID)
+        XCTAssertEqual(store.composerPresentation, .hidden)
+    }
+
+    func testCancelTargetedReplyClearsTargetAndHidesComposer() async {
+        let repository = CommentRepositoryStub(pages: [
+            .success(CommentPageResult(items: [fixtureComment(id: "root")], nextURL: nil, isEnd: true)),
+        ])
+        let store = makeStore(repository: repository)
+        store.start()
+        await waitUntil { store.pages[.root]?.initialLoad == .loaded }
+
+        store.beginReply(to: "root")
+        XCTAssertEqual(store.draft.replyTargetCommentID, "root")
+        XCTAssertEqual(store.composerPresentation, .active(level: .root))
+
+        store.dismissComposer(for: .root)
+        XCTAssertNil(store.draft.replyTargetCommentID)
+        XCTAssertEqual(store.composerPresentation, .hidden)
+    }
+
+    func testReplyActionTargetsCommentWithoutOpeningReplySheet() async {
+        let repository = CommentRepositoryStub(pages: [
+            .success(CommentPageResult(items: [fixtureComment(id: "root")], nextURL: nil, isEnd: true)),
+        ])
+        let store = makeStore(repository: repository)
+        store.start()
+        await waitUntil { store.pages[.root]?.initialLoad == .loaded }
+
+        store.beginReply(to: "root", level: .root)
+
+        XCTAssertEqual(store.activeLevel, .root)
+        XCTAssertEqual(store.navigationPath, [])
+        XCTAssertEqual(store.draft.replyTargetCommentID, "root")
+        XCTAssertEqual(store.composerPresentation, .active(level: .root))
+    }
+
+    func testReplySheetSwipeDismissRequiresLeadingEdgeAndHorizontalIntent() {
+        XCTAssertTrue(CommentReplySheetSwipePolicy.shouldDismiss(
+            startLocation: CGPoint(x: 20, y: 200),
+            translation: CGSize(width: 120, height: 20),
+            predictedEndTranslation: CGSize(width: 150, height: 24),
+            containerWidth: 390
+        ))
+        XCTAssertFalse(CommentReplySheetSwipePolicy.shouldDismiss(
+            startLocation: CGPoint(x: 20, y: 200),
+            translation: CGSize(width: 40, height: 120),
+            predictedEndTranslation: CGSize(width: 80, height: 180),
+            containerWidth: 390
+        ))
+        XCTAssertFalse(CommentReplySheetSwipePolicy.shouldDismiss(
+            startLocation: CGPoint(x: 100, y: 200),
+            translation: CGSize(width: 140, height: 10),
+            predictedEndTranslation: CGSize(width: 180, height: 12),
+            containerWidth: 390
+        ))
+    }
+
+    func testReplySheetFeedbackOnlyEmitsAfterCustomEdgeDismissCommit() {
+        var events: [NativeHapticFeedbackEvent] = []
+        let action = NativeHapticFeedbackAction(configuration: .init()) { event, _ in
+            events.append(event)
+        }
+        let feedback = CommentReplySheetFeedback(action: action)
+
+        feedback.edgeDismissDidCommit(false)
+        feedback.edgeDismissDidCommit(true)
+
+        XCTAssertEqual(events, [.dismiss])
     }
 
     func testInlineReplyNextPageAppendsInServerOrderAndPublishesPagingStates() async {
@@ -146,7 +266,7 @@ final class CommentStoreTests: XCTestCase {
         XCTAssertEqual(store.pages[replyLevel]?.items.map(\.id), ["reply-1", "reply-2"])
         XCTAssertFalse(store.pages[replyLevel]?.isEnd ?? true)
 
-        store.loadMoreReplies(rootCommentID: "root")
+        store.loadNextIfNeeded(after: "reply-2", level: replyLevel)
         XCTAssertEqual(store.pages[replyLevel]?.nextPage, .loading)
         await waitUntil { store.pages[replyLevel]?.isEnd == true }
 
@@ -273,6 +393,7 @@ private actor CommentRepositoryStub: CommentRepository {
     private let yieldCount: Int
     private var recordedLikeTargets: [Bool] = []
     private var recordedSnapshots: [CommentSubmissionSnapshotDTO] = []
+    private var recordedSorts: [CommentSortDTO] = []
 
     init(
         pages: [Result<CommentPageResult, Error>],
@@ -292,6 +413,7 @@ private actor CommentRepositoryStub: CommentRepository {
         sort: CommentSortDTO,
         nextURL: URL?
     ) async throws -> CommentPageResult {
+        recordedSorts.append(sort)
         for _ in 0..<yieldCount { await Task.yield() }
         try Task.checkCancellation()
         guard !pages.isEmpty else { throw CommentTestFailure.missingStub }
@@ -312,4 +434,5 @@ private actor CommentRepositoryStub: CommentRepository {
 
     func likeTargets() -> [Bool] { recordedLikeTargets }
     func submissionSnapshots() -> [CommentSubmissionSnapshotDTO] { recordedSnapshots }
+    func requestedSorts() -> [CommentSortDTO] { recordedSorts }
 }

@@ -8,6 +8,7 @@ struct NativeMediaGallery: View {
     let accessibilityPrefix: String
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.nativeHapticFeedback) private var hapticFeedback
     @State private var selectedIndex: Int
     @StateObject private var imageStore = NativeMediaImageStore()
     @State private var zoomedIndices: Set<Int> = []
@@ -187,10 +188,15 @@ struct NativeMediaGallery: View {
                     predictedEndTranslationWidth: value.predictedEndTranslation.width,
                     pageWidth: pageWidth
                 )
+                let previousIndex = selectedIndex
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
                     selectedIndex = target
                     pageDragOffset = 0
                 }
+                NativeMediaGalleryFeedback(action: hapticFeedback).pageDidCommit(
+                    from: previousIndex,
+                    to: target
+                )
             }
     }
 
@@ -214,6 +220,8 @@ struct NativeMediaGallery: View {
                     predictedEndTranslation: value.predictedEndTranslation,
                     viewportHeight: viewportHeight
                 ) {
+                    NativeMediaGalleryFeedback(action: hapticFeedback)
+                        .verticalDismissDidCommit(true)
                     dismiss()
                 } else {
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) { dismissOffset = 0 }
@@ -376,6 +384,21 @@ private struct NativeZoomableRemoteImage: View {
             settledScale = 2
         }
         onZoomChanged(scale > 1.001)
+    }
+}
+
+@MainActor
+struct NativeMediaGalleryFeedback {
+    let action: NativeHapticFeedbackAction
+
+    func pageDidCommit(from previousIndex: Int, to selectedIndex: Int) {
+        guard previousIndex != selectedIndex else { return }
+        action(.selection)
+    }
+
+    func verticalDismissDidCommit(_ committed: Bool) {
+        guard committed else { return }
+        action(.dismiss)
     }
 }
 

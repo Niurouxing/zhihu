@@ -53,4 +53,26 @@ final class NativeLoginLogicTests: XCTestCase {
         XCTAssertEqual(SystemExternalLink.sourceCode.validatedURL?.host, "github.com")
         XCTAssertTrue(SystemExternalLink.openSourceLicense.destination.hasSuffix("/blob/main/LICENSE"))
     }
+
+    func testSideStoreUpdateSourceBuildsPercentEncodedAddSourceURL() throws {
+        let expectedSourceURL =
+            "https://raw.githubusercontent.com/kangyun1994/zhihu-plus-plus-swift/main/sidestore-source.json"
+        XCTAssertEqual(SideStoreUpdateSource.sourceURL.absoluteString, expectedSourceURL)
+        XCTAssertEqual(
+            SideStoreUpdateSource.addSourceURL.absoluteString,
+            "sidestore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2Fkangyun1994%2F"
+                + "zhihu-plus-plus-swift%2Fmain%2Fsidestore-source.json"
+        )
+
+        let components = try XCTUnwrap(URLComponents(
+            url: SideStoreUpdateSource.addSourceURL,
+            resolvingAgainstBaseURL: false
+        ))
+        XCTAssertEqual(components.scheme, "sidestore")
+        XCTAssertEqual(components.host, "source")
+        XCTAssertEqual(
+            components.queryItems?.first(where: { $0.name == "url" })?.value,
+            expectedSourceURL
+        )
+    }
 }
