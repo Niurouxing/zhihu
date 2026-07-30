@@ -61,6 +61,11 @@ protocol PinRepository: Sendable {
     func fetch(pinID: Int64) async throws -> PinDetailDTO
     func setLiked(pinID: Int64, liked: Bool) async throws -> Int
     func vote(pollID: String, optionID: String) async throws
+    func recordReadHistory(pinID: Int64) async
+}
+
+extension PinRepository {
+    func recordReadHistory(pinID: Int64) async {}
 }
 
 actor URLSessionPinRepository: PinRepository {
@@ -99,6 +104,10 @@ actor URLSessionPinRepository: PinRepository {
             additionalHeaders: ["Content-Type": "application/json"],
             authentication: .accountRequired
         )
+    }
+
+    func recordReadHistory(pinID: Int64) async {
+        await client.recordReadHistory(contentToken: String(pinID), contentType: "pin")
     }
 }
 
@@ -219,7 +228,13 @@ enum PinResponseMapper {
         case "article": return .feed(.article(articleID: numericID, title: "关联文章"))
         case "question": return .feed(.question(questionID: numericID, title: "关联问题"))
         case "pin": return .feed(.pin(pinID: numericID))
-        case "video", "zvideo": return .feed(.video(videoID: numericID))
+        case "video", "zvideo":
+            return .feed(.video(.init(
+                contentID: numericID,
+                contentType: .zvideo,
+                title: "关联视频",
+                webURL: url
+            )))
         default: return .external(url)
         }
     }
@@ -264,7 +279,10 @@ enum PinHTMLParser {
         if let data = html.data(using: .utf8),
            let attributed = try? NSAttributedString(
                data: data,
-               options: [.documentType: NSAttributedString.DocumentType.html],
+               options: [
+                   .documentType: NSAttributedString.DocumentType.html,
+                   .characterEncoding: String.Encoding.utf8.rawValue,
+               ],
                documentAttributes: nil
            ) {
             text = attributed.string.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -305,7 +323,9 @@ final class PinNativeStore: ObservableObject {
         isLoading = true
         errorMessage = nil
         do {
-            detail = try await repository.fetch(pinID: route.pinID)
+            let loaded = try await repository.fetch(pinID: route.pinID)
+            detail = loaded
+            Task { await repository.recordReadHistory(pinID: loaded.id) }
         } catch is CancellationError {
             isLoading = false
             return
@@ -353,6 +373,7 @@ final class PinNativeStore: ObservableObject {
 struct PinNativeView: View {
     @StateObject private var store: PinNativeStore
     @State private var gallery: PinGalleryDestination?
+    @State private var posterDocument: NativeContentPosterDocument?
     let onOpenPerson: (PersonRoutePayload) -> Void
     let onOpenLink: (PinLinkDestination) -> Void
     let onOpenComments: (Int64) -> Void
@@ -393,7 +414,19 @@ struct PinNativeView: View {
                 .safeAreaInset(edge: .bottom) { actionBar(detail) }
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
-                        ShareLink(item: detail.sourceURL) { Label("分享", systemImage: "square.and.arrow.up") }
+                        Menu {
+                            Button {
+                                posterDocument = NativeContentPosterDocument(pin: detail)
+                            } label: {
+                                Label("分享内容海报", systemImage: "photo.on.rectangle.angled")
+                            }
+                            ShareLink(item: detail.sourceURL) {
+                                Label("分享链接", systemImage: "square.and.arrow.up")
+                            }
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                        .accessibilityLabel("分享")
                     }
                 }
             } else if store.isLoading {
@@ -409,6 +442,9 @@ struct PinNativeView: View {
         .navigationBarTitleDisplayMode(.inline)
         .fullScreenCover(item: $gallery) { destination in
             NativeMediaGallery(urls: destination.urls, initialIndex: destination.initialIndex)
+        }
+        .sheet(item: $posterDocument) { document in
+            NativeContentPosterShareView(document: document)
         }
         .task { if store.detail == nil { await store.load() } }
         .accessibilityIdentifier("pin_native")

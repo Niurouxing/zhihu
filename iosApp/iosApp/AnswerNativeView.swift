@@ -106,7 +106,13 @@ struct AnswerNativeView: View {
                 )
 
                 if let attachment = content.attachment {
-                    QABodyView(blocks: [.video(UUID(), attachment)], onNavigate: onNavigate)
+                    QABodyView(
+                        blocks: [.video(UUID(), attachment)],
+                        segmentSubject: content.route.kind == .answer
+                            ? .answer(content.route.contentID)
+                            : .article(content.route.contentID),
+                        onNavigate: onNavigate
+                    )
                 }
 
                 VStack(alignment: .trailing, spacing: 5) {
@@ -143,9 +149,51 @@ struct AnswerNativeView: View {
                     let subject: CommentSubjectDTO = content.route.kind == .answer
                         ? .answer(content.route.contentID)
                         : .article(content.route.contentID)
-                    onNavigate(.comments(CommentThreadRouteDTO(subject: subject)))
+                    onNavigate(.comments(CommentThreadRouteDTO(
+                        subject: subject,
+                        shareContext: CommentShareContextDTO(
+                            title: content.title,
+                            excerpt: commentShareExcerpt(from: content.blocks),
+                            sourceURL: content.sourceURL
+                        )
+                    )))
                 }
             )
+        }
+    }
+
+    private func commentShareExcerpt(from blocks: [QABodyBlock]) -> String? {
+        let text = blocks
+            .compactMap(commentShareText)
+            .joined(separator: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard !text.isEmpty else { return nil }
+        let limit = text.index(text.startIndex, offsetBy: min(160, text.count))
+        return String(text[..<limit])
+    }
+
+    private func commentShareText(_ block: QABodyBlock) -> String? {
+        switch block {
+        case let .paragraph(_, runs),
+             let .heading(_, _, runs),
+             let .quote(_, runs),
+             let .segment(_, _, runs):
+            return runs.map(\.text).joined()
+        case let .list(_, _, items):
+            return items.flatMap { item in
+                [item.runs.map(\.text).joined()] + item.nestedLists.flatMap(commentShareListText)
+            }.joined(separator: " ")
+        case let .code(_, _, text), let .formula(_, text):
+            return text
+        case .image, .video, .divider:
+            return nil
+        }
+    }
+
+    private func commentShareListText(_ list: QAListGroup) -> [String] {
+        list.items.flatMap { item in
+            [item.runs.map(\.text).joined()] + item.nestedLists.flatMap(commentShareListText)
         }
     }
 

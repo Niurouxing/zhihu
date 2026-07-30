@@ -118,6 +118,20 @@ enum NativeDefaultShareAction: String, CaseIterable, Identifiable {
     }
 }
 
+enum NativeExternalPageOpeningMode: String, CaseIterable, Identifiable {
+    case inApp
+    case defaultBrowser
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .inApp: return "应用内"
+        case .defaultBrowser: return "默认浏览器"
+        }
+    }
+}
+
 struct NativeContentPresentationPreferences: Equatable {
     var fontSizePercent = 100
     var lineHeightPercent = 160
@@ -182,10 +196,13 @@ final class NativeShellPreferences: ObservableObject {
         static let feedDensity = "nativeFeedDensity"
         static let feedExcerptLines = "nativeFeedExcerptLines"
         static let showFeedThumbnail = "showFeedThumbnail"
+        static let homeRecommendationSource = "homeRecommendationSource"
+        static let homeRefreshTargetItemCount = "homeRefreshTargetItemCount"
         static let showSearchHotSearch = "showSearchHotSearch"
         static let showSearchHistory = "showSearchHistory"
         static let topLevelReselect = "nativeTopLevelReselect"
         static let shareActionMode = "shareActionMode"
+        static let externalPageOpeningMode = "externalPageOpeningMode"
         static let hapticsEnabled = "nativeHapticsEnabled"
         static let hapticStrength = "nativeHapticStrength"
     }
@@ -203,10 +220,13 @@ final class NativeShellPreferences: ObservableObject {
     @Published private(set) var feedDensity: NativeFeedDensity
     @Published private(set) var feedExcerptLines: Int
     @Published private(set) var showsFeedThumbnails: Bool
+    @Published private(set) var homeRecommendationSource: HomeRecommendationSource
+    @Published private(set) var homeRefreshTargetItemCount: Int
     @Published private(set) var showsSearchHotSearch: Bool
     @Published private(set) var showsSearchHistory: Bool
     @Published private(set) var topLevelReselectEnabled: Bool
     @Published private(set) var defaultShareAction: NativeDefaultShareAction
+    @Published private(set) var externalPageOpeningMode: NativeExternalPageOpeningMode
     @Published private(set) var hapticsEnabled: Bool
     @Published private(set) var hapticStrength: NativeHapticStrength
 
@@ -225,6 +245,13 @@ final class NativeShellPreferences: ObservableObject {
         NativeSearchPresentationPreferences(
             showsHotSearch: showsSearchHotSearch,
             showsHistory: showsSearchHistory
+        )
+    }
+
+    var homeRecommendationRefreshConfiguration: HomeRecommendationRefreshConfiguration {
+        HomeRecommendationRefreshConfiguration(
+            source: homeRecommendationSource,
+            targetItemCount: homeRefreshTargetItemCount
         )
     }
 
@@ -294,11 +321,21 @@ final class NativeShellPreferences: ObservableObject {
             ? 2
             : defaults.integer(forKey: Key.feedExcerptLines), to: 1 ... 5)
         showsFeedThumbnails = Self.bool(defaults, key: Key.showFeedThumbnail, defaultValue: true)
+        homeRecommendationSource = defaults.string(forKey: Key.homeRecommendationSource)
+            .flatMap(HomeRecommendationSource.init(rawValue:)) ?? .app
+        homeRefreshTargetItemCount = Self.clamp(
+            defaults.object(forKey: Key.homeRefreshTargetItemCount) == nil
+                ? HomeRecommendationRefreshConfiguration.defaultValue.targetItemCount
+                : defaults.integer(forKey: Key.homeRefreshTargetItemCount),
+            to: HomeRecommendationRefreshConfiguration.targetItemRange
+        )
         showsSearchHotSearch = Self.bool(defaults, key: Key.showSearchHotSearch, defaultValue: true)
         showsSearchHistory = Self.bool(defaults, key: Key.showSearchHistory, defaultValue: true)
         topLevelReselectEnabled = Self.bool(defaults, key: Key.topLevelReselect, defaultValue: true)
         defaultShareAction = defaults.string(forKey: Key.shareActionMode)
             .flatMap(NativeDefaultShareAction.init(rawValue:)) ?? .ask
+        externalPageOpeningMode = defaults.string(forKey: Key.externalPageOpeningMode)
+            .flatMap(NativeExternalPageOpeningMode.init(rawValue:)) ?? .defaultBrowser
         hapticsEnabled = Self.bool(defaults, key: Key.hapticsEnabled, defaultValue: true)
         hapticStrength = defaults.string(forKey: Key.hapticStrength)
             .flatMap(NativeHapticStrength.init(rawValue:)) ?? .standard
@@ -356,6 +393,22 @@ final class NativeShellPreferences: ObservableObject {
         defaults.set(enabled, forKey: Key.showFeedThumbnail)
     }
 
+    func setHomeRecommendationSource(_ source: HomeRecommendationSource) {
+        guard homeRecommendationSource != source else { return }
+        homeRecommendationSource = source
+        defaults.set(source.rawValue, forKey: Key.homeRecommendationSource)
+    }
+
+    func setHomeRefreshTargetItemCount(_ value: Int) {
+        let value = Self.clamp(
+            value,
+            to: HomeRecommendationRefreshConfiguration.targetItemRange
+        )
+        guard homeRefreshTargetItemCount != value else { return }
+        homeRefreshTargetItemCount = value
+        defaults.set(value, forKey: Key.homeRefreshTargetItemCount)
+    }
+
     func setShowsSearchHotSearch(_ enabled: Bool) {
         guard showsSearchHotSearch != enabled else { return }
         showsSearchHotSearch = enabled
@@ -378,6 +431,12 @@ final class NativeShellPreferences: ObservableObject {
         guard defaultShareAction != action else { return }
         defaultShareAction = action
         defaults.set(action.rawValue, forKey: Key.shareActionMode)
+    }
+
+    func setExternalPageOpeningMode(_ mode: NativeExternalPageOpeningMode) {
+        guard externalPageOpeningMode != mode else { return }
+        externalPageOpeningMode = mode
+        defaults.set(mode.rawValue, forKey: Key.externalPageOpeningMode)
     }
 
     func setHapticsEnabled(_ enabled: Bool) {

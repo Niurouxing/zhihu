@@ -3,6 +3,7 @@ import SwiftUI
 @available(iOS 16.0, *)
 struct HotListNativeView: View {
     @ObservedObject private var store: HotFeedStore
+    @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
     @Environment(\.nativeChannelIsActive) private var isActiveChannel
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
     @Binding private var collapseProgress: CGFloat
@@ -43,7 +44,7 @@ struct HotListNativeView: View {
                     .listRowSeparator(.hidden)
                 }
 
-                ForEach(Array(store.items.enumerated()), id: \.element.id) { index, item in
+                ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
                     HStack(alignment: .top, spacing: 12) {
                         Text("\(index + 1)")
                             .font(.headline.monospacedDigit())
@@ -110,6 +111,13 @@ struct HotListNativeView: View {
             }
         }
         .accessibilityIdentifier("hot_list")
+    }
+
+    private var visibleItems: [FeedItemDTO] {
+        FeedQuestionAuthorVisibilityPolicy.visibleItems(
+            from: store.items,
+            blockedMemberIDs: questionAuthorBlocklist.blockedMemberIDs
+        )
     }
 
     private func scrollToTop(_ proxy: ScrollViewProxy, animated: Bool) {

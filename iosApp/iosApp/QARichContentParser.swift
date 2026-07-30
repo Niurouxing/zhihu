@@ -33,7 +33,7 @@ enum QARichContentParser {
         var style: QAInlineStyle = []
         var links: [QALinkDestination] = []
         var currentBlock: BlockContext = .paragraph
-        var list: ListContext?
+        var listStack: [ListContext] = []
         var segmentID: String?
         var spanSegmentScopes: [Bool] = []
         var preformatted = false
@@ -51,7 +51,7 @@ enum QARichContentParser {
                 guard let tokenRange = Range(match.range, in: html) else { continue }
                 consume(String(html[tokenRange]))
             }
-            finishList()
+            while !listStack.isEmpty { finishList() }
             flushBlock()
             return blocks
         }
@@ -86,9 +86,12 @@ enum QARichContentParser {
                 preformatted = true
                 preLanguage = tag.attributes["data-language"]
                 currentBlock = .code
-            case "ul": startList(.unordered)
-            case "ol": startList(.ordered)
-            case "li": runs = []
+            case "ul": startList(.unordered, startIndex: 1)
+            case "ol": startList(
+                .ordered,
+                startIndex: tag.attributes["start"].flatMap(Int.init) ?? 1
+            )
+            case "li": startListItem()
             case "strong", "b": style.insert(.strong)
             case "em", "i": style.insert(.emphasis)
             case "s", "del": style.insert(.strikethrough)
@@ -157,9 +160,7 @@ enum QARichContentParser {
                 preLanguage = nil
                 currentBlock = .paragraph
             case "ul", "ol": finishList()
-            case "li":
-                if let item = normalizedRuns(), !item.isEmpty { list?.items.append(QAListItem(runs: item)) }
-                runs = []
+            case "li": finishListItem()
             case "strong", "b": style.remove(.strong)
             case "em", "i": style.remove(.emphasis)
             case "s", "del": style.remove(.strikethrough)
@@ -187,32 +188,116 @@ enum QARichContentParser {
         }
 
         mutating func startBlock(_ block: BlockContext, segment: String?) {
+            if !listStack.isEmpty {
+                appendListLineBreakIfNeeded()
+                return
+            }
             flushBlock()
             currentBlock = block
             segmentID = segment
         }
 
-        mutating func startList(_ kind: QAListKind) {
-            flushBlock()
-            finishList()
-            list = ListContext(kind: kind, items: [])
+        mutating func startList(_ kind: QAListKind, startIndex: Int) {
+            if listStack.isEmpty {
+                flushBlock()
+            }
+            listStack.append(ListContext(kind: kind, startIndex: startIndex))
         }
 
         mutating func finishList() {
-            guard list != nil else { return }
-            if !runs.isEmpty, let item = normalizedRuns(), !item.isEmpty {
-                self.list?.items.append(QAListItem(runs: item))
+            guard !listStack.isEmpty else { return }
+            finishListItem()
+            let completed = listStack.removeLast()
+            guard !completed.items.isEmpty else { return }
+            let group = QAListGroup(
+                kind: completed.kind,
+                startIndex: completed.startIndex,
+                items: completed.items
+            )
+            guard !listStack.isEmpty else {
+                blocks.append(.list(UUID(), kind: group.kind, items: group.items))
+                return
             }
-            if let completed = self.list, !completed.items.isEmpty {
-                blocks.append(.list(UUID(), kind: completed.kind, items: completed.items))
+            attachNestedList(group)
+        }
+
+        mutating func startListItem() {
+            guard !listStack.isEmpty else {
+                startList(.unordered, startIndex: 1)
+                return startListItem()
             }
-            self.list = nil
-            runs = []
+            finishListItem()
+            listStack[listStack.count - 1].hasOpenItem = true
+        }
+
+        mutating func finishListItem() {
+            guard !listStack.isEmpty else { return }
+            let index = listStack.count - 1
+            guard listStack[index].hasOpenItem else { return }
+            let normalized = normalizedRuns(listStack[index].runs) ?? []
+            let nestedLists = listStack[index].nestedLists
+            if !normalized.isEmpty || !nestedLists.isEmpty {
+                let ordinal = listStack[index].kind == .ordered
+                    ? listStack[index].startIndex + listStack[index].items.count
+                    : nil
+                listStack[index].items.append(
+                    QAListItem(runs: normalized, ordinal: ordinal, nestedLists: nestedLists)
+                )
+            }
+            listStack[index].runs = []
+            listStack[index].nestedLists = []
+            listStack[index].hasOpenItem = false
+        }
+
+        mutating func attachNestedList(_ group: QAListGroup) {
+            let parentIndex = listStack.count - 1
+            if listStack[parentIndex].hasOpenItem {
+                listStack[parentIndex].nestedLists.append(group)
+            } else if !listStack[parentIndex].items.isEmpty {
+                let lastIndex = listStack[parentIndex].items.count - 1
+                let last = listStack[parentIndex].items[lastIndex]
+                listStack[parentIndex].items[lastIndex] = QAListItem(
+                    id: last.id,
+                    runs: last.runs,
+                    ordinal: last.ordinal,
+                    nestedLists: last.nestedLists + [group]
+                )
+            } else {
+                // Zhihu occasionally emits `<ul><ul>…</ul></ul>`. With no
+                // preceding item there is no semantic parent, so keep the
+                // nested items in source order instead of dropping them.
+                listStack[parentIndex].items.append(contentsOf: group.items)
+            }
+        }
+
+        mutating func appendListLineBreakIfNeeded() {
+            guard !listStack.isEmpty else { return }
+            let index = listStack.count - 1
+            guard listStack[index].hasOpenItem,
+                  let last = listStack[index].runs.last,
+                  !last.text.hasSuffix("\n")
+            else { return }
+            listStack[index].runs.append(
+                QAInlineRun(text: "\n", style: style, link: links.last)
+            )
         }
 
         mutating func appendText(_ value: String) {
             guard !value.isEmpty else { return }
-            runs.append(QAInlineRun(text: value, style: style, link: links.last))
+            let run = QAInlineRun(text: value, style: style, link: links.last)
+            if listStack.isEmpty {
+                runs.append(run)
+            } else {
+                let index = listStack.count - 1
+                if !listStack[index].hasOpenItem,
+                   value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return
+                }
+                if !listStack[index].hasOpenItem {
+                    listStack[index].hasOpenItem = true
+                }
+                listStack[index].runs.append(run)
+            }
         }
 
         mutating func flushBlock() {
@@ -237,9 +322,13 @@ enum QARichContentParser {
         }
 
         func normalizedRuns() -> [QAInlineRun]? {
-            guard !runs.isEmpty else { return nil }
-            if preformatted { return runs }
-            var result = runs
+            normalizedRuns(runs)
+        }
+
+        func normalizedRuns(_ sourceRuns: [QAInlineRun]) -> [QAInlineRun]? {
+            guard !sourceRuns.isEmpty else { return nil }
+            if preformatted { return sourceRuns }
+            var result = sourceRuns
             while let first = result.first, first.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 result.removeFirst()
             }
@@ -272,7 +361,11 @@ enum QARichContentParser {
                 return
             }
             flushBlock()
-            let image = QAImageDTO(url: url, altText: tag.attributes["alt"]?.nilIfBlank)
+            let image = QAImageDTO(
+                url: url,
+                altText: tag.attributes["alt"]?.nilIfBlank,
+                dimensions: imageDimensions(tag)
+            )
             blocks.append(.image(image))
             figureImageIndex = blocks.count - 1
         }
@@ -283,7 +376,13 @@ enum QARichContentParser {
                   case let .image(image) = blocks[index]
             else { return }
             blocks[index] = .image(
-                QAImageDTO(id: image.id, url: image.url, caption: caption.nilIfBlank, altText: image.altText)
+                QAImageDTO(
+                    id: image.id,
+                    url: image.url,
+                    caption: caption.nilIfBlank,
+                    altText: image.altText,
+                    dimensions: image.dimensions
+                )
             )
             figureImageIndex = nil
             caption = ""
@@ -303,6 +402,19 @@ enum QARichContentParser {
                 destinationURL: targetURL ?? URL(string: "https://www.zhihu.com/video/\(id)")!
             )
         }
+
+        private func imageDimensions(_ tag: HTMLTag) -> QAImageDimensions? {
+            let fallbackWidth = tag.attributes["width"].flatMap(Int.init)
+            let fallbackHeight = tag.attributes["height"].flatMap(Int.init)
+            let preferredWidth = tag.attributes["data-rawwidth"].flatMap(Int.init) ?? fallbackWidth
+            let preferredHeight = tag.attributes["data-rawheight"].flatMap(Int.init) ?? fallbackHeight
+            if let preferredWidth, let preferredHeight,
+               let dimensions = QAImageDimensions(width: preferredWidth, height: preferredHeight) {
+                return dimensions
+            }
+            guard let fallbackWidth, let fallbackHeight else { return nil }
+            return QAImageDimensions(width: fallbackWidth, height: fallbackHeight)
+        }
     }
 
     private enum BlockContext {
@@ -314,7 +426,20 @@ enum QARichContentParser {
 
     private struct ListContext {
         let kind: QAListKind
+        let startIndex: Int
         var items: [QAListItem]
+        var runs: [QAInlineRun]
+        var nestedLists: [QAListGroup]
+        var hasOpenItem: Bool
+
+        init(kind: QAListKind, startIndex: Int) {
+            self.kind = kind
+            self.startIndex = max(1, startIndex)
+            items = []
+            runs = []
+            nestedLists = []
+            hasOpenItem = false
+        }
     }
 
     private struct VideoBoxContext {
@@ -361,33 +486,7 @@ enum QARichContentParser {
         let url = normalized.hasPrefix("/")
             ? URL(string: normalized, relativeTo: URL(string: "https://www.zhihu.com"))?.absoluteURL
             : URL(string: normalized)
-        guard let url, let scheme = url.scheme?.lowercased() else { return nil }
-        if scheme == "zhihu" {
-            let id = url.path.split(separator: "/").first.flatMap { Int64($0) }
-            switch url.host?.lowercased() {
-            case "answers": return id.map(QALinkDestination.answer)
-            case "articles": return id.map(QALinkDestination.article)
-            case "questions": return id.map(QALinkDestination.question)
-            default: return nil
-            }
-        }
-        guard scheme == "https", url.user == nil, url.password == nil else { return nil }
-        let segments = url.path.split(separator: "/").map(String.init)
-        if url.host?.lowercased() == "link.zhihu.com",
-           let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-            .queryItems?.first(where: { $0.name == "target" })?.value {
-            return resolveLink(target)
-        }
-        if url.host?.lowercased() == "zhuanlan.zhihu.com", segments.count == 2,
-           segments[0] == "p", let id = Int64(segments[1]) { return .article(id) }
-        if segments.count == 4, segments[0] == "question", segments[2] == "answer",
-           let id = Int64(segments[3]) { return .answer(id) }
-        if segments.count == 2, segments[0] == "answer", let id = Int64(segments[1]) { return .answer(id) }
-        if segments.count == 2, segments[0] == "question", let id = Int64(segments[1]) { return .question(id) }
-        if segments.count == 3, segments[0] == "oia", segments[1] == "articles",
-           let id = Int64(segments[2]) { return .article(id) }
-        if segments.count == 2, segments[0] == "people" { return .person(urlToken: segments[1]) }
-        return .external(url)
+        return url.flatMap(QABodyLinkResolver.resolve)
     }
 
     private static func trustedRemoteURL(_ raw: String) -> URL? {
@@ -432,6 +531,124 @@ enum QARichContentParser {
     private static func decodeText(_ value: String, preserveWhitespace: Bool) -> String {
         let decoded = value.decodedHTMLEntities
         return preserveWhitespace ? decoded : decoded.replacingOccurrences(of: "\u{00a0}", with: " ")
+    }
+}
+
+/// A dependency-free readability pass for the TeX source Zhihu embeds in HTML.
+///
+/// This intentionally does not claim to be a complete TeX layout engine. It
+/// handles the compatibility cases supported by the upstream client (escaped
+/// punctuation, spacing commands, and consecutive unbraced scripts), while
+/// preserving unknown commands verbatim so richer rendering can replace it
+/// without losing source information.
+enum QALatexReadableText {
+    static func render(_ latex: String) -> String {
+        var parser = Parser(characters: Array(latex))
+        return parser.renderSequence()
+    }
+
+    private struct Parser {
+        let characters: [Character]
+        var index = 0
+
+        mutating func renderSequence(until terminator: Character? = nil) -> String {
+            var result = ""
+            while index < characters.count {
+                let character = characters[index]
+                if let terminator, character == terminator {
+                    index += 1
+                    break
+                }
+                switch character {
+                case "\\":
+                    result += renderCommand()
+                case "^", "_":
+                    index += 1
+                    result += renderScript(isSuperscript: character == "^")
+                default:
+                    result.append(character)
+                    index += 1
+                }
+            }
+            return result
+        }
+
+        mutating func renderCommand() -> String {
+            index += 1
+            guard index < characters.count else { return "\\" }
+            let character = characters[index]
+            if character.isLetter {
+                let start = index
+                while index < characters.count, characters[index].isLetter {
+                    index += 1
+                }
+                let command = String(characters[start..<index])
+                while index < characters.count, characters[index].isWhitespace {
+                    index += 1
+                }
+                switch command {
+                case "backslash": return "\\"
+                case "quad": return "\u{2003}"
+                case "qquad": return "\u{2003}\u{2003}"
+                default: return "\\\(command)"
+                }
+            }
+            index += 1
+            switch character {
+            case "{", "}", "$", "%", "#", "&", "_": return String(character)
+            case "|": return "‖"
+            case " ": return " "
+            case ",": return "\u{2009}"
+            case ":", ">": return "\u{2005}"
+            case ";": return "\u{2004}"
+            default: return "\\\(character)"
+            }
+        }
+
+        mutating func renderScript(isSuperscript: Bool) -> String {
+            guard index < characters.count else {
+                return isSuperscript ? "^" : "_"
+            }
+            let atom: String
+            if characters[index] == "{" {
+                index += 1
+                atom = renderSequence(until: "}")
+            } else if characters[index] == "\\" {
+                atom = renderCommand()
+            } else {
+                atom = String(characters[index])
+                index += 1
+            }
+            return scriptCharacters(atom, isSuperscript: isSuperscript)
+                ?? "\(isSuperscript ? "^" : "_")(\(atom))"
+        }
+
+        private func scriptCharacters(_ value: String, isSuperscript: Bool) -> String? {
+            let table = isSuperscript ? Self.superscriptCharacters : Self.subscriptCharacters
+            var result = ""
+            for character in value {
+                guard let replacement = table[character] else { return nil }
+                result += replacement
+            }
+            return result
+        }
+
+        private static let superscriptCharacters: [Character: String] = [
+            "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
+            "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+            "+": "⁺", "-": "⁻", "=": "⁼", "(": "⁽", ")": "⁾",
+            "i": "ⁱ", "j": "ʲ", "n": "ⁿ",
+        ]
+
+        private static let subscriptCharacters: [Character: String] = [
+            "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄",
+            "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉",
+            "+": "₊", "-": "₋", "=": "₌", "(": "₍", ")": "₎",
+            "a": "ₐ", "e": "ₑ", "h": "ₕ", "i": "ᵢ", "j": "ⱼ",
+            "k": "ₖ", "l": "ₗ", "m": "ₘ", "n": "ₙ", "o": "ₒ",
+            "p": "ₚ", "r": "ᵣ", "s": "ₛ", "t": "ₜ", "u": "ᵤ",
+            "v": "ᵥ", "x": "ₓ",
+        ]
     }
 }
 

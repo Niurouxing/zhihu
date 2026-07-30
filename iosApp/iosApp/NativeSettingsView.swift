@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 enum SideStoreUpdateSource {
     static let sourceURLString =
@@ -20,6 +21,8 @@ struct NativeSettingsView: View {
     @ObservedObject var notificationPreferences: NativeNotificationPreferences
     @ObservedObject var systemSettings: NativeSystemIntegrationSettings
     @ObservedObject var appLock: NativeAppLockCoordinator
+    @ObservedObject var performanceDiagnostics: NativePerformanceDiagnosticsController
+    @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
     let setAppLock: (Bool) -> Void
     @AppStorage("pinAnswerDate") private var pinAnswerDate = false
@@ -63,7 +66,21 @@ struct NativeSettingsView: View {
                 Text("字号会继续响应系统的动态字体；IP 属地始终显示在正文末尾。")
             }
 
-            Section("信息流") {
+            Section {
+                Picker("推荐源", selection: recommendationSourceBinding) {
+                    ForEach(HomeRecommendationSource.allCases) { source in
+                        Text(source.title).tag(source)
+                    }
+                }
+                Stepper(
+                    value: refreshTargetItemCountBinding,
+                    in: HomeRecommendationRefreshConfiguration.targetItemRange
+                ) {
+                    LabeledContent(
+                        "每次刷新",
+                        value: "\(preferences.homeRefreshTargetItemCount) 条"
+                    )
+                }
                 Picker("显示密度", selection: feedDensityBinding) {
                     ForEach(NativeFeedDensity.allCases) { density in
                         Text(density.title).tag(density)
@@ -73,6 +90,18 @@ struct NativeSettingsView: View {
                     LabeledContent("正文摘要", value: "\(preferences.feedExcerptLines) 行")
                 }
                 Toggle("显示缩略图", isOn: feedThumbnailsBinding)
+                NavigationLink {
+                    BlockedQuestionAuthorsView(store: questionAuthorBlocklist)
+                } label: {
+                    LabeledContent(
+                        "已屏蔽的提问者",
+                        value: "\(questionAuthorBlocklist.entries.count)"
+                    )
+                }
+            } header: {
+                Text("信息流")
+            } footer: {
+                Text("推荐页每次请求 10 条并自动补足目标数量；App 与 Web 推荐都会过滤带标记的推广内容。Web 推荐需要登录。")
             }
 
             Section("搜索") {
@@ -92,6 +121,11 @@ struct NativeSettingsView: View {
                 Picker("默认分享动作", selection: shareActionBinding) {
                     ForEach(NativeDefaultShareAction.allCases) { action in
                         Text(action.title).tag(action)
+                    }
+                }
+                Picker("外部页面打开方式", selection: externalPageOpeningModeBinding) {
+                    ForEach(NativeExternalPageOpeningMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
                     }
                 }
             } header: {
@@ -142,9 +176,33 @@ struct NativeSettingsView: View {
                     Text("系统与更新")
                 }
             }
+
+            Section {
+                Toggle("性能诊断日志", isOn: Binding(
+                    get: { performanceDiagnostics.isEnabled },
+                    set: performanceDiagnostics.setEnabled
+                ))
+                NavigationLink {
+                    PerformanceDiagnosticsLogsView(controller: performanceDiagnostics)
+                } label: {
+                    if let latest = performanceDiagnostics.logs.first {
+                        LabeledContent(
+                            "诊断日志",
+                            value: "\(latest.modifiedAt.formatted(date: .abbreviated, time: .shortened)) · \(ByteCountFormatter.string(fromByteCount: latest.byteCount, countStyle: .file))"
+                        )
+                    } else {
+                        LabeledContent("诊断日志", value: "暂无")
+                    }
+                }
+            } header: {
+                Text("诊断")
+            } footer: {
+                Text("仅记录脱敏后的性能元数据，不记录账号凭据、正文、评论或搜索词。每次启动或重新开启会创建新会话，单份最多 15 MB，保留最近 5 份。")
+            }
         }
         .navigationTitle("设置")
         .navigationBarTitleDisplayMode(.inline)
+        .task { await performanceDiagnostics.refreshLogs() }
     }
 
     private var themeBinding: Binding<NativeThemeMode> {
@@ -178,6 +236,20 @@ struct NativeSettingsView: View {
 
     private var feedDensityBinding: Binding<NativeFeedDensity> {
         Binding(get: { preferences.feedDensity }, set: preferences.setFeedDensity)
+    }
+
+    private var recommendationSourceBinding: Binding<HomeRecommendationSource> {
+        Binding(
+            get: { preferences.homeRecommendationSource },
+            set: preferences.setHomeRecommendationSource
+        )
+    }
+
+    private var refreshTargetItemCountBinding: Binding<Int> {
+        Binding(
+            get: { preferences.homeRefreshTargetItemCount },
+            set: preferences.setHomeRefreshTargetItemCount
+        )
     }
 
     private var feedExcerptLinesBinding: Binding<Int> {
@@ -225,6 +297,13 @@ struct NativeSettingsView: View {
         Binding(get: { preferences.defaultShareAction }, set: preferences.setDefaultShareAction)
     }
 
+    private var externalPageOpeningModeBinding: Binding<NativeExternalPageOpeningMode> {
+        Binding(
+            get: { preferences.externalPageOpeningMode },
+            set: preferences.setExternalPageOpeningMode
+        )
+    }
+
     private func settingSlider(
         title: String,
         value: Binding<Double>,
@@ -238,6 +317,161 @@ struct NativeSettingsView: View {
                 .accessibilityLabel(title)
                 .accessibilityValue(valueText)
         }
+    }
+}
+
+@available(iOS 16.0, *)
+private struct PerformanceDiagnosticsLogsView: View {
+    @ObservedObject var controller: NativePerformanceDiagnosticsController
+    @State private var sharePresentation: PerformanceDiagnosticSharePresentation?
+    @State private var confirmsDeleteAll = false
+
+    var body: some View {
+        List {
+            if controller.logs.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "waveform.path.ecg")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                    Text("暂无诊断日志")
+                    Text("开启诊断后，新的性能会话会显示在这里。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+            } else {
+                ForEach(controller.logs) { log in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(log.modifiedAt.formatted(date: .abbreviated, time: .standard))
+                            Text(ByteCountFormatter.string(fromByteCount: log.byteCount, countStyle: .file))
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            Task {
+                                guard let url = await controller.shareURL(for: log) else { return }
+                                sharePresentation = .init(url: url)
+                            }
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("导出诊断日志")
+                    }
+                    .swipeActions {
+                        Button(role: .destructive) {
+                            Task { await controller.delete(log) }
+                        } label: {
+                            Label("删除", systemImage: "trash")
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("诊断日志")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !controller.logs.isEmpty {
+                Button("全部删除", role: .destructive) { confirmsDeleteAll = true }
+            }
+        }
+        .confirmationDialog("删除全部诊断日志？", isPresented: $confirmsDeleteAll) {
+            Button("全部删除", role: .destructive) {
+                Task { await controller.deleteAll() }
+            }
+            Button("取消", role: .cancel) {}
+        }
+        .sheet(item: $sharePresentation) { presentation in
+            PerformanceDiagnosticsShareSheet(items: [presentation.url])
+        }
+        .task { await controller.refreshLogs() }
+    }
+}
+
+private struct PerformanceDiagnosticSharePresentation: Identifiable {
+    let url: URL
+    var id: URL { url }
+}
+
+private struct PerformanceDiagnosticsShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+private struct BlockedQuestionAuthorsView: View {
+    @ObservedObject var store: QuestionAuthorBlocklistStore
+
+    var body: some View {
+        List {
+            if store.entries.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "person.crop.circle.badge.checkmark")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text("暂无已屏蔽的提问者")
+                        .foregroundStyle(.secondary)
+                    Text("在首页、关注、热榜或搜索结果中长按内容，可屏蔽该问题的提问者。")
+                        .font(.footnote)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 36)
+                .listRowSeparator(.hidden)
+            } else {
+                ForEach(store.entries) { author in
+                    HStack(spacing: 12) {
+                        AsyncImage(url: author.avatarURL) { phase in
+                            if case let .success(image) = phase {
+                                image.resizable().scaledToFill()
+                            } else {
+                                Image(systemName: "person.crop.circle.fill")
+                                    .resizable()
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(width: 40, height: 40)
+                        .clipShape(Circle())
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(author.displayName)
+                                .foregroundStyle(.primary)
+                            Text("不再显示其提出的问题")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer(minLength: 8)
+
+                        Button("解除") {
+                            store.unblock(memberID: author.memberID)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    .swipeActions {
+                        Button("解除屏蔽") {
+                            store.unblock(memberID: author.memberID)
+                        }
+                        .tint(.accentColor)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(author.displayName)，已屏蔽")
+                    .accessibilityAction(named: "解除屏蔽") {
+                        store.unblock(memberID: author.memberID)
+                    }
+                }
+            }
+        }
+        .navigationTitle("已屏蔽的提问者")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

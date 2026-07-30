@@ -13,35 +13,26 @@ struct PersonNativeView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            List {
-                profileSection
-                Section {
-                    pageContent
-                } header: {
-                    VStack(spacing: 0) {
-                        PersonTabSelector(selection: store.selectedTab, onSelect: store.selectTab)
-                        if store.selectedTab == .subscriptions {
-                            PersonSubscriptionTabSelector(
-                                selection: store.selectedSubscriptionTab,
-                                onSelect: store.selectSubscriptionTab
-                            )
-                        }
+        List {
+            profileSection
+            Section {
+                pageContent
+            } header: {
+                VStack(spacing: 0) {
+                    PersonTabSelector(selection: store.selectedTab, onSelect: selectTab)
+                    if store.selectedTab == .subscriptions {
+                        PersonSubscriptionTabSelector(
+                            selection: store.selectedSubscriptionTab,
+                            onSelect: selectSubscriptionTab
+                        )
                     }
-                    .textCase(nil)
                 }
+                .textCase(nil)
             }
-            .listStyle(.plain)
-            .coordinateSpace(name: PersonListCoordinateSpace.name)
-            .background(PersonScrollViewAccessor { listScrollView = $0 })
-            .onPreferenceChange(PersonRowOffsetPreference.self) { offsets in
-                updateAnchor(offsets)
-            }
-            .onChange(of: store.visiblePageKey) { key in
-                restoreAnchor(for: key, proxy: proxy)
-            }
-            .refreshable { await store.refreshVisiblePage() }
         }
+        .listStyle(.plain)
+        .background(PersonScrollViewAccessor { listScrollView = $0 })
+        .refreshable { await store.refreshVisiblePage() }
         .navigationTitle(store.navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
@@ -129,7 +120,6 @@ struct PersonNativeView: View {
             ForEach(page.items) { item in
                 PersonPageRow(item: item) { store.open(item) }
                     .id(item.id)
-                    .background(PersonRowOffsetReader(itemID: item.id))
                     .onAppear { store.loadNextPageIfNeeded(after: item.id) }
             }
             pageFooter(page)
@@ -192,38 +182,126 @@ struct PersonNativeView: View {
         }
     }
 
-    private func updateAnchor(_ offsets: [PersonListItemID: CGFloat]) {
-        guard !offsets.isEmpty else { return }
-        let first = offsets
-            .filter { $0.value >= 0 }
-            .min(by: { $0.value < $1.value })
-            ?? offsets.max(by: { $0.value < $1.value })
-        guard let first else { return }
-        store.updateAnchor(
-            PersonListAnchor(firstVisibleItemID: first.key, signedOffset: first.value),
-            for: store.visiblePageKey
-        )
+    private func selectTab(_ tab: PersonTab) {
+        let contentOffset = listScrollView?.contentOffset
+        store.selectTab(tab)
+        guard !tab.isConnectionList else { return }
+        restoreListPosition(contentOffset)
     }
 
-    private func restoreAnchor(for key: PersonPageKey, proxy: ScrollViewProxy) {
-        guard let anchor = store.anchors[key], store.pages[key]?.items.contains(where: { $0.id == anchor.firstVisibleItemID }) == true else {
-            return
-        }
+    private func selectSubscriptionTab(_ tab: PersonSubscriptionTab) {
+        let contentOffset = listScrollView?.contentOffset
+        store.selectSubscriptionTab(tab)
+        restoreListPosition(contentOffset)
+    }
+
+    private func restoreListPosition(_ contentOffset: CGPoint?) {
+        guard let contentOffset else { return }
         DispatchQueue.main.async {
-            proxy.scrollTo(anchor.firstVisibleItemID, anchor: .top)
             DispatchQueue.main.async {
                 guard let scrollView = listScrollView else { return }
-                let proposed = scrollView.contentOffset.y - anchor.signedOffset
                 let minimum = -scrollView.adjustedContentInset.top
                 let maximum = max(
                     minimum,
                     scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom
                 )
                 scrollView.setContentOffset(
-                    CGPoint(x: scrollView.contentOffset.x, y: min(maximum, max(minimum, proposed))),
+                    CGPoint(x: contentOffset.x, y: min(maximum, max(minimum, contentOffset.y))),
                     animated: false
                 )
             }
+        }
+    }
+}
+
+struct PersonConnectionsView: View {
+    @ObservedObject private var model: PersonHostModel
+    @ObservedObject private var store: PersonStore
+    let title: String
+
+    init(model: PersonHostModel, title: String) {
+        self.model = model
+        _store = ObservedObject(wrappedValue: model.store)
+        self.title = title
+    }
+
+    var body: some View {
+        List {
+            pageContent
+        }
+        .listStyle(.plain)
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .refreshable { await store.refreshVisiblePage() }
+        .task { store.start() }
+        .accessibilityIdentifier("person_connections_view")
+    }
+
+    @ViewBuilder
+    private var pageContent: some View {
+        let page = store.visiblePage
+        switch page.initialLoad {
+        case .idle where page.items.isEmpty, .loading where page.items.isEmpty:
+            ForEach(0..<6, id: \.self) { _ in
+                PersonRowPlaceholder().redacted(reason: .placeholder)
+            }
+        case let .failed(error) where page.items.isEmpty:
+            PersonUnavailableContent(
+                title: "内容加载失败",
+                message: error.message,
+                systemImage: "wifi.exclamationmark",
+                actionTitle: "重试",
+                action: store.retryInitialPage
+            )
+            .listRowSeparator(.hidden)
+        case .loaded where page.items.isEmpty:
+            PersonUnavailableContent(
+                title: "暂无\(title)",
+                message: "这里还没有公开内容",
+                systemImage: "person.2",
+                actionTitle: nil,
+                action: nil
+            )
+            .listRowSeparator(.hidden)
+        default:
+            if case let .failed(error) = page.initialLoad {
+                InlinePersonFailure(
+                    message: error.message,
+                    retryTitle: "重新加载当前列表",
+                    retry: store.retryInitialPage
+                )
+            }
+            ForEach(page.items) { item in
+                PersonPageRow(item: item) { store.open(item) }
+                    .id(item.id)
+                    .onAppear { store.loadNextPageIfNeeded(after: item.id) }
+            }
+            pageFooter(page)
+        }
+    }
+
+    @ViewBuilder
+    private func pageFooter(_ page: PersonPageState) -> some View {
+        switch page.nextPage {
+        case .loading:
+            HStack { Spacer(); ProgressView("正在加载更多"); Spacer() }
+                .font(.caption)
+                .listRowSeparator(.hidden)
+        case let .failed(error):
+            InlinePersonFailure(
+                message: error.message,
+                retryTitle: "重新加载更多内容",
+                retry: store.retryNextPage
+            )
+            .listRowSeparator(.hidden)
+        case .idle where page.isEnd && !page.items.isEmpty:
+            Text("已经到底了")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .listRowSeparator(.hidden)
+        default:
+            EmptyView()
         }
     }
 }
@@ -263,31 +341,6 @@ private struct PersonScrollViewAccessor: UIViewRepresentable {
                 }
                 resolve?(nil)
             }
-        }
-    }
-}
-
-private enum PersonListCoordinateSpace {
-    static let name = "person_native_list"
-}
-
-private struct PersonRowOffsetPreference: PreferenceKey {
-    static var defaultValue: [PersonListItemID: CGFloat] = [:]
-
-    static func reduce(value: inout [PersonListItemID: CGFloat], nextValue: () -> [PersonListItemID: CGFloat]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
-    }
-}
-
-private struct PersonRowOffsetReader: View {
-    let itemID: PersonListItemID
-
-    var body: some View {
-        GeometryReader { geometry in
-            Color.clear.preference(
-                key: PersonRowOffsetPreference.self,
-                value: [itemID: geometry.frame(in: .named(PersonListCoordinateSpace.name)).minY]
-            )
         }
     }
 }

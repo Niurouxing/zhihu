@@ -64,7 +64,11 @@ struct QuestionNativeView: View {
                             .buttonStyle(.plain)
 
                             if store.isDetailExpanded {
-                                QABodyView(blocks: question.detailBlocks, onNavigate: onNavigate)
+                                QABodyView(
+                                    blocks: question.detailBlocks,
+                                    segmentSubject: .question(question.id),
+                                    onNavigate: onNavigate
+                                )
                             } else {
                                 Text(QARichContentParser.plainText(question.detailHTML))
                                     .font(.system(size: detailSummaryPointSize * contentPresentation.fontScale))
@@ -145,7 +149,14 @@ struct QuestionNativeView: View {
                         onNavigate(.writeAnswer(.init(questionID: question.id, questionTitle: question.title)))
                     },
                     onComments: {
-                        onNavigate(.comments(CommentThreadRouteDTO(subject: .question(question.id))))
+                        onNavigate(.comments(CommentThreadRouteDTO(
+                            subject: .question(question.id),
+                            shareContext: CommentShareContextDTO(
+                                title: question.title,
+                                excerpt: QARichContentParser.plainText(question.detailHTML),
+                                sourceURL: URL(string: "https://www.zhihu.com/question/\(question.id)")!
+                            )
+                        )))
                     },
                     onShare: {
                         if let url = URL(string: "https://www.zhihu.com/question/\(question.id)") {

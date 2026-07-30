@@ -100,18 +100,49 @@ final class HomeFollowMapperTests: XCTestCase {
         XCTAssertNil(page.items.last?.author)
     }
 
+    func testFeedMapperFiltersPromotionExtraWithoutAffectingPaging() throws {
+        let data = Data(
+            #"{"data":[{"promotion_extra":"{\"is_card\":true,\"adsource\":\"zhi_plus\"}","target":{"id":"81","type":"article","title":"推广文章"}},{"target":{"id":"82","type":"article","title":"普通文章"}}],"paging":{"is_end":false,"next":"https://www.zhihu.com/api/v3/feed/topstory/recommend?offset=10&limit=10"}}"#.utf8
+        )
+
+        let page = try FeedResponseMapper.page(from: data, policy: .search)
+
+        XCTAssertEqual(page.items.map(\.route), [
+            .article(articleID: 82, title: "普通文章"),
+        ])
+        XCTAssertEqual(
+            page.nextURL,
+            URL(string: "https://www.zhihu.com/api/v3/feed/topstory/recommend?offset=10&limit=10")
+        )
+        XCTAssertFalse(page.isEnd)
+    }
+
+    func testFeedMapperFiltersAppAdvertisementMarkers() throws {
+        let data = Data(
+            #"{"data":[{"type":"feed_advert","ad":{"creatives":[{"title":"广告"}]}},{"type":"feed","ad_info":[{"id":"ad"}],"target":{"id":"81","type":"article","title":"广告文章"}},{"type":"feed","monitor_urls":["https://monitor.example"],"target":{"id":"82","type":"article","title":"监测文章"}},{"type":"feed","ad_info":[],"monitor_urls":[],"target":{"id":"83","type":"article","title":"普通文章"}}],"paging":{"is_end":true,"next":null}}"#.utf8
+        )
+
+        let page = try FeedResponseMapper.page(from: data, policy: .search)
+
+        XCTAssertEqual(page.items.map(\.route), [
+            .article(articleID: 83, title: "普通文章"),
+        ])
+    }
+
     func testFeedMapperRejectsUntrustedPagingURL() throws {
         let data = Data(#"{"data":[],"paging":{"is_end":false,"next":"https://evil.example/steal"}}"#.utf8)
         XCTAssertThrowsError(try FeedResponseMapper.page(from: data, policy: .search))
     }
 
-    func testRecommendationRequestUsesFortyForFirstPageAndContinuation() throws {
+    func testRecommendationRequestUsesWebFirstPageContractAndPreservesContinuationParameters() throws {
         let firstPage = try HomeFollowRequestURL.addingRecommendationFeedParameters(
-            to: URL(string: "https://api.zhihu.com/topstory/recommend?limit=20")!
+            to: HomeFollowRequestURL.recommendationInitialURL(for: .web)
         )
         let continuation = try HomeFollowRequestURL.addingRecommendationFeedParameters(
             to: URL(
-                string: "https://api.zhihu.com/topstory/recommend?offset=40&cursor=next-token&limit=20"
+                string: "https://www.zhihu.com/api/v3/feed/topstory/recommend"
+                    + "?offset=40&cursor=next-token&limit=20"
+                    + "&session_token=opaque&limit=10"
             )!
         )
         let firstItems = try XCTUnwrap(
@@ -121,13 +152,41 @@ final class HomeFollowMapperTests: XCTestCase {
             URLComponents(url: continuation, resolvingAgainstBaseURL: false)?.queryItems
         )
 
-        XCTAssertEqual(firstItems.filter { $0.name == "limit" }.map(\.value), ["40"])
-        XCTAssertEqual(continuationItems.filter { $0.name == "limit" }.map(\.value), ["40"])
+        XCTAssertEqual(firstPage.host, "www.zhihu.com")
+        XCTAssertEqual(firstPage.path, "/api/v3/feed/topstory/recommend")
+        XCTAssertEqual(firstItems.map(\.name), ["desktop", "limit", "offset", "include"])
+        XCTAssertEqual(firstItems.first(where: { $0.name == "desktop" })?.value, "true")
+        XCTAssertEqual(firstItems.first(where: { $0.name == "offset" })?.value, "0")
+        XCTAssertEqual(firstItems.filter { $0.name == "limit" }.map(\.value), ["10"])
+        XCTAssertEqual(
+            firstItems.first(where: { $0.name == "include" })?.value,
+            "data[*].content,excerpt,headline,target.author.badge_v2,target.question.author"
+        )
+        XCTAssertEqual(continuationItems.filter { $0.name == "limit" }.map(\.value), ["10"])
         XCTAssertEqual(continuationItems.first(where: { $0.name == "offset" })?.value, "40")
         XCTAssertEqual(
             continuationItems.first(where: { $0.name == "cursor" })?.value,
             "next-token"
         )
+        XCTAssertEqual(
+            continuationItems.first(where: { $0.name == "session_token" })?.value,
+            "opaque"
+        )
+        XCTAssertEqual(continuationItems.filter { $0.name == "include" }.count, 1)
+    }
+
+    func testRecommendationRequestUsesAppFirstPageContractWithTenItemLimit() throws {
+        let firstPage = try HomeFollowRequestURL.addingRecommendationFeedParameters(
+            to: HomeFollowRequestURL.recommendationInitialURL(for: .app)
+        )
+        let items = try XCTUnwrap(
+            URLComponents(url: firstPage, resolvingAgainstBaseURL: false)?.queryItems
+        )
+
+        XCTAssertEqual(firstPage.host, "api.zhihu.com")
+        XCTAssertEqual(firstPage.path, "/topstory/recommend")
+        XCTAssertEqual(items.filter { $0.name == "limit" }.map(\.value), ["10"])
+        XCTAssertEqual(items.filter { $0.name == "include" }.count, 1)
     }
 
     func testFollowRequestKeepsExistingQueryAndAddsPagingParametersOnce() throws {
@@ -158,6 +217,42 @@ final class HomeFollowMapperTests: XCTestCase {
 
 @MainActor
 final class HomeFollowStoreTests: XCTestCase {
+    func testQuestionAuthorFilteringDoesNotStopStorePagination() async {
+        let blockedAuthor = FeedAuthorDTO(
+            memberID: "blocked",
+            urlToken: "blocked",
+            displayName: "已屏蔽提问者",
+            avatarURL: nil,
+            headline: ""
+        )
+        let nextURL = URL(string: "https://www.zhihu.com/api/v3/next")!
+        let blocked = feedItem(1, questionAuthor: blockedAuthor)
+        let visible = feedItem(2)
+        let store = HomeFeedNativeStore(repository: HomeRepositoryStub(results: [
+            .success(FeedPageDTO(items: [blocked], nextURL: nextURL, isEnd: false)),
+            .success(FeedPageDTO(items: [visible], nextURL: nil, isEnd: true)),
+        ]))
+
+        await store.loadInitialIfNeeded()
+
+        XCTAssertTrue(FeedQuestionAuthorVisibilityPolicy.visibleItems(
+            from: store.items,
+            blockedMemberIDs: ["blocked"]
+        ).isEmpty)
+        XCTAssertTrue(store.hasNextPage)
+
+        await store.loadMore()
+
+        XCTAssertEqual(
+            FeedQuestionAuthorVisibilityPolicy.visibleItems(
+                from: store.items,
+                blockedMemberIDs: ["blocked"]
+            ),
+            [visible]
+        )
+        XCTAssertFalse(store.hasNextPage)
+    }
+
     func testHomeRecordsOnlySuccessfulFirstPageAndPersistsLastViewed() async {
         let initialDate = Date(timeIntervalSince1970: 1_000)
         let clock = FeedRefreshTestClock(initialDate)
@@ -201,6 +296,224 @@ final class HomeFollowStoreTests: XCTestCase {
         XCTAssertEqual(restored.refreshMetadata, store.refreshMetadata)
     }
 
+    func testHomeAccountChangeClearsContentAndAllowsAuthenticatedReload() async {
+        let persistence = InMemoryFeedRefreshMetadataPersistence()
+        let store = HomeFeedNativeStore(
+            repository: HomeRepositoryStub(results: [
+                .success(.init(items: [feedItem(1)], nextURL: nil, isEnd: true)),
+                .success(.init(items: [feedItem(2)], nextURL: nil, isEnd: true)),
+            ]),
+            refreshMetadataPersistence: persistence
+        )
+        await store.loadInitialIfNeeded()
+
+        store.accountDidChange()
+
+        XCTAssertTrue(store.items.isEmpty)
+        XCTAssertEqual(store.refreshMetadata, .empty)
+        XCTAssertEqual(persistence.load(for: .recommendations), .empty)
+        await store.loadInitialIfNeeded()
+        XCTAssertEqual(store.items, [feedItem(2)])
+    }
+
+    func testHomeColdLaunchRestoresSuccessfulSnapshotWithoutNetworkRequest() async {
+        let cache = InMemoryHomeRecommendationCachePersistence()
+        let nextURL = URL(string: "https://api.zhihu.com/topstory/recommend?offset=10")!
+        let firstRepository = CacheHomeRepositoryStub(pages: [
+            FeedPageDTO(items: [feedItem(1)], nextURL: nextURL, isEnd: false),
+        ])
+        let firstStore = HomeFeedNativeStore(
+            repository: firstRepository,
+            cachePersistence: cache,
+            cacheAccountID: { "account-a" }
+        )
+        await firstStore.loadInitialIfNeeded()
+
+        let restoredRepository = CacheHomeRepositoryStub(pages: [])
+        let restoredStore = HomeFeedNativeStore(
+            repository: restoredRepository,
+            cachePersistence: cache,
+            cacheAccountID: { "account-a" }
+        )
+        await restoredStore.loadInitialIfNeeded()
+
+        XCTAssertEqual(restoredStore.items, [feedItem(1)])
+        XCTAssertTrue(restoredStore.hasNextPage)
+        XCTAssertEqual(restoredStore.nextPageLoadID, nextURL.absoluteString)
+        let restoredRequestCount = await restoredRepository.requestCount()
+        XCTAssertEqual(restoredRequestCount, 0)
+    }
+
+    func testHomeCachedSnapshotRefreshesAtExactOneHourIdleBoundary() async {
+        let cache = InMemoryHomeRecommendationCachePersistence()
+        let successfulAt = Date(timeIntervalSince1970: 1_000)
+        let viewedAt = successfulAt.addingTimeInterval(10)
+        let clock = FeedRefreshTestClock(successfulAt)
+        let firstStore = HomeFeedNativeStore(
+            repository: CacheHomeRepositoryStub(pages: [
+                FeedPageDTO(items: [feedItem(1)], nextURL: nil, isEnd: true),
+            ]),
+            cachePersistence: cache,
+            cacheAccountID: { "account-a" },
+            now: { clock.now }
+        )
+        await firstStore.loadInitialIfNeeded()
+        firstStore.recordLastViewed(at: viewedAt)
+
+        clock.now = viewedAt.addingTimeInterval(60 * 60 - 1)
+        let beforeBoundaryRepository = CacheHomeRepositoryStub(pages: [])
+        let beforeBoundaryStore = HomeFeedNativeStore(
+            repository: beforeBoundaryRepository,
+            cachePersistence: cache,
+            cacheAccountID: { "account-a" },
+            now: { clock.now }
+        )
+        await beforeBoundaryStore.loadInitialIfNeeded()
+
+        XCTAssertEqual(beforeBoundaryStore.items, [feedItem(1)])
+        let beforeBoundaryRequestCount = await beforeBoundaryRepository.requestCount()
+        XCTAssertEqual(beforeBoundaryRequestCount, 0)
+
+        clock.now = viewedAt.addingTimeInterval(60 * 60)
+        let boundaryRepository = CacheHomeRepositoryStub(pages: [
+            FeedPageDTO(items: [feedItem(2)], nextURL: nil, isEnd: true),
+        ])
+        let boundaryStore = HomeFeedNativeStore(
+            repository: boundaryRepository,
+            cachePersistence: cache,
+            cacheAccountID: { "account-a" },
+            now: { clock.now }
+        )
+        await boundaryStore.loadInitialIfNeeded()
+
+        XCTAssertEqual(boundaryStore.items, [feedItem(2)])
+        let boundaryRequestCount = await boundaryRepository.requestCount()
+        XCTAssertEqual(boundaryRequestCount, 1)
+    }
+
+    func testHomeCacheSwitchesImmediatelyByAccountAndRecommendationSource() async throws {
+        let cache = InMemoryHomeRecommendationCachePersistence()
+        let now = Date(timeIntervalSince1970: 2_000)
+        let appA = try XCTUnwrap(HomeRecommendationCacheContext(
+            accountID: "account-a",
+            source: .app
+        ))
+        let webA = try XCTUnwrap(HomeRecommendationCacheContext(
+            accountID: "account-a",
+            source: .web
+        ))
+        let webB = try XCTUnwrap(HomeRecommendationCacheContext(
+            accountID: "account-b",
+            source: .web
+        ))
+        cache.save(cacheSnapshot(
+            context: appA,
+            items: [feedItem(1)],
+            now: now
+        ), for: appA)
+        cache.save(cacheSnapshot(
+            context: webA,
+            items: [feedItem(2)],
+            now: now
+        ), for: webA)
+        cache.save(cacheSnapshot(
+            context: webB,
+            items: [feedItem(3)],
+            now: now
+        ), for: webB)
+
+        var accountID: String? = "account-a"
+        var configuration = HomeRecommendationRefreshConfiguration(
+            source: .app,
+            targetItemCount: 20
+        )
+        let repository = CacheHomeRepositoryStub(pages: [])
+        let store = HomeFeedNativeStore(
+            repository: repository,
+            configuration: { configuration },
+            cachePersistence: cache,
+            cacheAccountID: { accountID },
+            now: { now }
+        )
+        XCTAssertEqual(store.items, [feedItem(1)])
+
+        configuration = HomeRecommendationRefreshConfiguration(
+            source: .web,
+            targetItemCount: 20
+        )
+        await store.recommendationSourceDidChange()
+        XCTAssertEqual(store.items, [feedItem(2)])
+
+        accountID = "account-b"
+        store.accountDidChange()
+        XCTAssertEqual(store.items, [feedItem(3)])
+
+        accountID = nil
+        store.accountDidChange()
+        XCTAssertTrue(store.items.isEmpty)
+        let requestCount = await repository.requestCount()
+        XCTAssertEqual(requestCount, 0)
+    }
+
+    func testHomeCacheRejectsSchemaMismatchAndDamagedPayload() throws {
+        let suite = "HomeRecommendationCacheTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let context = try XCTUnwrap(HomeRecommendationCacheContext(
+            accountID: "account-a",
+            source: .app
+        ))
+        let writer = UserDefaultsHomeRecommendationCachePersistence(
+            defaults: defaults,
+            expectedSchemaVersion: 1
+        )
+        writer.save(cacheSnapshot(
+            context: context,
+            items: [feedItem(1)],
+            now: Date(timeIntervalSince1970: 100)
+        ), for: context)
+
+        XCTAssertNil(UserDefaultsHomeRecommendationCachePersistence(
+            defaults: defaults,
+            expectedSchemaVersion: 2
+        ).load(for: context))
+
+        defaults.set(
+            Data("damaged-cache".utf8),
+            forKey: UserDefaultsHomeRecommendationCachePersistence.storageKey(for: context)
+        )
+        XCTAssertNil(writer.load(for: context))
+    }
+
+    func testHomeCacheRejectsUntrustedPagingURL() throws {
+        let suite = "HomeRecommendationCacheTrustTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let context = try XCTUnwrap(HomeRecommendationCacheContext(
+            accountID: "account-a",
+            source: .web
+        ))
+        let snapshot = HomeRecommendationCacheSnapshot(
+            schemaVersion: HomeRecommendationCacheSnapshot.currentSchemaVersion,
+            accountID: context.accountID,
+            source: context.source,
+            items: [feedItem(1)],
+            nextURL: URL(string: "https://attacker.example/next"),
+            isEnd: false,
+            refreshMetadata: .empty,
+            savedAt: Date(timeIntervalSince1970: 100)
+        )
+        defaults.set(
+            try JSONEncoder().encode(snapshot),
+            forKey: UserDefaultsHomeRecommendationCachePersistence.storageKey(for: context)
+        )
+
+        XCTAssertNil(
+            UserDefaultsHomeRecommendationCachePersistence(defaults: defaults)
+                .load(for: context)
+        )
+    }
+
     func testHomeManualRefreshReplacesFirstPageAndRecordsCurrentTime() async {
         let initialDate = Date(timeIntervalSince1970: 3_000)
         let refreshDate = initialDate.addingTimeInterval(120)
@@ -225,7 +538,7 @@ final class HomeFollowStoreTests: XCTestCase {
         XCTAssertFalse(store.isRefreshing)
     }
 
-    func testHomeRefreshQueuedDuringPaginationEventuallyRefreshesFirstPage() async {
+    func testHomePullRefreshSupersedesPaginationImmediately() async {
         let initial = feedItem(1)
         let paginated = feedItem(2)
         let refreshed = feedItem(3)
@@ -244,8 +557,7 @@ final class HomeFollowStoreTests: XCTestCase {
         for _ in 0..<5 { await Task.yield() }
 
         let requestsWhilePaginating = await repository.requestedURLs()
-        XCTAssertEqual(requestsWhilePaginating, [nil, nextURL])
-        XCTAssertEqual(store.items, [initial])
+        XCTAssertEqual(requestsWhilePaginating, [nil, nextURL, nil])
 
         await repository.resumePagination()
         await pagination.value
@@ -256,6 +568,216 @@ final class HomeFollowStoreTests: XCTestCase {
         XCTAssertEqual(store.items, [refreshed])
         XCTAssertFalse(store.isLoading)
         XCTAssertFalse(store.isRefreshing)
+    }
+
+    func testHomeRefreshPublishesFirstBatchFeedbackThenKeepsOverflow() async {
+        let initialDate = Date(timeIntervalSince1970: 4_000)
+        let refreshDate = initialDate.addingTimeInterval(100)
+        let clock = FeedRefreshTestClock(initialDate)
+        let firstNext = URL(string: "https://api.zhihu.com/topstory/recommend?offset=10")!
+        let repository = HomeRefreshLoopRepositoryStub(
+            pages: [
+                FeedPageDTO(items: [feedItem(1)], nextURL: nil, isEnd: true),
+                FeedPageDTO(
+                    items: [feedItem(10), feedItem(11), feedItem(12), feedItem(13)],
+                    nextURL: firstNext,
+                    isEnd: false
+                ),
+                FeedPageDTO(
+                    items: [feedItem(14), feedItem(15), feedItem(16), feedItem(17)],
+                    nextURL: nil,
+                    isEnd: true
+                ),
+            ],
+            delayedRequestNumber: 3
+        )
+        let store = HomeFeedNativeStore(
+            repository: repository,
+            configuration: {
+                HomeRecommendationRefreshConfiguration(source: .app, targetItemCount: 6)
+            },
+            refreshMetadataPersistence: InMemoryFeedRefreshMetadataPersistence(),
+            now: { clock.now }
+        )
+        await store.loadInitialIfNeeded()
+        clock.now = refreshDate
+
+        let refresh = Task { await store.refresh(intent: .pull) }
+        await repository.waitUntilDelayedRequestStarts()
+
+        XCTAssertEqual(store.items.map(\.id.contentID), ["10", "11", "12", "13"])
+        XCTAssertEqual(store.refreshMetadata.lastSuccessfulRefreshAt, refreshDate)
+        XCTAssertEqual(store.refreshFeedbackSequence, 1)
+        XCTAssertTrue(store.isRefreshing)
+
+        await repository.resumeDelayedRequest()
+        let outcome = await refresh.value
+
+        XCTAssertEqual(outcome, .published)
+        XCTAssertEqual(
+            store.items.map(\.id.contentID),
+            ["10", "11", "12", "13", "14", "15", "16", "17"]
+        )
+        XCTAssertEqual(store.refreshMetadata.lastSuccessfulRefreshAt, refreshDate)
+        XCTAssertEqual(store.refreshFeedbackSequence, 1)
+        XCTAssertFalse(store.isRefreshing)
+    }
+
+    func testHomeRepeatedPullIsIgnoredWhileRefreshLoopIsActive() async {
+        let repository = HomeRefreshLoopRepositoryStub(
+            pages: [
+                FeedPageDTO(items: [feedItem(1)], nextURL: nil, isEnd: true),
+                FeedPageDTO(items: [feedItem(2)], nextURL: nil, isEnd: true),
+            ],
+            delayedRequestNumber: 2
+        )
+        let store = HomeFeedNativeStore(repository: repository)
+        await store.loadInitialIfNeeded()
+
+        let activeRefresh = Task { await store.refresh(intent: .pull) }
+        await repository.waitUntilDelayedRequestStarts()
+
+        let ignoredOutcome = await store.refresh(intent: .pull)
+        XCTAssertEqual(ignoredOutcome, .ignored)
+
+        await repository.resumeDelayedRequest()
+        let activeOutcome = await activeRefresh.value
+        XCTAssertEqual(activeOutcome, .published)
+        XCTAssertEqual(store.refreshFeedbackSequence, 1)
+    }
+
+    func testHomeReturnToTopCancelsActiveLoopAndStartsReplacementImmediately() async {
+        let repository = HomeRefreshReplacementRepositoryStub(
+            initial: FeedPageDTO(items: [feedItem(1)], nextURL: nil, isEnd: true),
+            replacement: FeedPageDTO(items: [feedItem(3)], nextURL: nil, isEnd: true)
+        )
+        let store = HomeFeedNativeStore(repository: repository)
+        await store.loadInitialIfNeeded()
+
+        let firstRefresh = Task { await store.refresh(intent: .pull) }
+        await repository.waitUntilFirstRefreshStarts()
+        let replacementOutcome = await store.refresh(intent: .returnToTop)
+        let cancelledOutcome = await firstRefresh.value
+        let requestCount = await repository.requestCount()
+
+        XCTAssertEqual(replacementOutcome, .published)
+        XCTAssertEqual(cancelledOutcome, .cancelled)
+        XCTAssertEqual(store.items, [feedItem(3)])
+        XCTAssertEqual(store.refreshFeedbackSequence, 1)
+        XCTAssertEqual(requestCount, 3)
+    }
+
+    func testHomeRefreshStopsAfterTwoPagesWithoutNewDisplayableItems() async {
+        let firstNext = URL(string: "https://api.zhihu.com/topstory/recommend?offset=10")!
+        let secondNext = URL(string: "https://api.zhihu.com/topstory/recommend?offset=20")!
+        let repository = HomeRefreshLoopRepositoryStub(pages: [
+            FeedPageDTO(items: [feedItem(1)], nextURL: nil, isEnd: true),
+            FeedPageDTO(items: [], nextURL: firstNext, isEnd: false),
+            FeedPageDTO(items: [], nextURL: secondNext, isEnd: false),
+            FeedPageDTO(items: [feedItem(99)], nextURL: nil, isEnd: true),
+        ])
+        let store = HomeFeedNativeStore(repository: repository)
+        await store.loadInitialIfNeeded()
+
+        let outcome = await store.refresh(intent: .pull)
+        let requestCount = await repository.requestCount()
+
+        XCTAssertEqual(outcome, .noContent)
+        XCTAssertEqual(store.items, [feedItem(1)])
+        XCTAssertEqual(store.refreshFeedbackSequence, 0)
+        XCTAssertEqual(requestCount, 3)
+    }
+
+    func testHomeSourceChangeDiscardsOldPagingAndUsesNewSource() async {
+        let repository = HomeRefreshLoopRepositoryStub(pages: [
+            FeedPageDTO(
+                items: [feedItem(1)],
+                nextURL: URL(string: "https://api.zhihu.com/topstory/recommend?offset=10"),
+                isEnd: false
+            ),
+            FeedPageDTO(items: [feedItem(2)], nextURL: nil, isEnd: true),
+        ])
+        var configuration = HomeRecommendationRefreshConfiguration(
+            source: .app,
+            targetItemCount: 6
+        )
+        let store = HomeFeedNativeStore(
+            repository: repository,
+            configuration: { configuration }
+        )
+        await store.loadInitialIfNeeded()
+
+        configuration = HomeRecommendationRefreshConfiguration(
+            source: .web,
+            targetItemCount: 6
+        )
+        await store.recommendationSourceDidChange()
+        let requestedSources = await repository.requestedSources()
+
+        XCTAssertEqual(store.items, [feedItem(2)])
+        XCTAssertFalse(store.hasNextPage)
+        XCTAssertEqual(requestedSources, [.app, .web])
+    }
+
+    func testHomeSourceChangeWithoutNewContentNeverFallsBackToPreviousSource() async {
+        let oldNext = URL(string: "https://api.zhihu.com/topstory/recommend?offset=10")!
+        let repository = HomeRefreshLoopRepositoryStub(pages: [
+            FeedPageDTO(items: [feedItem(1)], nextURL: oldNext, isEnd: false),
+            FeedPageDTO(items: [], nextURL: nil, isEnd: true),
+            FeedPageDTO(items: [feedItem(2)], nextURL: nil, isEnd: true),
+        ])
+        var configuration = HomeRecommendationRefreshConfiguration(
+            source: .app,
+            targetItemCount: 6
+        )
+        let store = HomeFeedNativeStore(
+            repository: repository,
+            configuration: { configuration }
+        )
+        await store.loadInitialIfNeeded()
+
+        configuration = HomeRecommendationRefreshConfiguration(
+            source: .web,
+            targetItemCount: 6
+        )
+        await store.recommendationSourceDidChange()
+        XCTAssertTrue(store.items.isEmpty)
+        XCTAssertFalse(store.hasNextPage)
+
+        await store.retry()
+        let requestedSources = await repository.requestedSources()
+        let requestedURLs = await repository.requestedURLs()
+
+        XCTAssertEqual(store.items, [feedItem(2)])
+        XCTAssertEqual(requestedSources, [.app, .web, .web])
+        XCTAssertFalse(requestedURLs.compactMap { $0 }.contains(oldNext))
+    }
+
+    func testHomeRefreshStopsAfterSixRequestsWhenTargetCannotBeReached() async {
+        let refreshPages = (1 ... 6).map { index in
+            FeedPageDTO(
+                items: [feedItem(Int64(10 + index))],
+                nextURL: URL(
+                    string: "https://api.zhihu.com/topstory/recommend?offset=\(index * 10)"
+                ),
+                isEnd: false
+            )
+        }
+        let repository = HomeRefreshLoopRepositoryStub(
+            pages: [
+                FeedPageDTO(items: [feedItem(1)], nextURL: nil, isEnd: true),
+            ] + refreshPages
+        )
+        let store = HomeFeedNativeStore(repository: repository)
+        await store.loadInitialIfNeeded()
+
+        let outcome = await store.refresh(intent: .pull)
+        let requestCount = await repository.requestCount()
+
+        XCTAssertEqual(outcome, .published)
+        XCTAssertEqual(store.items.count, 6)
+        XCTAssertEqual(requestCount, 7)
+        XCTAssertTrue(store.hasNextPage)
     }
 
     func testFollowFailedRefreshDoesNotReplaceSuccessfulRefreshTime() async {
@@ -284,6 +806,34 @@ final class HomeFollowStoreTests: XCTestCase {
         XCTAssertEqual(store.recommendations.items, [recommend])
         XCTAssertEqual(store.refreshMetadata.lastSuccessfulRefreshAt, initialDate)
         XCTAssertEqual(persistence.load(for: .following), store.refreshMetadata)
+    }
+
+    func testFollowAccountChangeDropsBothSectionsAndRecentUsers() async {
+        let persistence = InMemoryFeedRefreshMetadataPersistence()
+        let store = FollowNativeStore(
+            repository: FollowRepositoryStub(pages: [
+                .recommendations: [
+                    .success(.init(items: [feedItem(1)], nextURL: nil, isEnd: true)),
+                    .success(.init(items: [feedItem(3)], nextURL: nil, isEnd: true)),
+                ],
+                .moments: [
+                    .success(.init(items: [feedItem(2)], nextURL: nil, isEnd: true)),
+                ],
+            ]),
+            refreshMetadataPersistence: persistence
+        )
+        await store.loadIfNeeded(section: .recommendations)
+        await store.loadIfNeeded(section: .moments)
+
+        store.accountDidChange()
+
+        XCTAssertTrue(store.recommendations.items.isEmpty)
+        XCTAssertTrue(store.moments.items.isEmpty)
+        XCTAssertTrue(store.recentUsers.isEmpty)
+        XCTAssertEqual(store.refreshMetadata, .empty)
+        XCTAssertEqual(persistence.load(for: .following), .empty)
+        await store.loadIfNeeded(section: .recommendations)
+        XCTAssertEqual(store.recommendations.items, [feedItem(3)])
     }
 
     func testFollowMomentsSuccessUpdatesMetadataAndCancellationKeepsNewTime() async {
@@ -477,7 +1027,10 @@ final class HomeFollowStoreTests: XCTestCase {
         XCTAssertEqual(store.recommendations.items, [recommendFirst, recommendSecond])
     }
 
-    private func feedItem(_ id: Int64) -> FeedItemDTO {
+    private func feedItem(
+        _ id: Int64,
+        questionAuthor: FeedAuthorDTO? = nil
+    ) -> FeedItemDTO {
         FeedItemDTO(
             id: FeedItemID(kind: .article, contentID: String(id)),
             kind: .article,
@@ -486,8 +1039,29 @@ final class HomeFollowStoreTests: XCTestCase {
             details: "文章",
             sourceLabel: nil,
             author: nil,
+            questionAuthor: questionAuthor,
             thumbnailURL: nil,
             route: .article(articleID: id, title: "文章 \(id)")
+        )
+    }
+
+    private func cacheSnapshot(
+        context: HomeRecommendationCacheContext,
+        items: [FeedItemDTO],
+        now: Date
+    ) -> HomeRecommendationCacheSnapshot {
+        HomeRecommendationCacheSnapshot(
+            schemaVersion: HomeRecommendationCacheSnapshot.currentSchemaVersion,
+            accountID: context.accountID,
+            source: context.source,
+            items: items,
+            nextURL: nil,
+            isEnd: true,
+            refreshMetadata: FeedChannelRefreshMetadata(
+                lastSuccessfulRefreshAt: now,
+                lastViewedAt: now
+            ),
+            savedAt: now
         )
     }
 }
@@ -509,6 +1083,23 @@ private final class InMemoryFeedRefreshMetadataPersistence: FeedChannelRefreshMe
     }
 }
 
+private final class InMemoryHomeRecommendationCachePersistence:
+    HomeRecommendationCachePersisting {
+    private var snapshots:
+        [HomeRecommendationCacheContext: HomeRecommendationCacheSnapshot] = [:]
+
+    func load(for context: HomeRecommendationCacheContext) -> HomeRecommendationCacheSnapshot? {
+        snapshots[context]
+    }
+
+    func save(
+        _ snapshot: HomeRecommendationCacheSnapshot,
+        for context: HomeRecommendationCacheContext
+    ) {
+        snapshots[context] = snapshot
+    }
+}
+
 private enum HomeFollowTestError: LocalizedError {
     case network
     var errorDescription: String? { "网络失败" }
@@ -527,6 +1118,32 @@ private actor HomeRepositoryStub: HomeFeedRepository {
 
     func reportOpened(_ item: FeedItemDTO) async { reported.append(item.id) }
     func reportedIDs() -> [FeedItemID] { reported }
+}
+
+private actor CacheHomeRepositoryStub: HomeFeedRepository {
+    private var pages: [FeedPageDTO]
+    private var requests = 0
+
+    init(pages: [FeedPageDTO]) {
+        self.pages = pages
+    }
+
+    func fetchPage(after nextURL: URL?) async throws -> FeedPageDTO {
+        try await fetchPage(source: .app, after: nextURL)
+    }
+
+    func fetchPage(
+        source: HomeRecommendationSource,
+        after nextURL: URL?
+    ) async throws -> FeedPageDTO {
+        requests += 1
+        guard !pages.isEmpty else { throw HomeFollowTestError.network }
+        return pages.removeFirst()
+    }
+
+    func reportOpened(_ item: FeedItemDTO) async {}
+
+    func requestCount() -> Int { requests }
 }
 
 private actor HomePaginationRefreshRepositoryStub: HomeFeedRepository {
@@ -570,6 +1187,99 @@ private actor HomePaginationRefreshRepositoryStub: HomeFeedRepository {
     }
 
     func requestedURLs() -> [URL?] { requests }
+}
+
+private actor HomeRefreshLoopRepositoryStub: HomeFeedRepository {
+    private var pages: [FeedPageDTO]
+    private let delayedRequestNumber: Int?
+    private var requests: [(HomeRecommendationSource, URL?)] = []
+    private var delayedRequestStarted = false
+    private var delayedRequestContinuation: CheckedContinuation<Void, Never>?
+
+    init(
+        pages: [FeedPageDTO],
+        delayedRequestNumber: Int? = nil
+    ) {
+        self.pages = pages
+        self.delayedRequestNumber = delayedRequestNumber
+    }
+
+    func fetchPage(after nextURL: URL?) async throws -> FeedPageDTO {
+        try await fetchPage(source: .app, after: nextURL)
+    }
+
+    func fetchPage(
+        source: HomeRecommendationSource,
+        after nextURL: URL?
+    ) async throws -> FeedPageDTO {
+        requests.append((source, nextURL))
+        guard !pages.isEmpty else { throw HomeFollowTestError.network }
+        let page = pages.removeFirst()
+        if requests.count == delayedRequestNumber {
+            delayedRequestStarted = true
+            await withCheckedContinuation { continuation in
+                delayedRequestContinuation = continuation
+            }
+            try Task.checkCancellation()
+        }
+        return page
+    }
+
+    func reportOpened(_ item: FeedItemDTO) async {}
+
+    func waitUntilDelayedRequestStarts() async {
+        while !delayedRequestStarted { await Task.yield() }
+    }
+
+    func resumeDelayedRequest() {
+        delayedRequestContinuation?.resume()
+        delayedRequestContinuation = nil
+    }
+
+    func requestCount() -> Int { requests.count }
+    func requestedSources() -> [HomeRecommendationSource] { requests.map { $0.0 } }
+    func requestedURLs() -> [URL?] { requests.map { $0.1 } }
+}
+
+private actor HomeRefreshReplacementRepositoryStub: HomeFeedRepository {
+    private let initial: FeedPageDTO
+    private let replacement: FeedPageDTO
+    private var requests = 0
+    private var firstRefreshStarted = false
+
+    init(initial: FeedPageDTO, replacement: FeedPageDTO) {
+        self.initial = initial
+        self.replacement = replacement
+    }
+
+    func fetchPage(after nextURL: URL?) async throws -> FeedPageDTO {
+        try await fetchPage(source: .app, after: nextURL)
+    }
+
+    func fetchPage(
+        source: HomeRecommendationSource,
+        after nextURL: URL?
+    ) async throws -> FeedPageDTO {
+        requests += 1
+        switch requests {
+        case 1:
+            return initial
+        case 2:
+            firstRefreshStarted = true
+            try await Task.sleep(nanoseconds: 60_000_000_000)
+            return initial
+        default:
+            return replacement
+        }
+    }
+
+    func reportOpened(_ item: FeedItemDTO) async {}
+
+    func waitUntilFirstRefreshStarts() async {
+        while !firstRefreshStarted { await Task.yield() }
+    }
+
+    func requestCount() -> Int { requests }
 }
 
 private actor FollowRepositoryStub: FollowRepository {

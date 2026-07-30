@@ -1,5 +1,27 @@
 import Foundation
 
+private extension HomeRecommendationRefreshIntent {
+    var diagnosticName: String {
+        switch self {
+        case .pull: return "pull"
+        case .automatic: return "automatic"
+        case .returnToTop: return "return_to_top"
+        case .sourceChanged: return "source_changed"
+        case .retry: return "retry"
+        }
+    }
+}
+
+private extension HomeRecommendationRefreshOutcome {
+    var diagnosticResult: PerformanceDiagnosticEvent.Result {
+        switch self {
+        case .published, .publishedPartially, .noContent: return .success
+        case .failed: return .failure
+        case .cancelled, .ignored: return .cancelled
+        }
+    }
+}
+
 struct FeedChannelRefreshMetadata: Codable, Equatable {
     var lastSuccessfulRefreshAt: Date?
     var lastViewedAt: Date?
@@ -95,11 +117,124 @@ struct FeedChannelRefreshTracker {
         return updated
     }
 
+    func clearing() -> FeedChannelRefreshMetadata {
+        let cleared = FeedChannelRefreshMetadata.empty
+        persistence.save(cleared, for: channel)
+        return cleared
+    }
+
     func needsRefreshAfterIdle(
         metadata: FeedChannelRefreshMetadata,
         at date: Date? = nil
     ) -> Bool {
         policy.needsRefreshAfterIdle(metadata: metadata, now: date ?? now())
+    }
+}
+
+struct HomeRecommendationCacheContext: Equatable, Hashable, Sendable {
+    let accountID: String
+    let source: HomeRecommendationSource
+
+    init?(accountID: String?, source: HomeRecommendationSource) {
+        guard let accountID = accountID?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !accountID.isEmpty
+        else { return nil }
+        self.accountID = accountID
+        self.source = source
+    }
+}
+
+struct HomeRecommendationCacheSnapshot: Codable, Equatable, Sendable {
+    static let currentSchemaVersion = 1
+
+    let schemaVersion: Int
+    let accountID: String
+    let source: HomeRecommendationSource
+    let items: [FeedItemDTO]
+    let nextURL: URL?
+    let isEnd: Bool
+    let refreshMetadata: FeedChannelRefreshMetadata
+    let savedAt: Date
+}
+
+protocol HomeRecommendationCachePersisting {
+    func load(for context: HomeRecommendationCacheContext) -> HomeRecommendationCacheSnapshot?
+    func save(
+        _ snapshot: HomeRecommendationCacheSnapshot,
+        for context: HomeRecommendationCacheContext
+    )
+}
+
+struct UserDefaultsHomeRecommendationCachePersistence: HomeRecommendationCachePersisting {
+    static let keyPrefix = "homeRecommendationCache"
+
+    let defaults: UserDefaults
+    let expectedSchemaVersion: Int
+
+    init(
+        defaults: UserDefaults = .standard,
+        expectedSchemaVersion: Int = HomeRecommendationCacheSnapshot.currentSchemaVersion
+    ) {
+        self.defaults = defaults
+        self.expectedSchemaVersion = expectedSchemaVersion
+    }
+
+    func load(for context: HomeRecommendationCacheContext) -> HomeRecommendationCacheSnapshot? {
+        guard let data = defaults.data(forKey: Self.storageKey(for: context)),
+              let decoded = try? JSONDecoder().decode(
+                  HomeRecommendationCacheSnapshot.self,
+                  from: data
+              ),
+              decoded.schemaVersion == expectedSchemaVersion,
+              decoded.accountID == context.accountID,
+              decoded.source == context.source,
+              !decoded.items.isEmpty
+        else { return nil }
+
+        let trustedNextURL: URL?
+        do {
+            trustedNextURL = try ZhihuAPIURLPolicy.validatedPagingURL(decoded.nextURL)
+        } catch {
+            return nil
+        }
+        return HomeRecommendationCacheSnapshot(
+            schemaVersion: decoded.schemaVersion,
+            accountID: decoded.accountID,
+            source: decoded.source,
+            items: decoded.items,
+            nextURL: trustedNextURL,
+            isEnd: decoded.isEnd || trustedNextURL == nil,
+            refreshMetadata: decoded.refreshMetadata,
+            savedAt: decoded.savedAt
+        )
+    }
+
+    func save(
+        _ snapshot: HomeRecommendationCacheSnapshot,
+        for context: HomeRecommendationCacheContext
+    ) {
+        if let nextURL = snapshot.nextURL {
+            guard (try? ZhihuAPIURLPolicy.validatedPagingURL(nextURL)) != nil else {
+                return
+            }
+        }
+        guard snapshot.schemaVersion == expectedSchemaVersion,
+              snapshot.accountID == context.accountID,
+              snapshot.source == context.source,
+              !snapshot.items.isEmpty,
+              let data = try? JSONEncoder().encode(snapshot)
+        else { return }
+        defaults.set(data, forKey: Self.storageKey(for: context))
+    }
+
+    static func storageKey(for context: HomeRecommendationCacheContext) -> String {
+        let encodedAccountID = Data(context.accountID.utf8)
+            .base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "=", with: "")
+        return "\(keyPrefix).\(context.source.rawValue).\(encodedAccountID)"
     }
 }
 
@@ -110,23 +245,46 @@ final class HomeFeedNativeStore: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var refreshMetadata: FeedChannelRefreshMetadata
+    @Published private(set) var refreshFeedbackSequence: UInt = 0
 
     private let repository: HomeFeedRepository
     private let refreshTracker: FeedChannelRefreshTracker
+    private let configuration: @MainActor () -> HomeRecommendationRefreshConfiguration
+    private let cacheAccountID: @MainActor () -> String?
+    private let cachePersistence: HomeRecommendationCachePersisting
+    private let diagnostics: PerformanceDiagnosticsClient
+    private let now: () -> Date
     private var nextURL: URL?
     private var isEnd = false
     private var hasLoaded = false
+    private var loadedSource: HomeRecommendationSource?
     private var failedOperation: FailedOperation?
     private var generation: UInt64 = 0
-    private var refreshRequestID: UInt64 = 0
+    private var activeRefreshTask: Task<HomeRecommendationRefreshOutcome, Never>?
+    private var activeRefreshGeneration: UInt64?
+
+    private static let maximumRefreshRequests = 6
+    private static let maximumConsecutivePagesWithoutNewItems = 2
+    private static let refreshTimeout: TimeInterval = 15
 
     init(
         repository: HomeFeedRepository,
+        configuration: @escaping @MainActor () -> HomeRecommendationRefreshConfiguration = {
+            .defaultValue
+        },
         refreshMetadataPersistence: FeedChannelRefreshMetadataPersisting = UserDefaultsFeedChannelRefreshMetadataPersistence(),
+        cachePersistence: HomeRecommendationCachePersisting = UserDefaultsHomeRecommendationCachePersistence(),
+        cacheAccountID: @escaping @MainActor () -> String? = { nil },
         refreshPolicy: FeedChannelRefreshPolicy = .oneHour,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        diagnostics: PerformanceDiagnosticsClient = .disabled
     ) {
         self.repository = repository
+        self.configuration = configuration
+        self.cachePersistence = cachePersistence
+        self.cacheAccountID = cacheAccountID
+        self.now = now
+        self.diagnostics = diagnostics
         let refreshTracker = FeedChannelRefreshTracker(
             channel: .recommendations,
             persistence: refreshMetadataPersistence,
@@ -135,6 +293,7 @@ final class HomeFeedNativeStore: ObservableObject {
         )
         self.refreshTracker = refreshTracker
         refreshMetadata = refreshTracker.load()
+        _ = restoreCachedSnapshotForCurrentContext()
     }
 
     var canLoadMore: Bool { hasLoaded && !isEnd && nextURL != nil && !isLoading }
@@ -142,28 +301,59 @@ final class HomeFeedNativeStore: ObservableObject {
     var nextPageLoadID: String? { nextURL?.absoluteString }
 
     func loadInitialIfNeeded() async {
-        guard !hasLoaded else { return }
-        await replacePage(refreshing: false)
+        if !hasLoaded {
+            _ = restoreCachedSnapshotForCurrentContext()
+        }
+        if hasLoaded {
+            if needsRefreshAfterIdle() {
+                _ = await refresh(intent: .automatic)
+            }
+            return
+        }
+        await loadInitialPage()
     }
 
     func refresh() async {
-        if isRefreshing {
-            await waitForActiveRefresh()
-            return
+        _ = await refresh(intent: .pull)
+    }
+
+    @discardableResult
+    func refresh(
+        intent: HomeRecommendationRefreshIntent
+    ) async -> HomeRecommendationRefreshOutcome {
+        if activeRefreshTask != nil {
+            guard intent.replacesActiveRefresh else { return .ignored }
+            cancelActiveRefresh()
+        } else if intent == .automatic, isLoading {
+            return .ignored
         }
 
-        refreshRequestID &+= 1
-        let requestID = refreshRequestID
-        guard await waitUntilRefreshCanStart(requestID: requestID) else { return }
-        await replacePage(refreshing: true)
+        return await startRefreshLoop(intent: intent)
+    }
+
+    func recommendationSourceDidChange() async {
+        let source = configuration().source
+        guard loadedSource != source || isLoading else { return }
+        resetForCacheContextChange()
+        if restoreCachedSnapshotForCurrentContext(), !needsRefreshAfterIdle() {
+            return
+        }
+        _ = await refresh(intent: .sourceChanged)
+    }
+
+    func accountDidChange() {
+        resetForCacheContextChange()
+        _ = restoreCachedSnapshotForCurrentContext()
     }
 
     func recordLastViewed() {
         refreshMetadata = refreshTracker.recordingLastViewed(in: refreshMetadata)
+        persistSuccessfulSnapshot()
     }
 
     func recordLastViewed(at date: Date) {
         refreshMetadata = refreshTracker.recordingLastViewed(in: refreshMetadata, at: date)
+        persistSuccessfulSnapshot()
     }
 
     func needsRefreshAfterIdle() -> Bool {
@@ -177,21 +367,51 @@ final class HomeFeedNativeStore: ObservableObject {
     func loadMore() async {
         guard canLoadMore, let requestedURL = nextURL else { return }
         let currentGeneration = generation
+        let source = loadedSource ?? configuration().source
         isLoading = true
         errorMessage = nil
+        let startedAt = ProcessInfo.processInfo.systemUptime
         do {
-            let page = try await repository.fetchPage(after: requestedURL)
+            let page = try await repository.fetchPage(source: source, after: requestedURL)
             guard currentGeneration == generation else { return }
             appendUnique(page.items)
             nextURL = page.nextURL
             isEnd = page.isEnd
             failedOperation = nil
+            persistSuccessfulSnapshot()
+            diagnostics.record(.init(
+                durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                category: "recommendation",
+                operation: "page_load",
+                result: .success,
+                itemCount: page.items.count,
+                pagingSource: "next",
+                refreshSource: source.rawValue
+            ))
         } catch {
             guard currentGeneration == generation else { return }
             if error.isNativeRequestCancellation {
+                diagnostics.record(.init(
+                    durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                    category: "recommendation",
+                    operation: "page_load",
+                    result: .cancelled,
+                    pagingSource: "next",
+                    refreshSource: source.rawValue,
+                    errorKind: "cancelled"
+                ))
                 isLoading = false
                 return
             }
+            diagnostics.record(.init(
+                durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                category: "recommendation",
+                operation: "page_load",
+                result: .failure,
+                pagingSource: "next",
+                refreshSource: source.rawValue,
+                errorKind: PerformanceDiagnosticEvent.sanitizedErrorKind(error)
+            ))
             errorMessage = error.localizedDescription
             failedOperation = .nextPage
         }
@@ -202,7 +422,7 @@ final class HomeFeedNativeStore: ObservableObject {
         if failedOperation == .nextPage {
             await loadMore()
         } else {
-            await replacePage(refreshing: !items.isEmpty)
+            _ = await refresh(intent: .retry)
         }
     }
 
@@ -210,22 +430,25 @@ final class HomeFeedNativeStore: ObservableObject {
         Task { await repository.reportOpened(item) }
     }
 
-    private func replacePage(refreshing: Bool) async {
+    private func loadInitialPage() async {
         guard !isLoading else { return }
         generation &+= 1
         let currentGeneration = generation
+        let source = configuration().source
         isLoading = true
-        isRefreshing = refreshing
+        isRefreshing = false
         errorMessage = nil
         do {
-            let page = try await repository.fetchPage(after: nil)
+            let page = try await repository.fetchPage(source: source, after: nil)
             guard currentGeneration == generation else { return }
             items = page.items
             nextURL = page.nextURL
             isEnd = page.isEnd
             hasLoaded = true
+            loadedSource = source
             failedOperation = nil
             refreshMetadata = refreshTracker.recordingSuccessfulRefresh(in: refreshMetadata)
+            persistSuccessfulSnapshot()
         } catch {
             guard currentGeneration == generation else { return }
             if error.isNativeRequestCancellation {
@@ -242,26 +465,228 @@ final class HomeFeedNativeStore: ObservableObject {
         }
     }
 
-    private func waitUntilRefreshCanStart(requestID: UInt64) async -> Bool {
-        while isLoading {
-            guard requestID == refreshRequestID else { return false }
-            do {
-                try await Task.sleep(nanoseconds: 25_000_000)
-            } catch {
-                return false
-            }
+    private func startRefreshLoop(
+        intent: HomeRecommendationRefreshIntent
+    ) async -> HomeRecommendationRefreshOutcome {
+        generation &+= 1
+        let refreshGeneration = generation
+        let refreshConfiguration = configuration()
+        isLoading = true
+        isRefreshing = hasLoaded
+        errorMessage = nil
+        let startedAt = ProcessInfo.processInfo.systemUptime
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return HomeRecommendationRefreshOutcome.cancelled }
+            return await self.performRefreshLoop(
+                generation: refreshGeneration,
+                configuration: refreshConfiguration,
+                intent: intent,
+                startedAt: startedAt
+            )
         }
-        return !Task.isCancelled && requestID == refreshRequestID
+        activeRefreshTask = task
+        activeRefreshGeneration = refreshGeneration
+        let outcome = await task.value
+        if activeRefreshGeneration == refreshGeneration {
+            activeRefreshTask = nil
+            activeRefreshGeneration = nil
+        }
+        if generation == refreshGeneration {
+            isLoading = false
+            isRefreshing = false
+        }
+        diagnostics.record(.init(
+            durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+            category: "recommendation",
+            operation: "refresh_loop",
+            result: outcome.diagnosticResult,
+            itemCount: items.count,
+            refreshSource: "\(intent.diagnosticName):\(refreshConfiguration.source.rawValue)",
+            errorKind: outcome == .failed ? "refresh_failed" : nil
+        ))
+        return outcome
     }
 
-    private func waitForActiveRefresh() async {
-        while isRefreshing {
-            do {
-                try await Task.sleep(nanoseconds: 25_000_000)
-            } catch {
-                return
+    private func performRefreshLoop(
+        generation refreshGeneration: UInt64,
+        configuration refreshConfiguration: HomeRecommendationRefreshConfiguration,
+        intent: HomeRecommendationRefreshIntent,
+        startedAt: TimeInterval
+    ) async -> HomeRecommendationRefreshOutcome {
+        let deadline = Date().addingTimeInterval(Self.refreshTimeout)
+        var requestedPageURL: URL?
+        var visitedPageURLs: Set<String> = []
+        var accumulatedItems: [FeedItemDTO] = []
+        var knownItemIDs: Set<FeedItemID> = []
+        var consecutivePagesWithoutNewItems = 0
+        var publishedFirstBatch = false
+
+        do {
+            for _ in 0..<Self.maximumRefreshRequests {
+                try Task.checkCancellation()
+                guard refreshGeneration == generation else { return .cancelled }
+                if let requestedPageURL,
+                   !visitedPageURLs.insert(requestedPageURL.absoluteString).inserted {
+                    break
+                }
+
+                let page = try await fetchRefreshPage(
+                    source: refreshConfiguration.source,
+                    after: requestedPageURL,
+                    deadline: deadline
+                )
+                try Task.checkCancellation()
+                guard refreshGeneration == generation else { return .cancelled }
+
+                let newItems = page.items.filter { knownItemIDs.insert($0.id).inserted }
+                if newItems.isEmpty {
+                    consecutivePagesWithoutNewItems += 1
+                } else {
+                    consecutivePagesWithoutNewItems = 0
+                    accumulatedItems.append(contentsOf: newItems)
+                    items = accumulatedItems
+                    loadedSource = refreshConfiguration.source
+
+                    if !publishedFirstBatch {
+                        publishedFirstBatch = true
+                        hasLoaded = true
+                        failedOperation = nil
+                        refreshMetadata = refreshTracker.recordingSuccessfulRefresh(
+                            in: refreshMetadata
+                        )
+                        refreshFeedbackSequence &+= 1
+                        diagnostics.record(.init(
+                            durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                            category: "recommendation",
+                            operation: "first_publish",
+                            result: .success,
+                            itemCount: accumulatedItems.count,
+                            pagingSource: requestedPageURL == nil ? "initial" : "next",
+                            refreshSource: "\(intent.diagnosticName):\(refreshConfiguration.source.rawValue)"
+                        ))
+                    }
+                }
+
+                if publishedFirstBatch {
+                    nextURL = page.nextURL
+                    isEnd = page.isEnd
+                    persistSuccessfulSnapshot()
+                }
+
+                if accumulatedItems.count >= refreshConfiguration.targetItemCount
+                    || page.isEnd
+                    || page.nextURL == nil
+                    || consecutivePagesWithoutNewItems
+                        >= Self.maximumConsecutivePagesWithoutNewItems {
+                    break
+                }
+                requestedPageURL = page.nextURL
             }
+
+            guard refreshGeneration == generation else { return .cancelled }
+            hasLoaded = true
+            failedOperation = nil
+            return publishedFirstBatch ? .published : .noContent
+        } catch {
+            guard refreshGeneration == generation else { return .cancelled }
+            if error.isNativeRequestCancellation || error is CancellationError {
+                return .cancelled
+            }
+            errorMessage = error.localizedDescription
+            failedOperation = .initial
+            return publishedFirstBatch ? .publishedPartially : .failed
         }
+    }
+
+    private func fetchRefreshPage(
+        source: HomeRecommendationSource,
+        after nextURL: URL?,
+        deadline: Date
+    ) async throws -> FeedPageDTO {
+        let remaining = deadline.timeIntervalSinceNow
+        guard remaining > 0 else { throw RefreshLoopError.timedOut }
+        let repository = repository
+        return try await withThrowingTaskGroup(of: FeedPageDTO.self) { group in
+            group.addTask {
+                try await repository.fetchPage(source: source, after: nextURL)
+            }
+            group.addTask {
+                try await Task.sleep(
+                    nanoseconds: UInt64(remaining * 1_000_000_000)
+                )
+                throw RefreshLoopError.timedOut
+            }
+            guard let first = try await group.next() else {
+                throw RefreshLoopError.timedOut
+            }
+            group.cancelAll()
+            return first
+        }
+    }
+
+    private func cancelActiveRefresh() {
+        activeRefreshTask?.cancel()
+        activeRefreshTask = nil
+        activeRefreshGeneration = nil
+        generation &+= 1
+        isLoading = false
+        isRefreshing = false
+    }
+
+    private func resetForCacheContextChange() {
+        cancelActiveRefresh()
+        items = []
+        nextURL = nil
+        isEnd = false
+        hasLoaded = false
+        loadedSource = nil
+        failedOperation = nil
+        errorMessage = nil
+        refreshMetadata = refreshTracker.clearing()
+    }
+
+    @discardableResult
+    private func restoreCachedSnapshotForCurrentContext() -> Bool {
+        guard let context = currentCacheContext(),
+              let snapshot = cachePersistence.load(for: context)
+        else { return false }
+        items = snapshot.items
+        nextURL = snapshot.nextURL
+        isEnd = snapshot.isEnd
+        hasLoaded = true
+        loadedSource = snapshot.source
+        failedOperation = nil
+        errorMessage = nil
+        refreshMetadata = snapshot.refreshMetadata
+        return true
+    }
+
+    private func persistSuccessfulSnapshot() {
+        guard !items.isEmpty,
+              let context = currentCacheContext(),
+              loadedSource == context.source
+        else { return }
+        cachePersistence.save(
+            HomeRecommendationCacheSnapshot(
+                schemaVersion: HomeRecommendationCacheSnapshot.currentSchemaVersion,
+                accountID: context.accountID,
+                source: context.source,
+                items: items,
+                nextURL: nextURL,
+                isEnd: isEnd,
+                refreshMetadata: refreshMetadata,
+                savedAt: now()
+            ),
+            for: context
+        )
+    }
+
+    private func currentCacheContext() -> HomeRecommendationCacheContext? {
+        HomeRecommendationCacheContext(
+            accountID: cacheAccountID(),
+            source: configuration().source
+        )
     }
 
     private func appendUnique(_ incoming: [FeedItemDTO]) {
@@ -272,6 +697,12 @@ final class HomeFeedNativeStore: ObservableObject {
     private enum FailedOperation {
         case initial
         case nextPage
+    }
+
+    private enum RefreshLoopError: LocalizedError {
+        case timedOut
+
+        var errorDescription: String? { "刷新超时，请稍后重试" }
     }
 }
 
@@ -323,6 +754,17 @@ final class FollowNativeStore: ObservableObject {
 
     func select(_ section: FollowSection) {
         selectedSection = section
+    }
+
+    func accountDidChange() {
+        recommendationGeneration &+= 1
+        momentsGeneration &+= 1
+        recommendations = FollowPageState()
+        moments = FollowPageState()
+        recentUsers = []
+        recentUsersErrorMessage = nil
+        loadedRecentUsers = false
+        refreshMetadata = refreshTracker.clearing()
     }
 
     func loadIfNeeded(section: FollowSection) async {

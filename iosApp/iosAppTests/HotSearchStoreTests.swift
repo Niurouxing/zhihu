@@ -209,6 +209,29 @@ final class HotSearchStoreTests: XCTestCase {
         XCTAssertNil(search.resultErrorMessage)
     }
 
+    func testHotAccountChangeClearsContentAndPersistedRefreshMetadata() async {
+        let suite = "HotAccountIsolation.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let persistence = UserDefaultsFeedChannelRefreshMetadataPersistence(defaults: defaults)
+        let store = HotFeedStore(
+            repository: HotRepositoryStub(results: [
+                .success(.init(items: [item(id: 1)], nextURL: nil, isEnd: true)),
+                .success(.init(items: [item(id: 2)], nextURL: nil, isEnd: true)),
+            ]),
+            refreshMetadataPersistence: persistence
+        )
+        await store.loadInitialIfNeeded()
+
+        store.accountDidChange()
+
+        XCTAssertTrue(store.items.isEmpty)
+        XCTAssertEqual(store.refreshMetadata, .empty)
+        XCTAssertEqual(persistence.load(for: .hot), .empty)
+        await store.loadInitialIfNeeded()
+        XCTAssertEqual(store.items, [item(id: 2)])
+    }
+
     private func item(id: Int64) -> FeedItemDTO {
         FeedItemDTO(
             id: FeedItemID(kind: .article, contentID: String(id)),

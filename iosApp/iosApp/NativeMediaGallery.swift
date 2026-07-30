@@ -1,3 +1,4 @@
+import ImageIO
 import Photos
 import SwiftUI
 import UIKit
@@ -308,7 +309,11 @@ private struct NativeZoomableRemoteImage: View {
 
     var body: some View {
         Group {
-            if let image = store.image(for: url) {
+            if NativeRemoteMediaPolicy.isAnimatedImage(url) {
+                zoomableContent(
+                    NativeAnimatedRemoteImage(url: url, contentMode: .fit)
+                )
+            } else if let image = store.image(for: url) {
                 zoomableImage(image)
             } else if store.didFail(url) {
                 VStack(spacing: 12) {
@@ -328,20 +333,22 @@ private struct NativeZoomableRemoteImage: View {
         .onDisappear { onZoomChanged(false) }
     }
 
-    @ViewBuilder
     private func zoomableImage(_ image: UIImage) -> some View {
-        let content = Image(uiImage: image)
-            .resizable()
-            .scaledToFit()
+        zoomableContent(Image(uiImage: image).resizable().scaledToFit())
+    }
+
+    @ViewBuilder
+    private func zoomableContent<Content: View>(_ content: Content) -> some View {
+        let transformed = content
             .scaleEffect(scale)
             .offset(offset)
             .gesture(magnificationGesture)
             .onTapGesture(count: 2, perform: toggleZoom)
 
         if scale > 1.001 {
-            content.simultaneousGesture(panGesture)
+            transformed.simultaneousGesture(panGesture)
         } else {
-            content
+            transformed
         }
     }
 
@@ -384,6 +391,148 @@ private struct NativeZoomableRemoteImage: View {
             settledScale = 2
         }
         onZoomChanged(scale > 1.001)
+    }
+}
+
+enum NativeRemoteMediaPolicy {
+    static func isAnimatedImage(_ url: URL) -> Bool {
+        ["gif", "webp", "apng"].contains(url.pathExtension.lowercased())
+    }
+}
+
+struct NativeAnimatedRemoteImage: View {
+    let url: URL
+    let contentMode: ContentMode
+
+    @StateObject private var loader = NativeAnimatedImageLoader()
+
+    init(url: URL, contentMode: ContentMode = .fit) {
+        self.url = url
+        self.contentMode = contentMode
+    }
+
+    var body: some View {
+        Group {
+            if let image = loader.image {
+                NativeAnimatedUIImageView(image: image, contentMode: contentMode)
+                    .aspectRatio(
+                        image.size.height > 0 ? image.size.width / image.size.height : 1,
+                        contentMode: contentMode
+                    )
+            } else if loader.didFail {
+                ZStack {
+                    Color.secondary.opacity(0.12)
+                    Image(systemName: "photo.badge.exclamationmark")
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                ZStack {
+                    Color.secondary.opacity(0.08)
+                    ProgressView()
+                }
+            }
+        }
+        .task(id: url) { await loader.load(url) }
+        .accessibilityLabel("动图")
+    }
+}
+
+private struct NativeAnimatedUIImageView: UIViewRepresentable {
+    let image: UIImage
+    let contentMode: ContentMode
+
+    func makeUIView(context: Context) -> UIImageView {
+        let view = UIImageView()
+        view.clipsToBounds = true
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ uiView: UIImageView, context: Context) {
+        uiView.contentMode = contentMode == .fill ? .scaleAspectFill : .scaleAspectFit
+        guard uiView.image !== image else { return }
+        uiView.stopAnimating()
+        uiView.image = image
+        uiView.startAnimating()
+    }
+}
+
+@MainActor
+private final class NativeAnimatedImageLoader: ObservableObject {
+    @Published private(set) var image: UIImage?
+    @Published private(set) var didFail = false
+    private var loadedURL: URL?
+
+    func load(_ url: URL) async {
+        guard loadedURL != url || image == nil else { return }
+        loadedURL = url
+        image = nil
+        didFail = false
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            try Task.checkCancellation()
+            guard let response = response as? HTTPURLResponse,
+                  (200..<300).contains(response.statusCode),
+                  data.count <= 40 * 1_024 * 1_024,
+                  let decoded = NativeAnimatedImageDecoder.decode(data)
+            else { throw URLError(.cannotDecodeContentData) }
+            guard loadedURL == url else { return }
+            image = decoded
+        } catch is CancellationError {
+        } catch {
+            guard loadedURL == url else { return }
+            didFail = true
+        }
+    }
+}
+
+enum NativeAnimatedImageDecoder {
+    private static let maximumFrameCount = 60
+    private static let maximumTotalPixels = 24_000_000
+    private static let maximumPixelSize = 1_600
+
+    static func decode(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let frameCount = CGImageSourceGetCount(source)
+        guard frameCount > 1 else { return UIImage(data: data) }
+
+        let stride = max(1, Int(ceil(Double(frameCount) / Double(maximumFrameCount))))
+        let decodedFrameCount = Int(ceil(Double(frameCount) / Double(stride)))
+        let memoryBoundPixelSize = Int(
+            sqrt(Double(maximumTotalPixels) / Double(max(decodedFrameCount, 1)))
+        )
+        let thumbnailPixelSize = min(maximumPixelSize, max(memoryBoundPixelSize, 320))
+        let options = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: thumbnailPixelSize,
+            kCGImageSourceShouldCacheImmediately: true,
+        ] as CFDictionary
+        var frames: [UIImage] = []
+        frames.reserveCapacity(min(frameCount, maximumFrameCount))
+        var duration = 0.0
+
+        for index in 0 ..< frameCount {
+            duration += frameDuration(source: source, index: index)
+            guard index % stride == 0,
+                  let cgImage = CGImageSourceCreateThumbnailAtIndex(source, index, options)
+            else { continue }
+            frames.append(UIImage(cgImage: cgImage))
+        }
+
+        guard !frames.isEmpty else { return nil }
+        return UIImage.animatedImage(with: frames, duration: max(duration, 0.1))
+    }
+
+    private static func frameDuration(source: CGImageSource, index: Int) -> TimeInterval {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil)
+            as? [CFString: Any],
+              let gif = properties[kCGImagePropertyGIFDictionary] as? [CFString: Any]
+        else { return 0.1 }
+        let unclamped = (gif[kCGImagePropertyGIFUnclampedDelayTime] as? NSNumber)?.doubleValue
+        let clamped = (gif[kCGImagePropertyGIFDelayTime] as? NSNumber)?.doubleValue
+        let value = unclamped ?? clamped ?? 0.1
+        return value < 0.02 ? 0.1 : value
     }
 }
 

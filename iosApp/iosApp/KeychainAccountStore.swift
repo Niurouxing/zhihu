@@ -8,6 +8,35 @@ protocol AccountJSONStore {
     func update(_ transform: (String?) throws -> String?) throws
 }
 
+struct NativeSavedAccountSummary: Identifiable, Codable, Equatable, Hashable, Sendable {
+    let id: String
+    let name: String
+    let urlToken: String?
+    let avatarURL: URL?
+}
+
+protocol MultipleAccountJSONStore: AccountJSONStore {
+    func listAccounts() throws -> [NativeSavedAccountSummary]
+    func currentAccountID() throws -> String?
+    func switchAccount(to accountID: String) throws
+    func deleteAccount(_ accountID: String) throws
+    func clearCurrentAccount() throws
+}
+
+enum MultipleAccountStoreError: LocalizedError, Equatable {
+    case accountNotFound
+    case cannotDeleteCurrentAccount
+
+    var errorDescription: String? {
+        switch self {
+        case .accountNotFound:
+            return "找不到要操作的账号"
+        case .cannotDeleteCurrentAccount:
+            return "不能删除当前正在使用的账号"
+        }
+    }
+}
+
 extension AccountJSONStore {
     func update(_ transform: (String?) throws -> String?) throws {
         if let updated = try transform(try load()) {
@@ -18,7 +47,7 @@ extension AccountJSONStore {
     }
 }
 
-final class KeychainAccountStore: AccountJSONStore {
+final class KeychainAccountStore: MultipleAccountJSONStore {
     static let defaultService = "com.github.zly2006.zhplus.ios.account"
     static let defaultAccount = "account-json-v1"
 
@@ -51,13 +80,20 @@ final class KeychainAccountStore: AccountJSONStore {
 
     func load() throws -> String? {
         try synchronized {
-            try loadUnlocked()
+            var vault = try loadVaultUnlocked()
+            if vault.requiresPersistence {
+                try saveVaultUnlocked(vault.envelope)
+                vault.requiresPersistence = false
+            }
+            return vault.envelope.currentSessionJSON
         }
     }
 
     func save(_ accountJSON: String) throws {
         try synchronized {
-            try saveUnlocked(accountJSON)
+            var vault = try loadVaultUnlocked().envelope
+            upsert(accountJSON, into: &vault)
+            try saveVaultUnlocked(vault)
         }
     }
 
@@ -69,12 +105,72 @@ final class KeychainAccountStore: AccountJSONStore {
 
     func update(_ transform: (String?) throws -> String?) throws {
         try synchronized {
-            let current = try loadUnlocked()
+            var vault = try loadVaultUnlocked().envelope
+            let current = vault.currentSessionJSON
             if let updated = try transform(current) {
-                try saveUnlocked(updated)
+                upsert(updated, into: &vault)
+                try saveVaultUnlocked(vault)
             } else {
-                try clearUnlocked()
+                try clearCurrentAccountUnlocked(vault: &vault)
             }
+        }
+    }
+
+    func listAccounts() throws -> [NativeSavedAccountSummary] {
+        try synchronized {
+            let vault = try loadVaultUnlocked()
+            if vault.requiresPersistence {
+                try saveVaultUnlocked(vault.envelope)
+            }
+            return vault.envelope.accounts.values
+                .map(\.summary)
+                .sorted {
+                    let order = $0.name.localizedCaseInsensitiveCompare($1.name)
+                    return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
+                }
+        }
+    }
+
+    func currentAccountID() throws -> String? {
+        try synchronized {
+            let vault = try loadVaultUnlocked()
+            if vault.requiresPersistence {
+                try saveVaultUnlocked(vault.envelope)
+            }
+            return vault.envelope.currentAccountID
+        }
+    }
+
+    func switchAccount(to accountID: String) throws {
+        try synchronized {
+            var vault = try loadVaultUnlocked().envelope
+            guard vault.accounts[accountID] != nil else {
+                throw MultipleAccountStoreError.accountNotFound
+            }
+            vault.currentAccountID = accountID
+            vault.legacyCurrentJSON = nil
+            try saveVaultUnlocked(vault)
+        }
+    }
+
+    func deleteAccount(_ accountID: String) throws {
+        try synchronized {
+            var vault = try loadVaultUnlocked().envelope
+            guard vault.accounts[accountID] != nil else {
+                throw MultipleAccountStoreError.accountNotFound
+            }
+            guard vault.currentAccountID != accountID else {
+                throw MultipleAccountStoreError.cannotDeleteCurrentAccount
+            }
+            vault.accounts.removeValue(forKey: accountID)
+            try saveVaultUnlocked(vault)
+        }
+    }
+
+    func clearCurrentAccount() throws {
+        try synchronized {
+            var vault = try loadVaultUnlocked().envelope
+            try clearCurrentAccountUnlocked(vault: &vault)
         }
     }
 
@@ -86,7 +182,7 @@ final class KeychainAccountStore: AccountJSONStore {
         ]
     }
 
-    private func loadUnlocked() throws -> String? {
+    private func loadRawUnlocked() throws -> String? {
         var query = itemQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -105,8 +201,8 @@ final class KeychainAccountStore: AccountJSONStore {
         return value
     }
 
-    private func saveUnlocked(_ accountJSON: String) throws {
-        let data = Data(accountJSON.utf8)
+    private func saveRawUnlocked(_ value: String) throws {
+        let data = Data(value.utf8)
         let attributes = [kSecValueData as String: data]
         let updateStatus = SecItemUpdate(itemQuery as CFDictionary, attributes as CFDictionary)
         if updateStatus == errSecSuccess {
@@ -136,5 +232,123 @@ final class KeychainAccountStore: AccountJSONStore {
         lock.lock()
         defer { lock.unlock() }
         return try operation()
+    }
+
+    private func loadVaultUnlocked() throws -> LoadedVault {
+        guard let rawValue = try loadRawUnlocked() else {
+            return LoadedVault(envelope: .empty, requiresPersistence: false)
+        }
+        if let data = rawValue.data(using: .utf8),
+           let envelope = try? JSONDecoder().decode(AccountVaultEnvelope.self, from: data),
+           envelope.format == AccountVaultEnvelope.currentFormat {
+            return LoadedVault(envelope: envelope.normalized(), requiresPersistence: false)
+        }
+
+        var migrated = AccountVaultEnvelope.empty
+        upsert(rawValue, into: &migrated)
+        return LoadedVault(envelope: migrated, requiresPersistence: true)
+    }
+
+    private func saveVaultUnlocked(_ vault: AccountVaultEnvelope) throws {
+        if vault.accounts.isEmpty, vault.legacyCurrentJSON == nil {
+            try clearUnlocked()
+            return
+        }
+        let data = try JSONEncoder().encode(vault.normalized())
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw StoreError.invalidUTF8
+        }
+        try saveRawUnlocked(value)
+    }
+
+    private func upsert(_ accountJSON: String, into vault: inout AccountVaultEnvelope) {
+        guard let summary = Self.summary(in: accountJSON) else {
+            vault.currentAccountID = nil
+            vault.legacyCurrentJSON = accountJSON
+            return
+        }
+        vault.accounts[summary.id] = AccountVaultRecord(
+            summary: summary,
+            sessionJSON: accountJSON
+        )
+        vault.currentAccountID = summary.id
+        vault.legacyCurrentJSON = nil
+    }
+
+    private func clearCurrentAccountUnlocked(vault: inout AccountVaultEnvelope) throws {
+        if let currentAccountID = vault.currentAccountID {
+            vault.accounts.removeValue(forKey: currentAccountID)
+        }
+        vault.currentAccountID = nil
+        vault.legacyCurrentJSON = nil
+        try saveVaultUnlocked(vault)
+    }
+
+    private static func summary(in accountJSON: String) -> NativeSavedAccountSummary? {
+        guard let data = accountJSON.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              root["login"] as? Bool == true,
+              let profile = root["profile"] as? [String: Any]
+        else { return nil }
+        let rawID = (profile["id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawToken = (profile["urlToken"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stableID: String
+        if let rawID, !rawID.isEmpty {
+            stableID = rawID
+        } else if let rawToken, !rawToken.isEmpty {
+            stableID = "url:\(rawToken)"
+        } else {
+            return nil
+        }
+        let profileName = (profile["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let username = (root["username"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = [profileName, username].compactMap { $0 }.first(where: { !$0.isEmpty }) ?? "知乎账号"
+        let avatarURL = (profile["avatarUrl"] as? String).flatMap(URL.init(string:))
+        return NativeSavedAccountSummary(
+            id: stableID,
+            name: name,
+            urlToken: rawToken?.isEmpty == false ? rawToken : nil,
+            avatarURL: avatarURL
+        )
+    }
+}
+
+private struct LoadedVault {
+    var envelope: AccountVaultEnvelope
+    var requiresPersistence: Bool
+}
+
+private struct AccountVaultRecord: Codable {
+    let summary: NativeSavedAccountSummary
+    let sessionJSON: String
+}
+
+private struct AccountVaultEnvelope: Codable {
+    static let currentFormat = "zhihu-plus-plus-account-vault-v2"
+    static let empty = AccountVaultEnvelope(
+        format: currentFormat,
+        currentAccountID: nil,
+        accounts: [:],
+        legacyCurrentJSON: nil
+    )
+
+    let format: String
+    var currentAccountID: String?
+    var accounts: [String: AccountVaultRecord]
+    var legacyCurrentJSON: String?
+
+    var currentSessionJSON: String? {
+        if let currentAccountID {
+            return accounts[currentAccountID]?.sessionJSON
+        }
+        return legacyCurrentJSON
+    }
+
+    func normalized() -> AccountVaultEnvelope {
+        var result = self
+        if let currentAccountID, accounts[currentAccountID] == nil {
+            result.currentAccountID = nil
+        }
+        return result
     }
 }

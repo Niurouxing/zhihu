@@ -22,13 +22,25 @@ enum CommentLevelKey: Hashable {
     case replies(rootCommentID: String)
 }
 
+struct CommentShareContextDTO: Hashable {
+    let title: String
+    let excerpt: String?
+    let sourceURL: URL
+}
+
 struct CommentThreadRouteDTO: Hashable {
     let subject: CommentSubjectDTO
     let initialLevel: CommentLevelKey
+    let shareContext: CommentShareContextDTO?
 
-    init(subject: CommentSubjectDTO, initialLevel: CommentLevelKey = .root) {
+    init(
+        subject: CommentSubjectDTO,
+        initialLevel: CommentLevelKey = .root,
+        shareContext: CommentShareContextDTO? = nil
+    ) {
         self.subject = subject
         self.initialLevel = initialLevel
+        self.shareContext = shareContext
     }
 }
 

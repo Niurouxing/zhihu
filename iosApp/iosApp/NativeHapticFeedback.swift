@@ -29,6 +29,7 @@ enum NativeHapticFeedbackEvent: Equatable {
     case dismiss
     case navigationBoundary
     case refreshSucceeded
+    case refreshIgnored
     case strengthPreview
 }
 
@@ -95,6 +96,7 @@ private enum NativeHapticFeedbackPerformer {
         case .dismiss: return 0.6
         case .navigationBoundary: return 1
         case .refreshSucceeded: return 1
+        case .refreshIgnored: return 0.45
         case .strengthPreview: return 0.8
         }
     }

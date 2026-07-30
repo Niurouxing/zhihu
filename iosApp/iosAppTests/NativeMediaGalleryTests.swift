@@ -3,6 +3,21 @@ import XCTest
 @testable import iosApp
 
 final class NativeMediaGalleryTests: XCTestCase {
+    func testAnimatedImagePolicyRecognizesSupportedFormats() {
+        XCTAssertTrue(NativeRemoteMediaPolicy.isAnimatedImage(
+            URL(string: "https://pic.zhimg.com/demo.gif?source=answer")!
+        ))
+        XCTAssertTrue(NativeRemoteMediaPolicy.isAnimatedImage(
+            URL(string: "https://pic.zhimg.com/demo.webp")!
+        ))
+        XCTAssertTrue(NativeRemoteMediaPolicy.isAnimatedImage(
+            URL(string: "https://pic.zhimg.com/demo.apng")!
+        ))
+        XCTAssertFalse(NativeRemoteMediaPolicy.isAnimatedImage(
+            URL(string: "https://pic.zhimg.com/demo.jpg")!
+        ))
+    }
+
     func testGalleryDestinationPreservesAllMediaAndSelectedIdentity() throws {
         let media = [
             CommentMediaDTO(kind: .image, url: URL(string: "https://pic.zhimg.com/one.jpg")!),

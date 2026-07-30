@@ -26,6 +26,121 @@ protocol QuestionAnswerRepository: Sendable {
         collectionID: String,
         route: AnswerRouteDTO
     ) async throws
+    func recordReadHistory(contentToken: String, contentType: String) async
+}
+
+extension QuestionAnswerRepository {
+    func recordReadHistory(contentToken: String, contentType: String) async {}
+}
+
+protocol NativeVideoRepository: Sendable {
+    func resolvePlaybackURL(for route: NativeVideoRouteDTO) async throws -> URL
+}
+
+enum NativeVideoRepositoryError: LocalizedError, Equatable {
+    case invalidRequest
+    case playbackUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidRequest:
+            return "视频信息无效"
+        case .playbackUnavailable:
+            return "暂时无法获取视频播放地址"
+        }
+    }
+}
+
+actor URLSessionNativeVideoRepository: NativeVideoRepository {
+    private let client: ZhihuAPIClient
+    private let decoder: JSONDecoder
+
+    init(client: ZhihuAPIClient) {
+        self.client = client
+        decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+    }
+
+    func resolvePlaybackURL(for route: NativeVideoRouteDTO) async throws -> URL {
+        if let playbackURL = route.playbackURL,
+           let trustedURL = trustedPlaybackURL(playbackURL.absoluteString) {
+            return trustedURL
+        }
+        guard route.contentID > 0, route.videoID > 0,
+              var components = URLComponents(string: "https://www.zhihu.com/api/v4/video/play_info")
+        else { throw NativeVideoRepositoryError.invalidRequest }
+        components.queryItems = [URLQueryItem(name: "r", value: String(route.videoID))]
+        guard let url = components.url else { throw NativeVideoRepositoryError.invalidRequest }
+
+        let request = NativeVideoPlayRequest(
+            contentID: String(route.contentID),
+            contentTypeString: route.contentType.rawValue,
+            videoID: String(route.videoID),
+            sceneCode: route.contentType.sceneCode,
+            isOnlyVideo: true
+        )
+        guard let body = try? JSONEncoder().encode(request) else {
+            throw NativeVideoRepositoryError.invalidRequest
+        }
+        let data = try await client.data(
+            for: url,
+            method: "POST",
+            body: body,
+            additionalHeaders: [
+                "Content-Type": "application/json",
+                "x-app-za": "OS=webplayer",
+                "x-referer": "",
+            ],
+            authentication: .accountIfAvailable
+        )
+        guard let response = try? decoder.decode(NativeVideoPlayResponse.self, from: data),
+              let playbackURL = response.highestQualityURL
+        else { throw NativeVideoRepositoryError.playbackUnavailable }
+        return playbackURL
+    }
+}
+
+private struct NativeVideoPlayRequest: Encodable {
+    let contentID: String
+    let contentTypeString: String
+    let videoID: String
+    let sceneCode: String
+    let isOnlyVideo: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case contentID = "content_id"
+        case contentTypeString = "content_type_str"
+        case videoID = "video_id"
+        case sceneCode = "scene_code"
+        case isOnlyVideo = "is_only_video"
+    }
+}
+
+private struct NativeVideoPlayResponse: Decodable {
+    let videoPlay: VideoPlay?
+
+    struct VideoPlay: Decodable {
+        let playlist: Playlist?
+    }
+
+    struct Playlist: Decodable {
+        let mp4: [Playback]?
+    }
+
+    struct Playback: Decodable {
+        let bitrate: Int?
+        let url: [String]?
+    }
+
+    var highestQualityURL: URL? {
+        videoPlay?.playlist?.mp4?
+            .compactMap { playback -> (Int, URL)? in
+                guard let url = playback.url?.compactMap(trustedPlaybackURL).first else { return nil }
+                return (playback.bitrate ?? 0, url)
+            }
+            .max { $0.0 < $1.0 }?
+            .1
+    }
 }
 
 actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
@@ -151,6 +266,10 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
         } catch {
             throw QuestionAnswerRepositoryError.malformedContent
         }
+    }
+
+    func recordReadHistory(contentToken: String, contentType: String) async {
+        await client.recordReadHistory(contentToken: contentToken, contentType: contentType)
     }
 
     func setVote(_ state: QAVoteState, route: AnswerRouteDTO) async throws -> QAVoteMutationResult {

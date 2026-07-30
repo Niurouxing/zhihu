@@ -1,4 +1,5 @@
 import XCTest
+import WebKit
 @testable import iosApp
 
 final class NativeLoginLogicTests: XCTestCase {
@@ -48,6 +49,12 @@ final class NativeLoginLogicTests: XCTestCase {
         XCTAssertNil(QrAuthorizationURLPolicy.validatedURL(from: "https://example.com/login/token"))
     }
 
+    func testLoginWebSessionDoesNotReusePersistentZhihuCookies() {
+        let configuration = NativeLoginWebSessionPolicy.makeConfiguration()
+
+        XCTAssertFalse(configuration.websiteDataStore.isPersistent)
+    }
+
     func testSystemExternalLinksAreValidHTTPSURLs() {
         XCTAssertTrue(SystemExternalLink.allCases.allSatisfy { $0.validatedURL?.scheme == "https" })
         XCTAssertEqual(SystemExternalLink.sourceCode.validatedURL?.host, "github.com")
@@ -74,5 +81,55 @@ final class NativeLoginLogicTests: XCTestCase {
             components.queryItems?.first(where: { $0.name == "url" })?.value,
             expectedSourceURL
         )
+    }
+
+    @MainActor
+    func testExternalURLCoordinatorUsesDefaultBrowserForBrowserMode() {
+        let browser = ExternalURLOpenerSpy()
+        let inApp = InAppExternalURLPresenterSpy()
+        let coordinator = ExternalURLCoordinator(opener: browser, inAppPresenter: inApp)
+        let url = URL(string: "https://example.com/page")!
+
+        coordinator.open(url, mode: .defaultBrowser) { _ in
+            XCTFail("The browser spy accepts the URL")
+        }
+
+        XCTAssertEqual(browser.openedURLs, [url])
+        XCTAssertTrue(inApp.presentedURLs.isEmpty)
+    }
+
+    @MainActor
+    func testExternalURLCoordinatorUsesSafariViewForInAppMode() {
+        let browser = ExternalURLOpenerSpy()
+        let inApp = InAppExternalURLPresenterSpy()
+        let coordinator = ExternalURLCoordinator(opener: browser, inAppPresenter: inApp)
+        let url = URL(string: "https://example.com/page")!
+
+        coordinator.open(url, mode: .inApp) { _ in
+            XCTFail("The in-app presenter spy accepts the URL")
+        }
+
+        XCTAssertTrue(browser.openedURLs.isEmpty)
+        XCTAssertEqual(inApp.presentedURLs, [url])
+    }
+}
+
+private final class ExternalURLOpenerSpy: ExternalURLOpening {
+    private(set) var openedURLs: [URL] = []
+
+    @MainActor
+    func open(_ url: URL, completion: @escaping @Sendable (Bool) -> Void) {
+        openedURLs.append(url)
+        completion(true)
+    }
+}
+
+private final class InAppExternalURLPresenterSpy: InAppExternalURLPresenting {
+    private(set) var presentedURLs: [URL] = []
+
+    @MainActor
+    func present(_ url: URL, completion: @escaping @Sendable (Bool) -> Void) {
+        presentedURLs.append(url)
+        completion(true)
     }
 }

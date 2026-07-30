@@ -11,13 +11,15 @@ struct ArticleHostView: View {
         route: AnswerRouteDTO,
         repository: QuestionAnswerRepository,
         openedHistory: AnswerOpenedHistory,
+        diagnostics: PerformanceDiagnosticsClient = .disabled,
         onNavigate: @escaping (QANavigationIntent) -> Void
     ) {
         _pager = StateObject(
             wrappedValue: AnswerPagerStore(
                 route: route,
                 repository: repository,
-                openedHistory: openedHistory
+                openedHistory: openedHistory,
+                diagnostics: diagnostics
             )
         )
         self.onNavigate = onNavigate

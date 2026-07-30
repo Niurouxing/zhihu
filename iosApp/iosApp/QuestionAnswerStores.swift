@@ -46,6 +46,12 @@ final class QuestionStore: ObservableObject {
             nextURL = loadedPage.nextURL
             isEnd = loadedPage.isEnd
             initialLoad = .loaded
+            Task {
+                await repository.recordReadHistory(
+                    contentToken: String(loadedQuestion.id),
+                    contentType: "question"
+                )
+            }
         } catch is CancellationError {
             if generation == accepted { initialLoad = question == nil ? .idle : .loaded }
             return
@@ -161,6 +167,12 @@ final class AnswerStore: ObservableObject, Identifiable {
             guard revision == accepted else { return }
             content = loaded
             loadState = .loaded
+            Task {
+                await repository.recordReadHistory(
+                    contentToken: String(loaded.route.contentID),
+                    contentType: loaded.route.kind.rawValue
+                )
+            }
         } catch is CancellationError {
             if revision == accepted { loadState = content == nil ? .idle : .loaded }
             return
@@ -297,6 +309,7 @@ final class AnswerPagerStore: ObservableObject {
 
     private let repository: QuestionAnswerRepository
     private let openedHistory: AnswerOpenedHistory
+    private let diagnostics: PerformanceDiagnosticsClient
     private var routes: [AnswerRouteDTO]
     private var index: Int
     private var nextURL: URL?
@@ -315,10 +328,12 @@ final class AnswerPagerStore: ObservableObject {
     init(
         route: AnswerRouteDTO,
         repository: QuestionAnswerRepository,
-        openedHistory: AnswerOpenedHistory = UserDefaultsAnswerOpenedHistory()
+        openedHistory: AnswerOpenedHistory = UserDefaultsAnswerOpenedHistory(),
+        diagnostics: PerformanceDiagnosticsClient = .disabled
     ) {
         self.repository = repository
         self.openedHistory = openedHistory
+        self.diagnostics = diagnostics
         if let source = route.source {
             sourceOrder = source.order
             routes = source.orderedAnswers.map {
@@ -364,10 +379,17 @@ final class AnswerPagerStore: ObservableObject {
     @discardableResult
     func commitDisplayedAnswer(answerID: Int64) -> Bool {
         guard let selectedIndex = routes.firstIndex(where: { $0.contentID == answerID }) else { return false }
+        let direction = selectedIndex > index ? "next" : "previous"
         index = selectedIndex
         current = store(for: routes[selectedIndex])
         boundaryNotice = nil
         updateNeighbors()
+        diagnostics.record(.init(
+            category: "answer_pager",
+            operation: "switch",
+            result: .success,
+            pagingSource: direction
+        ))
         return true
     }
 
@@ -415,6 +437,7 @@ final class AnswerPagerStore: ObservableObject {
         else { return }
         isPreparingNext = true
         defer { isPreparingNext = false }
+        let startedAt = ProcessInfo.processInfo.systemUptime
         do {
             let opened = await openedHistory.openedAnswerIDs(questionID: questionID)
             var seenContinuations = Set<URL>()
@@ -445,9 +468,31 @@ final class AnswerPagerStore: ObservableObject {
             }
             switchError = nil
             updateNeighbors()
+            diagnostics.record(.init(
+                durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                category: "answer_pager",
+                operation: "next_preload",
+                result: .success,
+                itemCount: next == nil ? 0 : 1,
+                pagingSource: isEnd ? "end" : "next"
+            ))
         } catch is CancellationError {
+            diagnostics.record(.init(
+                durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                category: "answer_pager",
+                operation: "next_preload",
+                result: .cancelled,
+                errorKind: "cancelled"
+            ))
             return
         } catch {
+            diagnostics.record(.init(
+                durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                category: "answer_pager",
+                operation: "next_preload",
+                result: .failure,
+                errorKind: PerformanceDiagnosticEvent.sanitizedErrorKind(error)
+            ))
             switchError = error.localizedDescription
         }
     }

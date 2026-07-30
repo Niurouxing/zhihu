@@ -8,7 +8,8 @@ actor URLSessionHotFeedRepository: HotFeedRepository {
     private static let initialURL = URL(
         string: "https://www.zhihu.com/api/v3/feed/topstory/hot-lists/total?limit=50&mobile=true"
     )!
-    private static let include = "data[*].content,excerpt,headline,target.author.badge_v2"
+    private static let include =
+        "data[*].content,excerpt,headline,target.author.badge_v2,target.question.author"
 
     private let client: ZhihuAPIClient
 

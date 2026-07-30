@@ -1,6 +1,7 @@
 import Foundation
+import Combine
 
-enum FeedItemKind: String, Hashable, Sendable {
+enum FeedItemKind: String, Codable, Hashable, Sendable {
     case answer
     case article
     case question
@@ -8,12 +9,12 @@ enum FeedItemKind: String, Hashable, Sendable {
     case video
 }
 
-struct FeedItemID: Hashable, Sendable {
+struct FeedItemID: Codable, Hashable, Sendable {
     let kind: FeedItemKind
     let contentID: String
 }
 
-struct FeedAuthorDTO: Hashable, Sendable {
+struct FeedAuthorDTO: Codable, Hashable, Sendable {
     let memberID: String
     let urlToken: String?
     let displayName: String
@@ -21,15 +22,192 @@ struct FeedAuthorDTO: Hashable, Sendable {
     let headline: String
 }
 
-enum FeedItemRoute: Hashable, Sendable {
-    case answer(answerID: Int64, questionID: Int64, questionTitle: String)
+struct BlockedQuestionAuthor: Codable, Hashable, Identifiable, Sendable {
+    let memberID: String
+    let urlToken: String?
+    let displayName: String
+    let avatarURL: URL?
+    let createdAt: Date
+
+    var id: String { memberID }
+}
+
+@MainActor
+final class QuestionAuthorBlocklistStore: ObservableObject {
+    @Published private(set) var entries: [BlockedQuestionAuthor]
+
+    private let defaults: UserDefaults
+    private let persistenceKey: String
+
+    init(
+        defaults: UserDefaults = .standard,
+        persistenceKey: String = "blockedQuestionAuthors.v1"
+    ) {
+        self.defaults = defaults
+        self.persistenceKey = persistenceKey
+        entries = Self.load(defaults: defaults, persistenceKey: persistenceKey)
+    }
+
+    var blockedMemberIDs: Set<String> {
+        Set(entries.map(\.memberID))
+    }
+
+    func isBlocked(memberID: String) -> Bool {
+        blockedMemberIDs.contains(memberID)
+    }
+
+    func block(_ author: FeedAuthorDTO, now: Date = Date()) {
+        let memberID = author.memberID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = author.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !memberID.isEmpty, !displayName.isEmpty else { return }
+        let entry = BlockedQuestionAuthor(
+            memberID: memberID,
+            urlToken: author.urlToken,
+            displayName: displayName,
+            avatarURL: author.avatarURL,
+            createdAt: now
+        )
+        entries.removeAll { $0.memberID == entry.memberID }
+        entries.insert(entry, at: 0)
+        persist()
+    }
+
+    func unblock(memberID: String) {
+        let previousCount = entries.count
+        entries.removeAll { $0.memberID == memberID }
+        guard entries.count != previousCount else { return }
+        persist()
+    }
+
+    private static func load(defaults: UserDefaults, persistenceKey: String) -> [BlockedQuestionAuthor] {
+        guard let data = defaults.data(forKey: persistenceKey),
+              let decoded = try? JSONDecoder().decode([BlockedQuestionAuthor].self, from: data)
+        else { return [] }
+
+        var seen: Set<String> = []
+        return decoded
+            .filter { !$0.memberID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .filter { seen.insert($0.memberID).inserted }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    private func persist() {
+        guard let data = try? JSONEncoder().encode(entries) else { return }
+        defaults.set(data, forKey: persistenceKey)
+    }
+}
+
+struct FeedMediaDTO: Codable, Identifiable, Hashable, Sendable {
+    enum Kind: String, Codable, Hashable, Sendable {
+        case image
+        case animatedImage
+    }
+
+    let id: String
+    let kind: Kind
+    let sourceURL: URL
+    let thumbnailURL: URL?
+    let pixelWidth: Int?
+    let pixelHeight: Int?
+
+    var previewURL: URL { thumbnailURL ?? sourceURL }
+    var isAnimated: Bool { kind == .animatedImage }
+}
+
+enum FeedMediaPreviewPolicy {
+    /// Feed rows intentionally decode at most three thumbnails. Remaining media
+    /// is represented by a count badge so image-heavy pins cannot dominate
+    /// scrolling height or start an unbounded number of image requests.
+    static let maximumVisibleItems = 3
+
+    static func visibleMedia(from media: [FeedMediaDTO]) -> ArraySlice<FeedMediaDTO> {
+        media.prefix(maximumVisibleItems)
+    }
+}
+
+enum FeedThumbnailPlacement: Equatable, Sendable {
+    case trailing
+    case wideInline
+
+    var cropAnchor: FeedThumbnailCropAnchor {
+        switch self {
+        case .trailing: return .center
+        case .wideInline: return .top
+        }
+    }
+}
+
+enum FeedThumbnailCropAnchor: Equatable, Sendable {
+    case center
+    case top
+}
+
+enum FeedThumbnailPresentationPolicy {
+    /// Portrait photos such as 9:16 remain compact trailing thumbnails. Only
+    /// unusually tall screenshots move below the text so they do not narrow
+    /// every line in an otherwise tall feed row.
+    private static let wideInlineMaximumAspectRatio = 0.45
+
+    static func placement(pixelWidth: Int?, pixelHeight: Int?) -> FeedThumbnailPlacement {
+        guard let pixelWidth,
+              let pixelHeight,
+              pixelWidth > 0,
+              pixelHeight > 0
+        else { return .trailing }
+
+        let aspectRatio = Double(pixelWidth) / Double(pixelHeight)
+        return aspectRatio <= wideInlineMaximumAspectRatio ? .wideInline : .trailing
+    }
+}
+
+enum NativeVideoContentType: String, Codable, Hashable, Sendable {
+    case answer
+    case article
+    case question
+    case zvideo
+
+    var sceneCode: String {
+        "answer_detail_web"
+    }
+}
+
+struct NativeVideoRouteDTO: Codable, Hashable, Sendable {
+    let contentID: Int64
+    let videoID: Int64
+    let contentType: NativeVideoContentType
+    let title: String
+    let thumbnailURL: URL?
+    let playbackURL: URL?
+    let webURL: URL?
+
+    init(
+        contentID: Int64,
+        videoID: Int64? = nil,
+        contentType: NativeVideoContentType,
+        title: String = "视频",
+        thumbnailURL: URL? = nil,
+        playbackURL: URL? = nil,
+        webURL: URL? = nil
+    ) {
+        self.contentID = contentID
+        self.videoID = videoID ?? contentID
+        self.contentType = contentType
+        self.title = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "视频" : title
+        self.thumbnailURL = thumbnailURL
+        self.playbackURL = playbackURL
+        self.webURL = webURL
+    }
+}
+
+enum FeedItemRoute: Codable, Hashable, Sendable {
+    case answer(answerID: Int64, questionID: Int64?, questionTitle: String)
     case article(articleID: Int64, title: String)
     case question(questionID: Int64, title: String)
     case pin(pinID: Int64)
-    case video(videoID: Int64)
+    case video(NativeVideoRouteDTO)
 }
 
-struct FeedItemDTO: Identifiable, Hashable, Sendable {
+struct FeedItemDTO: Codable, Identifiable, Hashable, Sendable {
     let id: FeedItemID
     let kind: FeedItemKind
     let title: String
@@ -37,8 +215,64 @@ struct FeedItemDTO: Identifiable, Hashable, Sendable {
     let details: String
     let sourceLabel: String?
     let author: FeedAuthorDTO?
+    /// The author who asked the question. For answer cards this deliberately
+    /// comes from `question.author`, never from the answer author.
+    let questionAuthor: FeedAuthorDTO?
     let thumbnailURL: URL?
+    let thumbnailPixelWidth: Int?
+    let thumbnailPixelHeight: Int?
+    let media: [FeedMediaDTO]
     let route: FeedItemRoute
+
+    init(
+        id: FeedItemID,
+        kind: FeedItemKind,
+        title: String,
+        summary: String?,
+        details: String,
+        sourceLabel: String?,
+        author: FeedAuthorDTO?,
+        questionAuthor: FeedAuthorDTO? = nil,
+        thumbnailURL: URL?,
+        thumbnailPixelWidth: Int? = nil,
+        thumbnailPixelHeight: Int? = nil,
+        media: [FeedMediaDTO] = [],
+        route: FeedItemRoute
+    ) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.summary = summary
+        self.details = details
+        self.sourceLabel = sourceLabel
+        self.author = author
+        self.questionAuthor = questionAuthor
+        self.thumbnailURL = thumbnailURL
+        self.thumbnailPixelWidth = thumbnailPixelWidth
+        self.thumbnailPixelHeight = thumbnailPixelHeight
+        self.media = media
+        self.route = route
+    }
+}
+
+enum FeedQuestionAuthorVisibilityPolicy {
+    static func isVisible(
+        _ item: FeedItemDTO,
+        blockedMemberIDs: Set<String>
+    ) -> Bool {
+        guard let memberID = item.questionAuthor?.memberID else {
+            // Missing question metadata is not evidence that an item is blocked.
+            return true
+        }
+        return !blockedMemberIDs.contains(memberID)
+    }
+
+    static func visibleItems(
+        from items: [FeedItemDTO],
+        blockedMemberIDs: Set<String>
+    ) -> [FeedItemDTO] {
+        items.filter { isVisible($0, blockedMemberIDs: blockedMemberIDs) }
+    }
 }
 
 struct FeedPageDTO: Sendable {

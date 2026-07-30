@@ -23,6 +23,7 @@ final class PersonStore: ObservableObject {
     private(set) var anchors: [PersonPageKey: PersonListAnchor] = [:]
 
     private let repository: PersonRepository
+    private let diagnostics: PerformanceDiagnosticsClient
     private let onNavigate: (PersonNavigationIntent) -> Void
     private var profileGeneration: UInt64 = 0
     private var pageGenerations: [PersonPageKey: UInt64] = [:]
@@ -35,10 +36,12 @@ final class PersonStore: ObservableObject {
     init(
         routeEntry: PersonRouteEntry,
         repository: PersonRepository,
+        diagnostics: PerformanceDiagnosticsClient = .disabled,
         onNavigate: @escaping (PersonNavigationIntent) -> Void
     ) {
         self.routeEntry = routeEntry
         self.repository = repository
+        self.diagnostics = diagnostics
         self.onNavigate = onNavigate
         selectedTab = routeEntry.payload.initialTab
         profileState = .idle(provisionalDisplayName: routeEntry.payload.displayName)
@@ -69,12 +72,28 @@ final class PersonStore: ObservableObject {
     }
 
     func selectTab(_ tab: PersonTab) {
+        if tab.isConnectionList {
+            openConnections(tab)
+            return
+        }
         selectedTab = tab
+        diagnostics.record(.init(
+            category: "person",
+            operation: "tab_select",
+            result: .success,
+            pagingSource: tab.rawValue
+        ))
         ensureVisiblePageLoaded()
     }
 
     func selectSubscriptionTab(_ tab: PersonSubscriptionTab) {
         selectedSubscriptionTab = tab
+        diagnostics.record(.init(
+            category: "person",
+            operation: "subscription_tab_select",
+            result: .success,
+            pagingSource: tab.rawValue
+        ))
         if selectedTab == .subscriptions { ensureVisiblePageLoaded() }
     }
 
@@ -182,19 +201,12 @@ final class PersonStore: ObservableObject {
 
     func openMemberSearch() {
         guard let profile,
-              let searchID = profile.memberScopedSearchID?.nonBlank,
-              var components = URLComponents(string: "https://www.zhihu.com/search")
+              let searchID = profile.memberScopedSearchID?.nonBlank
         else { return }
-        components.queryItems = [
-            URLQueryItem(name: "type", value: "content"),
-            URLQueryItem(name: "restricted_scene", value: "member"),
-            URLQueryItem(name: "restricted_field", value: "member_hash_id"),
-            URLQueryItem(name: "restricted_value", value: searchID),
-        ]
-        guard let url = components.url,
-              let route = PersonWebRoute(kind: .search, title: "搜索 \(profile.displayName) 的创作", url: url)
-        else { return }
-        onNavigate(.web(route))
+        onNavigate(.search(SearchRouteDTO(
+            restrictedMemberHashID: searchID,
+            restrictedMemberName: profile.displayName
+        )))
     }
 
     func updateAnchor(_ anchor: PersonListAnchor?, for key: PersonPageKey) {
@@ -212,6 +224,20 @@ final class PersonStore: ObservableObject {
         pageTasks.removeAll()
     }
 
+    private func openConnections(_ tab: PersonTab) {
+        guard tab.isConnectionList else { return }
+        let currentProfile = profile
+        guard let payload = PersonRoutePayload(
+            memberID: currentProfile?.memberID ?? routeEntry.payload.memberID,
+            urlToken: currentProfile?.urlToken ?? routeEntry.payload.urlToken,
+            displayName: currentProfile?.displayName ?? routeEntry.payload.displayName,
+            initialTab: tab
+        ),
+              let route = PersonConnectionsRoute(person: payload)
+        else { return }
+        onNavigate(.connections(route))
+    }
+
     private func loadProfile() {
         guard !isDisposed else { return }
         profileTask?.cancel()
@@ -224,6 +250,7 @@ final class PersonStore: ObservableObject {
         followAction = .idle
         blockAction = .idle
         let identity = PersonIdentity(route: routeEntry.payload, profile: previous)
+        let startedAt = ProcessInfo.processInfo.systemUptime
         profileTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -233,11 +260,32 @@ final class PersonStore: ObservableObject {
                 )
                 guard acceptsProfile(generation) else { return }
                 profileState = .loaded(loaded)
+                Task { await self.repository.recordReadHistory(profileID: loaded.memberID) }
+                diagnostics.record(.init(
+                    durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                    category: "person",
+                    operation: "profile_load",
+                    result: .success
+                ))
                 ensureVisiblePageLoaded()
             } catch is CancellationError {
+                diagnostics.record(.init(
+                    durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                    category: "person",
+                    operation: "profile_load",
+                    result: .cancelled,
+                    errorKind: "cancelled"
+                ))
                 return
             } catch {
                 guard acceptsProfile(generation) else { return }
+                diagnostics.record(.init(
+                    durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                    category: "person",
+                    operation: "profile_load",
+                    result: .failure,
+                    errorKind: PerformanceDiagnosticEvent.sanitizedErrorKind(error)
+                ))
                 profileState = .failed(error: displayError(error), previous: previous)
             }
         }
@@ -271,6 +319,7 @@ final class PersonStore: ObservableObject {
         pages[key] = page
         let identity = PersonIdentity(route: routeEntry.payload, profile: profile)
         let sort = sort(for: key)
+        let startedAt = ProcessInfo.processInfo.systemUptime
         pageTasks[key] = Task { [weak self] in
             guard let self else { return }
             do {
@@ -282,10 +331,34 @@ final class PersonStore: ObservableObject {
                 loaded.nextURL = result.nextURL
                 loaded.isEnd = result.isEnd
                 pages[key] = loaded
+                diagnostics.record(.init(
+                    durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                    category: "person",
+                    operation: "page_load",
+                    result: .success,
+                    itemCount: loaded.items.count,
+                    pagingSource: diagnosticName(for: key)
+                ))
             } catch is CancellationError {
+                diagnostics.record(.init(
+                    durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                    category: "person",
+                    operation: "page_load",
+                    result: .cancelled,
+                    pagingSource: diagnosticName(for: key),
+                    errorKind: "cancelled"
+                ))
                 return
             } catch {
                 guard acceptsPage(key, generation) else { return }
+                diagnostics.record(.init(
+                    durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                    category: "person",
+                    operation: "page_load",
+                    result: .failure,
+                    pagingSource: diagnosticName(for: key),
+                    errorKind: PerformanceDiagnosticEvent.sanitizedErrorKind(error)
+                ))
                 var failed = pages[key] ?? PersonPageState()
                 failed.initialLoad = .failed(displayError(error))
                 failed.items = previousItems
@@ -301,6 +374,7 @@ final class PersonStore: ObservableObject {
         pages[key] = page
         let identity = PersonIdentity(route: routeEntry.payload, profile: profile)
         let sort = sort(for: key)
+        let startedAt = ProcessInfo.processInfo.systemUptime
         pageTasks[key] = Task { [weak self] in
             guard let self else { return }
             do {
@@ -311,10 +385,34 @@ final class PersonStore: ObservableObject {
                 current.isEnd = result.isEnd
                 current.nextPage = .idle
                 pages[key] = current
+                diagnostics.record(.init(
+                    durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                    category: "person",
+                    operation: "page_load",
+                    result: .success,
+                    itemCount: result.items.count,
+                    pagingSource: "next_\(diagnosticName(for: key))"
+                ))
             } catch is CancellationError {
+                diagnostics.record(.init(
+                    durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                    category: "person",
+                    operation: "page_load",
+                    result: .cancelled,
+                    pagingSource: "next_\(diagnosticName(for: key))",
+                    errorKind: "cancelled"
+                ))
                 return
             } catch {
                 guard acceptsPage(key, generation), var current = pages[key] else { return }
+                diagnostics.record(.init(
+                    durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                    category: "person",
+                    operation: "page_load",
+                    result: .failure,
+                    pagingSource: "next_\(diagnosticName(for: key))",
+                    errorKind: PerformanceDiagnosticEvent.sanitizedErrorKind(error)
+                ))
                 current.nextPage = .failed(displayError(error))
                 pages[key] = current
             }
@@ -324,6 +422,13 @@ final class PersonStore: ObservableObject {
     private func sort(for key: PersonPageKey) -> PersonContentSort? {
         guard case let .main(tab) = key else { return nil }
         return sortByTab[tab]
+    }
+
+    private func diagnosticName(for key: PersonPageKey) -> String {
+        switch key {
+        case let .main(tab): return "initial_\(tab.rawValue)"
+        case let .subscription(tab): return "initial_\(tab.rawValue)"
+        }
     }
 
     private func nextPageGeneration(_ key: PersonPageKey) -> UInt64 {

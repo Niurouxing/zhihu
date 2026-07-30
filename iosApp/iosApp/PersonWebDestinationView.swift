@@ -5,9 +5,17 @@ struct PersonWebDestinationView: View {
     let route: PersonWebRoute
     @StateObject private var model: PersonWebDestinationModel
 
-    init(route: PersonWebRoute, accountStore: AccountJSONStore) {
+    init(
+        route: PersonWebRoute,
+        accountStore: AccountJSONStore,
+        openExternal: @escaping (URL) -> Void
+    ) {
         self.route = route
-        _model = StateObject(wrappedValue: PersonWebDestinationModel(route: route, accountStore: accountStore))
+        _model = StateObject(wrappedValue: PersonWebDestinationModel(
+            route: route,
+            accountStore: accountStore,
+            openExternal: openExternal
+        ))
     }
 
     var body: some View {
@@ -59,12 +67,18 @@ private final class PersonWebDestinationModel: NSObject, ObservableObject, WKNav
 
     private let route: PersonWebRoute
     private let accountStore: AccountJSONStore
+    private let openExternal: (URL) -> Void
     private var progressObservation: NSKeyValueObservation?
     private var hasLoaded = false
 
-    init(route: PersonWebRoute, accountStore: AccountJSONStore) {
+    init(
+        route: PersonWebRoute,
+        accountStore: AccountJSONStore,
+        openExternal: @escaping (URL) -> Void
+    ) {
         self.route = route
         self.accountStore = accountStore
+        self.openExternal = openExternal
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         webView = WKWebView(frame: .zero, configuration: configuration)
@@ -141,10 +155,7 @@ private final class PersonWebDestinationModel: NSObject, ObservableObject, WKNav
         if Self.isTrustedZhihuURL(url) {
             decisionHandler(.allow)
         } else if url.scheme == "https" || url.scheme == "http" {
-            UIApplication.shared.open(url, options: [:]) { [weak self] accepted in
-                guard !accepted else { return }
-                Task { @MainActor in self?.error = "无法打开外部链接" }
-            }
+            openExternal(url)
             decisionHandler(.cancel)
         } else {
             decisionHandler(.cancel)

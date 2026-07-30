@@ -1,0 +1,13 @@
+html, body {
+  background: transparent;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+#formula {
+  box-sizing: border-box;
+  display: inline-block;
+  padding: 4px;
+  white-space: nowrap;
+}

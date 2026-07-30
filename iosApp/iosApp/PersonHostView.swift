@@ -13,6 +13,7 @@ final class PersonHostModel: ObservableObject, Identifiable {
         routeEntry: PersonRouteEntry,
         accountStore: AccountJSONStore,
         repository: PersonRepository? = nil,
+        diagnostics: PerformanceDiagnosticsClient = .disabled,
         onNavigate: @escaping (PersonNavigationIntent) -> Void
     ) {
         id = routeEntry.key.routeInstanceID.uuidString
@@ -20,6 +21,7 @@ final class PersonHostModel: ObservableObject, Identifiable {
         store = PersonStore(
             routeEntry: routeEntry,
             repository: repository ?? URLSessionPersonRepository(accountStore: accountStore),
+            diagnostics: diagnostics,
             onNavigate: onNavigate
         )
     }

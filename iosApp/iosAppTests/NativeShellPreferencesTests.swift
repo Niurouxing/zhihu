@@ -156,6 +156,61 @@ final class NativeShellPreferencesTests: XCTestCase {
         )
     }
 
+    func testExternalPageOpeningDefaultsToBrowserAndPersistsInAppChoice() {
+        let defaults = makeDefaults()
+        let preferences = NativeShellPreferences(defaults: defaults)
+
+        XCTAssertEqual(preferences.externalPageOpeningMode, .defaultBrowser)
+
+        preferences.setExternalPageOpeningMode(.inApp)
+
+        XCTAssertEqual(
+            NativeShellPreferences(defaults: defaults).externalPageOpeningMode,
+            .inApp
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: NativeShellPreferences.Key.externalPageOpeningMode),
+            NativeExternalPageOpeningMode.inApp.rawValue
+        )
+    }
+
+    func testExternalPageOpeningRejectsUnknownStoredValueWithoutRewritingIt() {
+        let defaults = makeDefaults()
+        defaults.set("future-mode", forKey: NativeShellPreferences.Key.externalPageOpeningMode)
+
+        XCTAssertEqual(
+            NativeShellPreferences(defaults: defaults).externalPageOpeningMode,
+            .defaultBrowser
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: NativeShellPreferences.Key.externalPageOpeningMode),
+            "future-mode"
+        )
+    }
+
+    func testRecommendationPreferencesDefaultPersistAndClampTargetCount() {
+        let defaults = makeDefaults()
+        let preferences = NativeShellPreferences(defaults: defaults)
+
+        XCTAssertEqual(preferences.homeRecommendationSource, .app)
+        XCTAssertEqual(preferences.homeRefreshTargetItemCount, 20)
+        XCTAssertEqual(
+            preferences.homeRecommendationRefreshConfiguration,
+            .defaultValue
+        )
+
+        preferences.setHomeRecommendationSource(.web)
+        preferences.setHomeRefreshTargetItemCount(3)
+        XCTAssertEqual(preferences.homeRefreshTargetItemCount, 6)
+
+        let restored = NativeShellPreferences(defaults: defaults)
+        XCTAssertEqual(restored.homeRecommendationSource, .web)
+        XCTAssertEqual(restored.homeRefreshTargetItemCount, 6)
+
+        restored.setHomeRefreshTargetItemCount(50)
+        XCTAssertEqual(restored.homeRefreshTargetItemCount, 20)
+    }
+
     func testHapticPreferencesPersistUserOverridesAndRejectUnknownStrength() {
         let defaults = makeDefaults()
         let preferences = NativeShellPreferences(defaults: defaults)
@@ -169,6 +224,49 @@ final class NativeShellPreferencesTests: XCTestCase {
 
         defaults.set("unknown", forKey: NativeShellPreferences.Key.hapticStrength)
         XCTAssertEqual(NativeShellPreferences(defaults: defaults).hapticStrength, .standard)
+    }
+
+    func testQuestionAuthorBlocklistPersistsDeduplicatesAndUnblocks() {
+        let defaults = makeDefaults()
+        let first = FeedAuthorDTO(
+            memberID: "asker",
+            urlToken: "old-token",
+            displayName: "旧名称",
+            avatarURL: nil,
+            headline: ""
+        )
+        let updated = FeedAuthorDTO(
+            memberID: "asker",
+            urlToken: "new-token",
+            displayName: "新名称",
+            avatarURL: URL(string: "https://pic.zhimg.com/asker.jpg"),
+            headline: ""
+        )
+        let store = QuestionAuthorBlocklistStore(defaults: defaults)
+
+        store.block(first, now: Date(timeIntervalSince1970: 10))
+        store.block(updated, now: Date(timeIntervalSince1970: 20))
+
+        XCTAssertEqual(store.entries.count, 1)
+        XCTAssertEqual(store.entries.first?.displayName, "新名称")
+        XCTAssertTrue(store.isBlocked(memberID: "asker"))
+
+        let restored = QuestionAuthorBlocklistStore(defaults: defaults)
+        XCTAssertEqual(restored.entries, store.entries)
+
+        restored.unblock(memberID: "asker")
+        XCTAssertFalse(restored.isBlocked(memberID: "asker"))
+        XCTAssertTrue(QuestionAuthorBlocklistStore(defaults: defaults).entries.isEmpty)
+    }
+
+    func testQuestionAuthorBlocklistIgnoresMalformedPersistence() {
+        let defaults = makeDefaults()
+        defaults.set(
+            Data("not-json".utf8),
+            forKey: "blockedQuestionAuthors.v1"
+        )
+
+        XCTAssertTrue(QuestionAuthorBlocklistStore(defaults: defaults).entries.isEmpty)
     }
 
     func testHapticFeedbackActionGatesDeliveryAndForwardsConfiguredStrength() {

@@ -244,6 +244,239 @@ struct AnswerDTO: Hashable, Sendable {
     }
 }
 
+struct QAMarkdownDocument: Hashable, Sendable {
+    let title: String
+    let authorName: String
+    let sourceURL: URL
+    let markdown: String
+    let suggestedFileName: String
+}
+
+enum QAMarkdownSharePayload: Equatable, Sendable {
+    case text(String)
+    case file(contents: String, suggestedFileName: String)
+}
+
+enum QAMarkdownSharePayloadBuilder {
+    static let inlineTextByteLimit = 120_000
+
+    static func payload(
+        for document: QAMarkdownDocument,
+        inlineTextByteLimit: Int = inlineTextByteLimit
+    ) -> QAMarkdownSharePayload {
+        if document.markdown.utf8.count <= max(0, inlineTextByteLimit) {
+            return .text(document.markdown)
+        }
+        return .file(
+            contents: document.markdown,
+            suggestedFileName: document.suggestedFileName
+        )
+    }
+}
+
+enum QAMarkdownConverter {
+    static func document(from answer: AnswerDTO) -> QAMarkdownDocument {
+        let authorName = answer.author.displayName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .qaNilIfEmpty ?? "匿名用户"
+        var visibleBlocks = answer.blocks
+        if let attachment = answer.attachment {
+            visibleBlocks.append(.video(UUID(), attachment))
+        }
+        let body = blocks(visibleBlocks)
+        let title = answer.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let header = [
+            "# \(escapeText(title.qaNilIfEmpty ?? "知乎正文"))",
+            "作者：\(escapeText(authorName))",
+            "原文：[\(answer.sourceURL.absoluteString)](\(answer.sourceURL.absoluteString))",
+        ].joined(separator: "\n\n")
+        return QAMarkdownDocument(
+            title: title.qaNilIfEmpty ?? "知乎正文",
+            authorName: authorName,
+            sourceURL: answer.sourceURL,
+            markdown: [header, body].filter { !$0.isEmpty }.joined(separator: "\n\n") + "\n",
+            suggestedFileName: suggestedFileName(title: title.qaNilIfEmpty ?? "知乎正文")
+        )
+    }
+
+    static func blocks(_ blocks: [QABodyBlock]) -> String {
+        blocks.compactMap(block).filter { !$0.isEmpty }.joined(separator: "\n\n")
+    }
+
+    private static func block(_ block: QABodyBlock) -> String? {
+        switch block {
+        case let .paragraph(_, runs):
+            return inline(runs)
+        case let .heading(_, level, runs):
+            return "\(String(repeating: "#", count: min(max(level, 1), 6))) \(inline(runs))"
+        case let .quote(_, runs):
+            return inline(runs)
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map { "> \($0)" }
+                .joined(separator: "\n")
+        case let .list(_, kind, items):
+            return list(QAListGroup(kind: kind, items: items), depth: 0)
+        case let .code(_, language, text):
+            let fence = codeFence(for: text)
+            let language = sanitizedCodeLanguage(language)
+            return "\(fence)\(language)\n\(text)\n\(fence)"
+        case let .formula(_, latex):
+            return "$$\n\(latex)\n$$"
+        case let .image(image):
+            let alt = escapeImageAlt(image.altText ?? image.caption ?? "图片")
+            let imageMarkdown = "![\(alt)](\(image.url.absoluteString))"
+            guard let caption = image.caption?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !caption.isEmpty,
+                  caption != image.altText
+            else { return imageMarkdown }
+            return "\(imageMarkdown)\n\n_\(escapeText(caption))_"
+        case let .segment(_, _, runs):
+            return inline(runs)
+        case let .video(_, video):
+            let target = video.destinationURL ?? video.playbackURL
+            let cover = video.thumbnailURL.map {
+                "![视频封面](\($0.absoluteString))"
+            }
+            let link = target.map {
+                "[视频](\($0.absoluteString))"
+            }
+            return [cover, link].compactMap { $0 }.joined(separator: "\n\n").qaNilIfEmpty
+        case .divider:
+            return "---"
+        }
+    }
+
+    private static func list(_ group: QAListGroup, depth: Int) -> String {
+        group.items.enumerated().flatMap { index, item -> [String] in
+            let number = item.ordinal ?? group.startIndex + index
+            let marker = group.kind == .ordered ? "\(number)." : "-"
+            let indentation = String(repeating: "    ", count: depth)
+            let continuation = indentation + "    "
+            let contentLines = inline(item.runs)
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map(String.init)
+            var lines = [
+                "\(indentation)\(marker) \(contentLines.first ?? "")"
+            ]
+            lines.append(contentsOf: contentLines.dropFirst().map { continuation + $0 })
+            for nestedList in item.nestedLists {
+                let nested = list(nestedList, depth: depth + 1)
+                if !nested.isEmpty { lines.append(nested) }
+            }
+            return lines
+        }.joined(separator: "\n")
+    }
+
+    private static func inline(_ runs: [QAInlineRun]) -> String {
+        runs.map(inline).joined()
+    }
+
+    private static func inline(_ run: QAInlineRun) -> String {
+        let characters = Array(run.text)
+        guard let firstContent = characters.firstIndex(where: { !$0.isWhitespace }),
+              let lastContent = characters.lastIndex(where: { !$0.isWhitespace })
+        else { return run.text }
+        let leading = String(characters[..<firstContent])
+        let trailing = String(characters[(lastContent + 1)...])
+        let content = String(characters[firstContent...lastContent])
+        var value: String
+        if run.style.contains(.code) {
+            value = inlineCode(content)
+        } else {
+            value = escapeText(content)
+        }
+        if run.style.contains(.strong) { value = "**\(value)**" }
+        if run.style.contains(.emphasis) { value = "*\(value)*" }
+        if run.style.contains(.strikethrough) { value = "~~\(value)~~" }
+        if let link = run.link, let url = markdownURL(link) {
+            value = "[\(value)](\(url.absoluteString))"
+        }
+        return leading + value + trailing
+    }
+
+    private static func markdownURL(_ destination: QALinkDestination) -> URL? {
+        switch destination {
+        case let .answer(id):
+            return URL(string: "https://www.zhihu.com/answer/\(id)")
+        case let .article(id):
+            return URL(string: "https://zhuanlan.zhihu.com/p/\(id)")
+        case let .question(id):
+            return URL(string: "https://www.zhihu.com/question/\(id)")
+        case let .pin(id):
+            return URL(string: "https://www.zhihu.com/pin/\(id)")
+        case let .person(token):
+            return URL(string: "https://www.zhihu.com/people/\(token)")
+        case let .external(url):
+            return url
+        }
+    }
+
+    private static func inlineCode(_ source: String) -> String {
+        let fence = String(repeating: "`", count: max(1, longestBacktickRun(in: source) + 1))
+        let padding = source.hasPrefix("`") || source.hasSuffix("`") ? " " : ""
+        return "\(fence)\(padding)\(source)\(padding)\(fence)"
+    }
+
+    private static func codeFence(for source: String) -> String {
+        String(repeating: "`", count: max(3, longestBacktickRun(in: source) + 1))
+    }
+
+    private static func longestBacktickRun(in source: String) -> Int {
+        var longestRun = 0
+        var currentRun = 0
+        for character in source {
+            if character == "`" {
+                currentRun += 1
+                longestRun = max(longestRun, currentRun)
+            } else {
+                currentRun = 0
+            }
+        }
+        return longestRun
+    }
+
+    private static func sanitizedCodeLanguage(_ language: String?) -> String {
+        guard let language else { return "" }
+        return String(language.prefix { $0.isLetter || $0.isNumber || "_+-".contains($0) })
+    }
+
+    private static func escapeText(_ text: String) -> String {
+        var result = ""
+        for character in text {
+            if "\\`*_{}[]<>#+-.!|~".contains(character) {
+                result.append("\\")
+            }
+            result.append(character)
+        }
+        return result
+    }
+
+    private static func escapeImageAlt(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "]", with: "\\]")
+            .replacingOccurrences(of: "\n", with: " ")
+    }
+
+    private static func suggestedFileName(title: String) -> String {
+        let safeCharacters = title.map { character -> Character in
+            if character.isLetter || character.isNumber || character == "-" || character == "_" {
+                return character
+            }
+            return "-"
+        }
+        let collapsed = String(safeCharacters)
+            .replacingOccurrences(of: "-{2,}", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-_"))
+        let base = String((collapsed.qaNilIfEmpty ?? "zhihu-content").prefix(64))
+        return "\(base).md"
+    }
+}
+
+private extension String {
+    var qaNilIfEmpty: String? { isEmpty ? nil : self }
+}
+
 struct QAInlineStyle: OptionSet, Hashable, Sendable {
     let rawValue: Int
     static let strong = Self(rawValue: 1 << 0)
@@ -270,6 +503,7 @@ enum QALinkDestination: Hashable, Sendable {
     case answer(Int64)
     case article(Int64)
     case question(Int64)
+    case pin(Int64)
     case person(urlToken: String)
     case external(URL)
 }
@@ -282,7 +516,49 @@ enum QAListKind: Hashable, Sendable {
 struct QAListItem: Identifiable, Hashable, Sendable {
     let id: UUID
     let runs: [QAInlineRun]
-    init(id: UUID = UUID(), runs: [QAInlineRun]) { self.id = id; self.runs = runs }
+    let ordinal: Int?
+    let nestedLists: [QAListGroup]
+
+    init(
+        id: UUID = UUID(),
+        runs: [QAInlineRun],
+        ordinal: Int? = nil,
+        nestedLists: [QAListGroup] = []
+    ) {
+        self.id = id
+        self.runs = runs
+        self.ordinal = ordinal
+        self.nestedLists = nestedLists
+    }
+}
+
+struct QAListGroup: Hashable, Sendable {
+    let kind: QAListKind
+    let startIndex: Int
+    let items: [QAListItem]
+
+    init(kind: QAListKind, startIndex: Int = 1, items: [QAListItem]) {
+        self.kind = kind
+        self.startIndex = max(1, startIndex)
+        self.items = items
+    }
+}
+
+struct QAImageDimensions: Hashable, Sendable {
+    let width: Int
+    let height: Int
+
+    init?(width: Int, height: Int) {
+        guard (1...100_000).contains(width),
+              (1...100_000).contains(height)
+        else { return nil }
+        let ratio = Double(width) / Double(height)
+        guard (0.02...50).contains(ratio) else { return nil }
+        self.width = width
+        self.height = height
+    }
+
+    var aspectRatio: Double { Double(width) / Double(height) }
 }
 
 struct QAImageDTO: Identifiable, Hashable, Sendable {
@@ -290,12 +566,20 @@ struct QAImageDTO: Identifiable, Hashable, Sendable {
     let url: URL
     let caption: String?
     let altText: String?
+    let dimensions: QAImageDimensions?
 
-    init(id: UUID = UUID(), url: URL, caption: String? = nil, altText: String? = nil) {
+    init(
+        id: UUID = UUID(),
+        url: URL,
+        caption: String? = nil,
+        altText: String? = nil,
+        dimensions: QAImageDimensions? = nil
+    ) {
         self.id = id
         self.url = url
         self.caption = caption
         self.altText = altText
+        self.dimensions = dimensions
     }
 }
 
@@ -331,7 +615,7 @@ enum QANavigationIntent: Hashable {
     case link(QALinkDestination)
     case endorsement(URL)
     case segmentComments(CommentThreadRouteDTO)
-    case videoPage(URL)
+    case video(NativeVideoRouteDTO)
     case share(URL)
 }
 

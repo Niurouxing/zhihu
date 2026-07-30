@@ -36,6 +36,241 @@ final class FeedInfrastructureTests: XCTestCase {
         XCTAssertEqual(item.route, .article(articleID: 81, title: "原生搜索文章"))
     }
 
+    func testAnswerProjectionPreservesThumbnailDimensionsForTallLayout() throws {
+        let data = Data(
+            #"""
+            {
+              "data": [{
+                "target": {
+                  "id": "2065638900522079962",
+                  "type": "answer",
+                  "excerpt": "回答摘要",
+                  "thumbnail": "https://picx.zhimg.com/answer_qhd.jpg",
+                  "thumbnail_info": {
+                    "thumbnails": [{
+                      "url": "https://picx.zhimg.com/answer_720w.jpg",
+                      "width": 1280,
+                      "height": 6076
+                    }]
+                  },
+                  "question": {
+                    "id": "2065059989778076694",
+                    "title": "问题标题"
+                  }
+                }
+              }],
+              "paging": {"is_end": true, "next": null}
+            }
+            """#.utf8
+        )
+
+        let item = try XCTUnwrap(
+            FeedResponseMapper.page(from: data, policy: .search).items.first
+        )
+
+        XCTAssertEqual(item.thumbnailURL, URL(string: "https://picx.zhimg.com/answer_qhd.jpg"))
+        XCTAssertEqual(item.thumbnailPixelWidth, 1280)
+        XCTAssertEqual(item.thumbnailPixelHeight, 6076)
+        XCTAssertEqual(
+            FeedThumbnailPresentationPolicy.placement(
+                pixelWidth: item.thumbnailPixelWidth,
+                pixelHeight: item.thumbnailPixelHeight
+            ),
+            .wideInline
+        )
+        XCTAssertEqual(
+            FeedThumbnailPresentationPolicy.placement(
+                pixelWidth: item.thumbnailPixelWidth,
+                pixelHeight: item.thumbnailPixelHeight
+            ).cropAnchor,
+            .top
+        )
+    }
+
+    func testThumbnailPresentationKeepsNormalPortraitAndUnknownSizesTrailing() {
+        XCTAssertEqual(
+            FeedThumbnailPresentationPolicy.placement(pixelWidth: 900, pixelHeight: 1_600),
+            .trailing
+        )
+        XCTAssertEqual(
+            FeedThumbnailPresentationPolicy.placement(
+                pixelWidth: 900,
+                pixelHeight: 1_600
+            ).cropAnchor,
+            .center
+        )
+        XCTAssertEqual(
+            FeedThumbnailPresentationPolicy.placement(pixelWidth: 1_600, pixelHeight: 900),
+            .trailing
+        )
+        XCTAssertEqual(
+            FeedThumbnailPresentationPolicy.placement(pixelWidth: nil, pixelHeight: nil),
+            .trailing
+        )
+        XCTAssertEqual(
+            FeedThumbnailPresentationPolicy.placement(pixelWidth: 1_000, pixelHeight: 2_500),
+            .wideInline
+        )
+    }
+
+    func testFeedMetadataOmitsContentTypeAndCompactsCounts() {
+        XCTAssertEqual(
+            FeedItemMetadataFormatter.displayText(
+                kind: .answer,
+                details: "回答 · 23000 赞同 · 1528 评论 · 某人回答了问题"
+            ),
+            "2.3 万赞同 · 1,528 评论"
+        )
+        XCTAssertEqual(
+            FeedItemMetadataFormatter.displayText(
+                kind: .pin,
+                details: "想法 · 285 赞 · 18 评论"
+            ),
+            "285 赞 · 18 评论"
+        )
+    }
+
+    func testFeedMetadataUsesTypeSpecificMetricsAndIgnoresSourceLabels() {
+        XCTAssertEqual(
+            FeedItemMetadataFormatter.displayText(
+                kind: .question,
+                details: "问题 · 100000000 关注 · 12345 回答 · 推荐关注"
+            ),
+            "1 亿关注 · 1.2 万回答"
+        )
+        XCTAssertEqual(
+            FeedItemMetadataFormatter.displayText(
+                kind: .article,
+                details: "文章 · 编辑推荐"
+            ),
+            ""
+        )
+    }
+
+    func testAnswerProjectionUsesQuestionAuthorWithoutFallingBackToAnswerAuthor() throws {
+        let data = Data(
+            #"{"data":[{"target":{"id":42,"type":"answer","excerpt":"回答","question":{"id":7,"title":"问题","author":{"id":"asker-id","url_token":"asker","name":"提问者","avatar_url":"https://pic.zhimg.com/asker.jpg"}},"author":{"id":"answerer-id","url_token":"answerer","name":"回答者"}}}],"paging":{"is_end":true,"next":null}}"#.utf8
+        )
+
+        let item = try XCTUnwrap(
+            FeedResponseMapper.page(from: data, policy: .search).items.first
+        )
+
+        XCTAssertEqual(item.author?.memberID, "answerer-id")
+        XCTAssertEqual(item.questionAuthor?.memberID, "asker-id")
+        XCTAssertEqual(item.questionAuthor?.displayName, "提问者")
+    }
+
+    func testAnswerWithoutQuestionAuthorDoesNotUseAnswerAuthorForBlocking() throws {
+        let data = Data(
+            #"{"data":[{"target":{"id":42,"type":"answer","excerpt":"回答","question":{"id":7,"title":"问题"},"author":{"id":"answerer-id","url_token":"answerer","name":"回答者"}}}],"paging":{"is_end":true,"next":null}}"#.utf8
+        )
+
+        let item = try XCTUnwrap(
+            FeedResponseMapper.page(from: data, policy: .search).items.first
+        )
+
+        XCTAssertEqual(item.author?.memberID, "answerer-id")
+        XCTAssertNil(item.questionAuthor)
+    }
+
+    func testQuestionProjectionUsesItsOwnAuthorAsQuestionAuthor() throws {
+        let data = Data(
+            #"{"data":[{"target":{"id":7,"type":"question","title":"问题","author":{"id":"asker-id","url_token":"asker","name":"提问者"}}}],"paging":{"is_end":true,"next":null}}"#.utf8
+        )
+
+        let item = try XCTUnwrap(
+            FeedResponseMapper.page(from: data, policy: .hot).items.first
+        )
+
+        XCTAssertNil(item.author)
+        XCTAssertEqual(item.questionAuthor?.memberID, "asker-id")
+    }
+
+    func testQuestionAuthorVisibilityKeepsUnknownAuthorsAndFiltersExactMemberID() {
+        let blockedAuthor = FeedAuthorDTO(
+            memberID: "blocked",
+            urlToken: "blocked-token",
+            displayName: "已屏蔽提问者",
+            avatarURL: nil,
+            headline: ""
+        )
+        let visibleAuthor = FeedAuthorDTO(
+            memberID: "visible",
+            urlToken: "visible-token",
+            displayName: "其他提问者",
+            avatarURL: nil,
+            headline: ""
+        )
+        let blocked = feedQuestion(id: 1, questionAuthor: blockedAuthor)
+        let visible = feedQuestion(id: 2, questionAuthor: visibleAuthor)
+        let unknown = feedQuestion(id: 3, questionAuthor: nil)
+
+        XCTAssertEqual(
+            FeedQuestionAuthorVisibilityPolicy.visibleItems(
+                from: [blocked, visible, unknown],
+                blockedMemberIDs: ["blocked"]
+            ).map(\.id.contentID),
+            ["2", "3"]
+        )
+    }
+
+    func testVideoProjectionUsesEmbeddedHighestBitratePlaybackURL() throws {
+        let page = try FeedResponseMapper.page(from: FeedFixtures.videoPage, policy: .search)
+        let item = try XCTUnwrap(page.items.first)
+        guard case let .video(route) = item.route else {
+            return XCTFail("Expected native video route")
+        }
+
+        XCTAssertEqual(route.contentID, 90)
+        XCTAssertEqual(route.videoID, 901)
+        XCTAssertEqual(route.contentType, .zvideo)
+        XCTAssertEqual(route.thumbnailURL, URL(string: "https://pic.zhimg.com/video.jpg"))
+        XCTAssertEqual(route.playbackURL, URL(string: "https://video.vzuu.com/hd.mp4"))
+        XCTAssertEqual(route.webURL, URL(string: "https://www.zhihu.com/zvideo/90"))
+    }
+
+    func testPinProjectionUsesTypedTextAndBoundedSemanticMedia() throws {
+        let page = try FeedResponseMapper.page(from: FeedFixtures.pinPage, policy: .search)
+        let item = try XCTUnwrap(page.items.first)
+
+        XCTAssertEqual(item.kind, .pin)
+        XCTAssertEqual(item.title, "List<Integer> 后面的标题")
+        XCTAssertEqual(item.summary, "正文 List<Integer> 后面的内容")
+        XCTAssertEqual(item.media.count, 4)
+        XCTAssertEqual(item.media.first?.kind, .animatedImage)
+        XCTAssertEqual(item.media.first?.sourceURL, URL(string: "https://pic.zhimg.com/animated.gif"))
+        XCTAssertEqual(item.media.first?.previewURL, URL(string: "https://pic.zhimg.com/animated-preview.jpg"))
+        XCTAssertEqual(item.media.first?.pixelWidth, 1200)
+        XCTAssertEqual(item.media.first?.pixelHeight, 800)
+        XCTAssertEqual(FeedMediaPreviewPolicy.visibleMedia(from: item.media).count, 3)
+        XCTAssertEqual(item.route, .pin(pinID: 574))
+    }
+
+    func testPinProjectionFallsBackToLegacyExcerptWhenTypedTextIsUnavailable() throws {
+        let page = try FeedResponseMapper.page(from: FeedFixtures.legacyPinPage, policy: .search)
+        let item = try XCTUnwrap(page.items.first)
+
+        XCTAssertEqual(item.title, "兼容摘要")
+        XCTAssertNil(item.summary)
+        XCTAssertTrue(item.media.isEmpty)
+    }
+
+    func testPinProjectionPromotesUntitledChineseBodyAndBoundsTallImageMetadata() throws {
+        let page = try FeedResponseMapper.page(from: FeedFixtures.untitledTallPinPage, policy: .search)
+        let item = try XCTUnwrap(page.items.first)
+
+        XCTAssertEqual(item.title, "新举措。效果如何，拭目以待吧。")
+        XCTAssertNil(item.summary)
+        XCTAssertEqual(item.media.count, 1)
+        XCTAssertEqual(item.media.first?.pixelWidth, 1_279)
+        XCTAssertEqual(item.media.first?.pixelHeight, 2_781)
+        XCTAssertEqual(
+            item.media.first?.sourceURL,
+            URL(string: "https://pic4.zhimg.com/100/tall_720w.jpg")
+        )
+    }
+
     func testSearchProjectionSkipsPromotionalCardWithStructuredDescription() throws {
         let page = try FeedResponseMapper.page(
             from: FeedFixtures.searchPageWithStructuredDescription,
@@ -154,6 +389,90 @@ final class FeedInfrastructureTests: XCTestCase {
         XCTAssertEqual(credentials.cookies["d_c0"], "device-cookie")
     }
 
+    func testHomeRecommendationUsesAuthenticatedWebContract() async throws {
+        let recorder = FeedRequestRecorder()
+        FeedURLProtocol.setHandler { request in
+            recorder.record(request)
+            return (200, FeedFixtures.emptyPage, [:])
+        }
+        let client = ZhihuAPIClient(
+            accountStore: FeedAccountStore(
+                json: #"{"cookies":{"d_c0":"device-cookie","z_c0":"login-cookie","_xsrf":"token"},"userAgent":"feed-agent"}"#
+            ),
+            session: makeFeedSession()
+        )
+        let repository = URLSessionHomeFeedRepository(client: client)
+
+        _ = try await repository.fetchPage(source: .web, after: nil)
+
+        let request = try XCTUnwrap(recorder.request)
+        let url = try XCTUnwrap(request.url)
+        let items = try XCTUnwrap(
+            URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        )
+        XCTAssertEqual(url.host, "www.zhihu.com")
+        XCTAssertEqual(url.path, "/api/v3/feed/topstory/recommend")
+        XCTAssertEqual(items.first(where: { $0.name == "desktop" })?.value, "true")
+        XCTAssertEqual(items.first(where: { $0.name == "limit" })?.value, "10")
+        XCTAssertEqual(items.first(where: { $0.name == "offset" })?.value, "0")
+        XCTAssertEqual(
+            items.first(where: { $0.name == "include" })?.value,
+            "data[*].content,excerpt,headline,target.author.badge_v2,target.question.author"
+        )
+        XCTAssertTrue(request.value(forHTTPHeaderField: "Cookie")?.contains("z_c0=login-cookie") == true)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-xsrftoken"), "token")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-zse-93"), ZhihuRequestSignature.zse93)
+        XCTAssertTrue(request.value(forHTTPHeaderField: "x-zse-96")?.hasPrefix("2.0_") == true)
+    }
+
+    func testHomeRecommendationRequiresCompleteAccountBeforeNetworkRequest() async {
+        let recorder = FeedRequestRecorder()
+        FeedURLProtocol.setHandler { request in
+            recorder.record(request)
+            return (200, FeedFixtures.emptyPage, [:])
+        }
+        let client = ZhihuAPIClient(
+            accountStore: FeedAccountStore(
+                json: #"{"cookies":{"d_c0":"device-cookie"},"userAgent":"feed-agent"}"#
+            ),
+            session: makeFeedSession()
+        )
+        let repository = URLSessionHomeFeedRepository(client: client)
+
+        do {
+            _ = try await repository.fetchPage(source: .web, after: nil)
+            XCTFail("Expected home recommendation to require a complete account")
+        } catch {
+            XCTAssertEqual(error as? ZhihuAPIError, .authenticationRequired)
+        }
+        XCTAssertNil(recorder.request)
+    }
+
+    func testHomeAppRecommendationAllowsGuestContract() async throws {
+        let recorder = FeedRequestRecorder()
+        FeedURLProtocol.setHandler { request in
+            recorder.record(request)
+            return (200, FeedFixtures.emptyPage, [:])
+        }
+        let client = ZhihuAPIClient(
+            accountStore: FeedAccountStore(json: nil),
+            session: makeFeedSession()
+        )
+        let repository = URLSessionHomeFeedRepository(client: client)
+
+        _ = try await repository.fetchPage(source: .app, after: nil)
+
+        let request = try XCTUnwrap(recorder.request)
+        let url = try XCTUnwrap(request.url)
+        let items = try XCTUnwrap(
+            URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        )
+        XCTAssertEqual(url.host, "api.zhihu.com")
+        XCTAssertEqual(url.path, "/topstory/recommend")
+        XCTAssertEqual(items.first(where: { $0.name == "limit" })?.value, "10")
+        XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+    }
+
     func testAccountSessionCodecPreservesQuotedDeviceCookieRepresentation() throws {
         let account = [
             "cookies": [
@@ -172,6 +491,24 @@ final class FeedInfrastructureTests: XCTestCase {
         XCTAssertTrue(deviceCookie.hasPrefix("\""))
         XCTAssertTrue(deviceCookie.hasSuffix("\""))
         XCTAssertEqual(deviceCookie.count, 22)
+    }
+
+    private func feedQuestion(
+        id: Int64,
+        questionAuthor: FeedAuthorDTO?
+    ) -> FeedItemDTO {
+        FeedItemDTO(
+            id: FeedItemID(kind: .question, contentID: String(id)),
+            kind: .question,
+            title: "问题 \(id)",
+            summary: nil,
+            details: "问题",
+            sourceLabel: nil,
+            author: questionAuthor,
+            questionAuthor: questionAuthor,
+            thumbnailURL: nil,
+            route: .question(questionID: id, title: "问题 \(id)")
+        )
     }
 
     func testSearchRepositoryBuildsExistingFilterAndMemberRestrictionContract() async throws {
@@ -277,6 +614,11 @@ final class FeedInfrastructureTests: XCTestCase {
         )
         XCTAssertTrue(
             ZhihuAPIURLPolicy.allowsAPIRequest(
+                try XCTUnwrap(URL(string: "https://www.zhihu.com/api/v3/feed/topstory/recommend"))
+            )
+        )
+        XCTAssertTrue(
+            ZhihuAPIURLPolicy.allowsAPIRequest(
                 try XCTUnwrap(URL(string: "https://api.zhihu.com/notifications/v3/message/v3"))
             )
         )
@@ -352,6 +694,22 @@ private enum FeedFixtures {
 
     static let searchPage = Data(
         #"{"data":[{"type":"search_result","id":"result-1","object":{"id":"81","type":"article","title":"原生搜索文章","excerpt":"文章摘要","voteup_count":12,"comment_count":3,"thumbnail_info":{"thumbnails":[{"url":"https://pic.zhimg.com/article.jpg"}]},"author":{"id":"member","url_token":"author","name":"作者","headline":"简介","avatar_url":"https://pic.zhimg.com/avatar.jpg"}}}],"paging":{"is_end":true,"next":null}}"#.utf8
+    )
+
+    static let videoPage = Data(
+        #"{"data":[{"target":{"id":"90","type":"video","title":"原生视频","excerpt":"视频摘要","vote_count":12,"comment_count":3,"thumbnail_extra_info":{"video_id":"901","url":"https://pic.zhimg.com/video.jpg","playlist":{"ld":{"url":"https://video.vzuu.com/ld.mp4","bitrate":100},"sd":{"url":"https://video.vzuu.com/sd.mp4","bitrate":200},"hd":{"url":"https://video.vzuu.com/hd.mp4","bitrate":300}}}}}],"paging":{"is_end":true,"next":null}}"#.utf8
+    )
+
+    static let pinPage = Data(
+        #"{"data":[{"target":{"id":574,"type":"pin","excerpt_title":"旧摘要","like_count":8,"comment_count":3,"author":{"id":"member","url_token":"author","name":"作者","headline":"","avatar_url":"https://pic.zhimg.com/avatar.jpg"},"content":[{"type":"image","url":"https://pic.zhimg.com/animated.gif","thumbnail":"https://pic.zhimg.com/animated-preview.jpg","width":1200,"height":800,"is_gif":true,"original_url":"https://pic.zhimg.com/original.gif"},{"type":"text","title":"List<Integer> 后面的标题","content":"<p>正文 List&lt;Integer&gt; 后面的内容</p>"},{"type":"image","url":"https://pic.zhimg.com/2.jpg","width":640,"height":480,"is_gif":false},{"type":"image","url":"https://pic.zhimg.com/3.jpg","width":640,"height":480,"is_gif":false},{"type":"image","url":"https://pic.zhimg.com/4.jpg","width":640,"height":480,"is_gif":false}]} }],"paging":{"is_end":true,"next":null}}"#.utf8
+    )
+
+    static let legacyPinPage = Data(
+        #"{"data":[{"target":{"id":575,"type":"pin","excerpt_title":"<p>兼容摘要</p>","content":{"unexpected":"legacy-shape"}}}],"paging":{"is_end":true,"next":null}}"#.utf8
+    )
+
+    static let untitledTallPinPage = Data(
+        #"{"data":[{"target":{"id":"2065396329153663168","type":"pin","like_count":15,"comment_count":8,"author":{"id":"member","url_token":"author","name":"作者","headline":""},"content":[{"title":"","content":"<p>新举措。效果如何，拭目以待吧。</p>","type":"text"},{"url":"https://pic4.zhimg.com/100/tall_720w.jpg","original_url":"https://pica.zhimg.com/tall.jpg","thumbnail":"","width":1279,"height":2781,"type":"image","is_gif":false}]}}],"paging":{"is_end":true,"next":null}}"#.utf8
     )
 
     static let searchPageWithStructuredDescription = Data(

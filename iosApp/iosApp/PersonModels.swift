@@ -21,6 +21,15 @@ enum PersonSubscriptionTab: String, CaseIterable, Hashable, Identifiable {
 extension PersonTab: Identifiable {
     var id: Self { self }
 
+    static let profileContentTabs: [Self] = [
+        .answers, .articles, .activities, .collections,
+        .questions, .pins, .columns, .subscriptions,
+    ]
+
+    var isConnectionList: Bool {
+        self == .followers || self == .following
+    }
+
     var title: String {
         switch self {
         case .answers: return "回答"
@@ -35,6 +44,17 @@ extension PersonTab: Identifiable {
         case .subscriptions: return "关注订阅"
         }
     }
+}
+
+struct PersonConnectionsRoute: Hashable {
+    let person: PersonRoutePayload
+
+    init?(person: PersonRoutePayload) {
+        guard person.initialTab.isConnectionList else { return nil }
+        self.person = person
+    }
+
+    var title: String { person.initialTab.title }
 }
 
 enum PersonContentSort: String, CaseIterable, Hashable, Identifiable {
@@ -388,6 +408,8 @@ enum PersonNavigationIntent: Hashable {
     case pin(Int64)
     case collection(String)
     case person(PersonRoutePayload)
+    case connections(PersonConnectionsRoute)
+    case search(SearchRouteDTO)
     case web(PersonWebRoute)
 }
 

@@ -104,6 +104,11 @@
 		0B400000000000000000011 /* NativeSystemIntegrationSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000011 /* NativeSystemIntegrationSettingsTests.swift */; };
 		0B400000000000000000012 /* NativeTranslationAvailabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000012 /* NativeTranslationAvailabilityTests.swift */; };
 		0B400000000000000000013 /* QuestionAnswerFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000013 /* QuestionAnswerFeatureTests.swift */; };
+		0E200000000000000000001 /* KaTeXResources in Resources */ = {isa = PBXBuildFile; fileRef = 0E100000000000000000001 /* KaTeXResources */; };
+		0E200000000000000000002 /* QAKaTeXRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E100000000000000000002 /* QAKaTeXRenderer.swift */; };
+		0E400000000000000000001 /* KaTeXResourceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E300000000000000000001 /* KaTeXResourceTests.swift */; };
+		0F200000000000000000001 /* NativeContentPosterShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F100000000000000000001 /* NativeContentPosterShare.swift */; };
+		0F200000000000000000002 /* NativeClipboardZhihuLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F100000000000000000002 /* NativeClipboardZhihuLink.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -217,6 +222,11 @@
 		0B300000000000000000011 /* NativeSystemIntegrationSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeSystemIntegrationSettingsTests.swift; sourceTree = "<group>"; };
 		0B300000000000000000012 /* NativeTranslationAvailabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranslationAvailabilityTests.swift; sourceTree = "<group>"; };
 		0B300000000000000000013 /* QuestionAnswerFeatureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuestionAnswerFeatureTests.swift; sourceTree = "<group>"; };
+		0E100000000000000000001 /* KaTeXResources */ = {isa = PBXFileReference; lastKnownFileType = folder; path = KaTeXResources; sourceTree = "<group>"; };
+		0E100000000000000000002 /* QAKaTeXRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QAKaTeXRenderer.swift; sourceTree = "<group>"; };
+		0E300000000000000000001 /* KaTeXResourceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KaTeXResourceTests.swift; sourceTree = "<group>"; };
+		0F100000000000000000001 /* NativeContentPosterShare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeContentPosterShare.swift; sourceTree = "<group>"; };
+		0F100000000000000000002 /* NativeClipboardZhihuLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeClipboardZhihuLink.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -318,6 +328,10 @@
 				0B100000000000000000029 /* QuestionNativeView.swift */,
 				0B10000000000000000002A /* SearchNativeView.swift */,
 				0B10000000000000000002B /* ZhihuAPIClient.swift */,
+				0E100000000000000000001 /* KaTeXResources */,
+				0E100000000000000000002 /* QAKaTeXRenderer.swift */,
+				0F100000000000000000001 /* NativeContentPosterShare.swift */,
+				0F100000000000000000002 /* NativeClipboardZhihuLink.swift */,
 				0A1B2C3D4E5F600100000013 /* Assets.xcassets */,
 				0A1B2C3D4E5F600100000014 /* Info.plist */,
 				0A1B2C3D4E5F600100000015 /* LaunchScreen.storyboard */,
@@ -363,6 +377,7 @@
 				0B300000000000000000011 /* NativeSystemIntegrationSettingsTests.swift */,
 				0B300000000000000000012 /* NativeTranslationAvailabilityTests.swift */,
 				0B300000000000000000013 /* QuestionAnswerFeatureTests.swift */,
+				0E300000000000000000001 /* KaTeXResourceTests.swift */,
 			);
 			path = iosAppTests;
 			sourceTree = "<group>";
@@ -450,6 +465,7 @@
 			files = (
 				0A1B2C3D4E5F600100000003 /* Assets.xcassets in Resources */,
 				0A1B2C3D4E5F600100000004 /* LaunchScreen.storyboard in Resources */,
+				0E200000000000000000001 /* KaTeXResources in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -536,6 +552,9 @@
 				0B200000000000000000029 /* QuestionNativeView.swift in Sources */,
 				0B20000000000000000002A /* SearchNativeView.swift in Sources */,
 				0B20000000000000000002B /* ZhihuAPIClient.swift in Sources */,
+				0E200000000000000000002 /* QAKaTeXRenderer.swift in Sources */,
+				0F200000000000000000001 /* NativeContentPosterShare.swift in Sources */,
+				0F200000000000000000002 /* NativeClipboardZhihuLink.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -569,6 +588,7 @@
 				0B400000000000000000011 /* NativeSystemIntegrationSettingsTests.swift in Sources */,
 				0B400000000000000000012 /* NativeTranslationAvailabilityTests.swift in Sources */,
 				0B400000000000000000013 /* QuestionAnswerFeatureTests.swift in Sources */,
+				0E400000000000000000001 /* KaTeXResourceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -704,7 +724,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = iosApp/Info.plist;
@@ -713,7 +733,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.2.0;
+				MARKETING_VERSION = 0.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.github.kangyun1994.zhplus.swift;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -731,7 +751,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = iosApp/Info.plist;
@@ -740,7 +760,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.2.0;
+				MARKETING_VERSION = 0.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.github.kangyun1994.zhplus.swift;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

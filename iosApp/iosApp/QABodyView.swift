@@ -29,12 +29,16 @@ struct QABodyView: View {
     private var galleryURLs: [URL] { galleryImages.map(\.url) }
 
     var body: some View {
-        LazyVStack(alignment: .leading, spacing: presentation.blockSpacing()) {
+        // Keep the complete document in one selection hierarchy. A LazyVStack
+        // recycles off-screen Text views, which truncates Select All/copy for
+        // long answers after scrolling.
+        VStack(alignment: .leading, spacing: presentation.blockSpacing()) {
             ForEach(blocks) { block in
                 blockView(block)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
         .environment(\.openURL, OpenURLAction { url in
             guard let destination = QABodyLinkResolver.resolve(url) else { return .discarded }
             onNavigate(.link(destination))
@@ -46,13 +50,13 @@ struct QABodyView: View {
     private func blockView(_ block: QABodyBlock) -> some View {
         switch block {
         case let .paragraph(_, runs):
-            Text(attributed(runs))
+            Text(QARichTextFormatter.attributed(runs))
                 .font(bodyFont)
                 .lineSpacing(bodyLineSpacing)
                 .tint(.accentColor)
                 .textSelection(.enabled)
         case let .heading(_, level, runs):
-            Text(attributed(runs))
+            Text(QARichTextFormatter.attributed(runs))
                 .font(headingFont(level))
                 .fontWeight(.bold)
                 .textSelection(.enabled)
@@ -60,7 +64,7 @@ struct QABodyView: View {
         case let .quote(_, runs):
             HStack(alignment: .top, spacing: 12) {
                 Capsule().fill(.secondary.opacity(0.38)).frame(width: 3)
-                Text(attributed(runs))
+                Text(QARichTextFormatter.attributed(runs))
                     .font(bodyFont)
                     .foregroundStyle(.secondary)
                     .lineSpacing(bodyLineSpacing)
@@ -69,18 +73,19 @@ struct QABodyView: View {
             }
         case let .list(_, kind, items):
             VStack(alignment: .leading, spacing: 9) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                ForEach(listRows(kind: kind, items: items)) { row in
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text(kind == .ordered ? "\(index + 1)." : "•")
+                        Text(row.marker)
                             .fontWeight(.semibold)
                             .foregroundStyle(.secondary)
                             .frame(minWidth: 18, alignment: .trailing)
-                        Text(attributed(item.runs))
+                        Text(QARichTextFormatter.attributed(row.runs))
                             .font(bodyFont)
                             .lineSpacing(bodyLineSpacing)
                             .tint(.accentColor)
                             .textSelection(.enabled)
                     }
+                    .padding(.leading, CGFloat(row.depth) * 20)
                 }
             }
         case let .code(_, language, text):
@@ -99,40 +104,17 @@ struct QABodyView: View {
             }
             .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
         case let .formula(_, latex):
-            ScrollView(.horizontal, showsIndicators: false) {
-                Text(latex)
-                    .font(.system(size: bodyPointSize * presentation.fontScale, design: .monospaced))
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-            }
-            .frame(maxWidth: .infinity, alignment: .center)
-            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
-            .accessibilityLabel("公式 \(latex)")
+            QAKaTeXFormulaView(
+                latex: latex,
+                pointSize: bodyPointSize * presentation.fontScale
+            )
         case let .image(image):
             Button {
                 let index = galleryImages.firstIndex { $0.id == image.id } ?? 0
                 onNavigate(.images(urls: galleryURLs, initialIndex: index))
             } label: {
                 VStack(spacing: 7) {
-                    AsyncImage(url: image.url) { phase in
-                        switch phase {
-                        case let .success(value):
-                            value.resizable().scaledToFit()
-                        case .failure:
-                            VStack(spacing: 8) {
-                                Image(systemName: "photo.badge.exclamationmark")
-                                Text("图片加载失败").font(.caption)
-                            }
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, minHeight: 120)
-                        case .empty:
-                            ProgressView().frame(maxWidth: .infinity, minHeight: 120)
-                        @unknown default:
-                            EmptyView()
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
+                    QABodyRemoteImage(image: image)
                     if let caption = image.caption ?? image.altText, !caption.isEmpty {
                         Text(caption).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     }
@@ -144,7 +126,7 @@ struct QABodyView: View {
             if let segmentSubject,
                let subject = segmentCommentSubject(segmentSubject, segmentID: segmentID) {
                 HStack(alignment: .bottom, spacing: 7) {
-                    Text(attributed(runs))
+                    Text(QARichTextFormatter.attributed(runs))
                         .font(bodyFont)
                         .lineSpacing(bodyLineSpacing)
                         .tint(.accentColor)
@@ -163,7 +145,7 @@ struct QABodyView: View {
                 }
             } else {
                 HStack(alignment: .bottom, spacing: 7) {
-                    Text(attributed(runs))
+                    Text(QARichTextFormatter.attributed(runs))
                         .font(bodyFont)
                         .lineSpacing(bodyLineSpacing)
                         .tint(.accentColor)
@@ -177,34 +159,11 @@ struct QABodyView: View {
                 QANativeVideoPlayer(video: video)
             } else {
                 QAVideoAttachmentView(video: video) {
-                    if let destinationURL = video.destinationURL {
-                        onNavigate(.videoPage(destinationURL))
-                    }
+                    onNavigate(.video(videoRoute(video)))
                 }
             }
         case .divider:
             Divider()
-        }
-    }
-
-    private func attributed(_ runs: [QAInlineRun]) -> AttributedString {
-        runs.reduce(into: AttributedString()) { value, run in
-            var part = AttributedString(run.text)
-            var presentation: InlinePresentationIntent = []
-            if run.style.contains(.strong) { presentation.insert(.stronglyEmphasized) }
-            if run.style.contains(.emphasis) { presentation.insert(.emphasized) }
-            if !presentation.isEmpty { part.inlinePresentationIntent = presentation }
-            if run.style.contains(.strikethrough) { part.strikethroughStyle = .single }
-            if run.style.contains(.code) {
-                part.font = .body.monospaced()
-                part.backgroundColor = Color(uiColor: .secondarySystemBackground)
-            }
-            if let link = run.link {
-                part.link = QABodyLinkResolver.url(link)
-                part.foregroundColor = .accentColor
-                part.underlineStyle = .single
-            }
-            value.append(part)
         }
     }
 
@@ -226,6 +185,26 @@ struct QABodyView: View {
         }
     }
 
+    private func listRows(kind: QAListKind, items: [QAListItem]) -> [QAListDisplayRow] {
+        flattenList(QAListGroup(kind: kind, items: items), depth: 0)
+    }
+
+    private func flattenList(_ group: QAListGroup, depth: Int) -> [QAListDisplayRow] {
+        group.items.enumerated().flatMap { index, item in
+            let number = item.ordinal ?? group.startIndex + index
+            let marker = group.kind == .ordered ? "\(number)." : "•"
+            let row = QAListDisplayRow(
+                id: item.id,
+                marker: marker,
+                depth: depth,
+                runs: item.runs
+            )
+            return [row] + item.nestedLists.flatMap {
+                flattenList($0, depth: depth + 1)
+            }
+        }
+    }
+
     private func segmentCommentSubject(
         _ subject: CommentSubjectDTO,
         segmentID: String
@@ -236,6 +215,109 @@ struct QABodyView: View {
         case let .question(id): return .segment(contentID: String(id), contentTypeRaw: "question", segmentID: segmentID)
         case let .pin(id): return .segment(contentID: String(id), contentTypeRaw: "pin", segmentID: segmentID)
         case .segment: return nil
+        }
+    }
+
+    private func videoRoute(_ video: QAAttachmentVideoDTO) -> NativeVideoRouteDTO {
+        let contentID: Int64
+        let contentType: NativeVideoContentType
+        switch segmentSubject {
+        case let .answer(id):
+            contentID = id
+            contentType = .answer
+        case let .article(id):
+            contentID = id
+            contentType = .article
+        case let .question(id):
+            contentID = id
+            contentType = .question
+        case let .pin(id):
+            contentID = id
+            contentType = .zvideo
+        case .segment, .none:
+            contentID = video.videoID
+            contentType = .zvideo
+        }
+        return NativeVideoRouteDTO(
+            contentID: contentID,
+            videoID: video.videoID,
+            contentType: contentType,
+            thumbnailURL: video.thumbnailURL,
+            playbackURL: video.playbackURL,
+            webURL: video.destinationURL
+        )
+    }
+}
+
+private struct QAListDisplayRow: Identifiable {
+    let id: UUID
+    let marker: String
+    let depth: Int
+    let runs: [QAInlineRun]
+}
+
+private struct QABodyRemoteImage: View {
+    let image: QAImageDTO
+
+    var body: some View {
+        Group {
+            if let dimensions = image.dimensions {
+                content
+                    .aspectRatio(CGFloat(dimensions.aspectRatio), contentMode: .fit)
+            } else {
+                content
+                    .frame(minHeight: 120)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if NativeRemoteMediaPolicy.isAnimatedImage(image.url) {
+            NativeAnimatedRemoteImage(url: image.url)
+        } else {
+            AsyncImage(url: image.url) { phase in
+                switch phase {
+                case let .success(value):
+                    value.resizable().scaledToFit()
+                case .failure:
+                    VStack(spacing: 8) {
+                        Image(systemName: "photo.badge.exclamationmark")
+                        Text("图片加载失败").font(.caption)
+                    }
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .empty:
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                @unknown default:
+                    EmptyView()
+                }
+            }
+        }
+    }
+}
+
+enum QARichTextFormatter {
+    static func attributed(_ runs: [QAInlineRun]) -> AttributedString {
+        runs.reduce(into: AttributedString()) { value, run in
+            var part = AttributedString(run.text)
+            var presentation: InlinePresentationIntent = []
+            if run.style.contains(.strong) { presentation.insert(.stronglyEmphasized) }
+            if run.style.contains(.emphasis) { presentation.insert(.emphasized) }
+            if !presentation.isEmpty { part.inlinePresentationIntent = presentation }
+            if run.style.contains(.strikethrough) { part.strikethroughStyle = .single }
+            if run.style.contains(.code) {
+                part.font = .body.monospaced()
+                part.backgroundColor = Color(uiColor: .secondarySystemBackground)
+            }
+            if let link = run.link {
+                part.link = QABodyLinkResolver.url(link)
+                part.foregroundColor = .accentColor
+                part.underlineStyle = .single
+            }
+            value.append(part)
         }
     }
 }
@@ -313,8 +395,96 @@ private struct QAVideoAttachmentView: View {
             .clipShape(RoundedRectangle(cornerRadius: 14))
         }
         .buttonStyle(.plain)
-        .disabled(video.destinationURL == nil)
         .accessibilityLabel("播放视频")
+    }
+}
+
+struct NativeVideoPlayerScreen: View {
+    let route: NativeVideoRouteDTO
+    let repository: NativeVideoRepository
+    let openExternal: (URL) -> Void
+
+    @State private var player: AVPlayer?
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Color.black
+                if let player {
+                    VideoPlayer(player: player)
+                } else if let thumbnailURL = route.thumbnailURL {
+                    AsyncImage(url: thumbnailURL) { phase in
+                        switch phase {
+                        case let .success(image):
+                            image.resizable().scaledToFit()
+                        case .failure:
+                            Color.black
+                        case .empty:
+                            ProgressView().tint(.white)
+                        @unknown default:
+                            Color.black
+                        }
+                    }
+                }
+                if isLoading {
+                    ProgressView("正在载入视频")
+                        .tint(.white)
+                        .foregroundStyle(.white)
+                }
+            }
+            .aspectRatio(16 / 9, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+
+            if let errorMessage {
+                VStack(spacing: 12) {
+                    Image(systemName: "video.slash")
+                        .font(.title2)
+                    Text("视频加载失败")
+                        .font(.headline)
+                    Text(errorMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("重试") {
+                        Task { await load() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    if let webURL = route.webURL {
+                        Button("在浏览器中打开") { openExternal(webURL) }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .navigationTitle(route.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .task(id: route) { await load() }
+        .onDisappear { player?.pause() }
+    }
+
+    @MainActor
+    private func load() async {
+        player?.pause()
+        player = nil
+        errorMessage = nil
+        isLoading = true
+        do {
+            let playbackURL = try await repository.resolvePlaybackURL(for: route)
+            guard !Task.isCancelled else { return }
+            let player = AVPlayer(url: playbackURL)
+            self.player = player
+            isLoading = false
+            player.play()
+        } catch {
+            guard !error.isNativeRequestCancellation else { return }
+            isLoading = false
+            errorMessage = error.localizedDescription
+        }
     }
 }
 
@@ -324,20 +494,29 @@ enum QABodyLinkResolver {
         case let .answer(id): return URL(string: "zhihu://answers/\(id)")
         case let .article(id): return URL(string: "zhihu://articles/\(id)")
         case let .question(id): return URL(string: "zhihu://questions/\(id)")
+        case let .pin(id): return URL(string: "zhihu://pin/\(id)")
         case let .person(token): return URL(string: "zhihu://people/\(token)")
         case let .external(url): return url
         }
     }
 
     static func resolve(_ url: URL) -> QALinkDestination? {
-        if url.scheme?.lowercased() == "zhihu" {
-            let value = url.path.split(separator: "/").first.map(String.init)
-            switch url.host?.lowercased() {
-            case "answers": return value.flatMap(Int64.init).map(QALinkDestination.answer)
-            case "articles": return value.flatMap(Int64.init).map(QALinkDestination.article)
-            case "questions": return value.flatMap(Int64.init).map(QALinkDestination.question)
-            case "people": return value.map(QALinkDestination.person)
-            default: return nil
+        if let destination = NativeContentDestinationResolver.resolve(url.absoluteString) {
+            switch destination {
+            case let .article(id, kind):
+                return kind == .answer ? .answer(id) : .article(id)
+            case let .question(id):
+                return .question(id)
+            case let .person(_, token, _):
+                return .person(urlToken: token)
+            case let .pin(id):
+                return .pin(id)
+            case .special, .column:
+                return .external(url)
+            case .search:
+                break
+            case let .external(externalURL):
+                return .external(externalURL)
             }
         }
         guard url.scheme?.lowercased() == "https", url.user == nil, url.password == nil else { return nil }

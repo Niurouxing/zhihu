@@ -273,7 +273,9 @@ private struct CommentLevelView: View {
     @ObservedObject var store: CommentSessionStore
     let level: CommentLevelKey
     let close: (() -> Void)?
+    @Environment(\.nativeHapticFeedback) private var hapticFeedback
     @State private var scrollView: UIScrollView?
+    @State private var posterDocument: NativeContentPosterDocument?
 
     var body: some View {
         List {
@@ -317,6 +319,9 @@ private struct CommentLevelView: View {
             }
         }
         .accessibilityIdentifier(level == .root ? "comment_root" : "comment_direct_replies")
+        .sheet(item: $posterDocument) { document in
+            NativeContentPosterShareView(document: document)
+        }
     }
 
     private var coordinateSpaceName: String {
@@ -366,7 +371,8 @@ private struct CommentLevelView: View {
                 CommentRow(
                     store: store,
                     comment: comment,
-                    interactionLevel: level
+                    interactionLevel: level,
+                    onShare: { presentSharePoster(for: comment) }
                 )
                     .id(comment.id)
                     .background(CommentRowOffsetReader(commentID: comment.id, coordinateSpaceName: coordinateSpaceName))
@@ -379,39 +385,50 @@ private struct CommentLevelView: View {
                         .tint(Color.accentColor)
                         .accessibilityLabel("回复 @\(comment.author.displayName)")
                         .accessibilityIdentifier("comment_swipe_reply_\(comment.id)")
+
+                        Button {
+                            presentSharePoster(for: comment)
+                        } label: {
+                            Label("分享", systemImage: "square.and.arrow.up")
+                        }
+                        .tint(.indigo)
+                        .accessibilityLabel("分享 \(comment.author.displayName) 的评论")
+                        .accessibilityIdentifier("comment_swipe_share_\(comment.id)")
                     }
                     .onAppear { store.loadNextIfNeeded(after: comment.id, level: level) }
-                if level == .root {
-                    replyCountFooter(rootComment: comment)
-                }
             }
             pageFooter(page)
         }
     }
 
-    @ViewBuilder
-    private func replyCountFooter(rootComment: CommentDTO) -> some View {
-        Group {
-            if rootComment.childCommentCount > 0 {
-                Button {
-                    store.openReplies(rootCommentID: rootComment.id)
-                } label: {
-                    HStack(spacing: 5) {
-                        Text("共 \(rootComment.childCommentCount) 条回复")
-                        Image(systemName: "chevron.right")
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-                .fontWeight(.medium)
-                .accessibilityIdentifier("reply_count_open_\(rootComment.id)")
-            }
+    private func presentSharePoster(for comment: CommentDTO) {
+        hapticFeedback(.commit)
+        let context = store.route.shareContext ?? store.route.subject.fallbackShareContext
+        var blocks: [NativeContentPosterBlock] = []
+        if let excerpt = context.excerpt?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !excerpt.isEmpty {
+            blocks.append(.text("正文摘要：\(excerpt)", style: .caption))
+            blocks.append(.divider)
         }
-        .font(.subheadline)
-        .foregroundStyle(.tint)
-        .buttonStyle(.borderless)
-        .listRowInsets(EdgeInsets(top: 6, leading: 42, bottom: 6, trailing: 16))
-        .listRowSeparator(.hidden)
+
+        let commentText = CommentPlainText.value(from: comment.contentHTML)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !commentText.isEmpty {
+            blocks.append(.text(commentText, style: .body))
+        }
+        blocks.append(contentsOf: comment.media.map {
+            .image($0.url, caption: $0.kind == .sticker ? "表情" : nil)
+        })
+
+        let replyContext = comment.replyToAuthor.map { "回复 @\($0.displayName)" } ?? ""
+        posterDocument = NativeContentPosterDocument(
+            title: context.title,
+            authorName: comment.author.displayName,
+            authorHeadline: replyContext,
+            sourceURL: context.sourceURL,
+            metadata: "\(CommentDateFormatter.string(seconds: comment.createdTimeSeconds)) · \(comment.likeCount) 赞 · 评论",
+            blocks: blocks
+        )
     }
 
     @ViewBuilder
@@ -454,15 +471,18 @@ private struct CommentRow: View {
     @ObservedObject var store: CommentSessionStore
     let comment: CommentDTO
     let interactionLevel: CommentLevelKey?
+    let onShare: () -> Void
 
     init(
         store: CommentSessionStore,
         comment: CommentDTO,
-        interactionLevel: CommentLevelKey? = nil
+        interactionLevel: CommentLevelKey? = nil,
+        onShare: @escaping () -> Void = {}
     ) {
         self.store = store
         self.comment = comment
         self.interactionLevel = interactionLevel
+        self.onShare = onShare
     }
 
     var body: some View {
@@ -476,9 +496,13 @@ private struct CommentRow: View {
                 } label: {
                     Label("复制评论", systemImage: "doc.on.doc")
                 }
+                Button(action: onShare) {
+                    Label("分享", systemImage: "square.and.arrow.up")
+                }
+                .accessibilityIdentifier("comment_context_share_\(comment.id)")
             }
             .accessibilityIdentifier("comment_row_\(comment.id)")
-            .accessibilityHint("长按显示评论操作，左滑快速回复")
+            .accessibilityHint("长按或左滑可回复、复制或分享")
     }
 
     private var rowContent: some View {
@@ -528,13 +552,20 @@ private struct CommentRow: View {
                     LazyHStack(spacing: 8) {
                         ForEach(comment.media) { media in
                             Button { store.openMedia(commentID: comment.id, mediaID: media.id) } label: {
-                                AsyncImage(url: media.url) { phase in
-                                    if case let .success(image) = phase {
-                                        image.resizable().scaledToFill()
+                                Group {
+                                    if media.kind == .animatedImage ||
+                                        NativeRemoteMediaPolicy.isAnimatedImage(media.url) {
+                                        NativeAnimatedRemoteImage(url: media.url, contentMode: .fill)
                                     } else {
-                                        ZStack {
-                                            Color.secondary.opacity(0.12)
-                                            ProgressView()
+                                        AsyncImage(url: media.url) { phase in
+                                            if case let .success(image) = phase {
+                                                image.resizable().scaledToFill()
+                                            } else {
+                                                ZStack {
+                                                    Color.secondary.opacity(0.12)
+                                                    ProgressView()
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -555,8 +586,24 @@ private struct CommentRow: View {
                     Label("\(comment.likeCount)", systemImage: comment.isLiked ? "hand.thumbsup.fill" : "hand.thumbsup")
                 }
                 .disabled(store.pages[interactionLevel ?? store.activeLevel]?.activeLikeMutation != nil)
+
+                Spacer(minLength: 12)
+
+                if interactionLevel == .root, comment.childCommentCount > 0 {
+                    Button {
+                        store.openReplies(rootCommentID: comment.id)
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text("共 \(comment.childCommentCount) 条回复")
+                            Image(systemName: "chevron.right")
+                        }
+                    }
+                    .fontWeight(.medium)
+                    .accessibilityIdentifier("reply_count_open_\(comment.id)")
+                }
             }
             .font(.subheadline)
+            .foregroundStyle(.tint)
             .buttonStyle(.borderless)
         }
         .padding(.vertical, 6)
@@ -859,11 +906,12 @@ private enum CommentAttributedText {
             case let .paragraph(_, runs), let .heading(_, _, runs), let .quote(_, runs), let .segment(_, _, runs):
                 append(runs, bodyFont: bodyFont, to: &result)
             case let .list(_, kind, items):
-                for (index, item) in items.enumerated() {
-                    if index > 0 { result.append(AttributedString("\n")) }
-                    result.append(AttributedString(kind == .ordered ? "\(index + 1). " : "• "))
-                    append(item.runs, bodyFont: bodyFont, to: &result)
-                }
+                append(
+                    list: QAListGroup(kind: kind, items: items),
+                    depth: 0,
+                    bodyFont: bodyFont,
+                    to: &result
+                )
             case let .code(_, _, text), let .formula(_, text):
                 var code = AttributedString(text)
                 code.font = bodyFont.monospaced()
@@ -892,6 +940,24 @@ private enum CommentAttributedText {
                 part.link = url
             }
             result.append(part)
+        }
+    }
+
+    private static func append(
+        list: QAListGroup,
+        depth: Int,
+        bodyFont: Font,
+        to result: inout AttributedString
+    ) {
+        for (index, item) in list.items.enumerated() {
+            if !result.characters.isEmpty { result.append(AttributedString("\n")) }
+            let number = item.ordinal ?? list.startIndex + index
+            let marker = list.kind == .ordered ? "\(number). " : "• "
+            result.append(AttributedString(String(repeating: "  ", count: depth) + marker))
+            append(item.runs, bodyFont: bodyFont, to: &result)
+            for nestedList in item.nestedLists {
+                append(list: nestedList, depth: depth + 1, bodyFont: bodyFont, to: &result)
+            }
         }
     }
 
@@ -950,6 +1016,58 @@ private enum CommentDateFormatter {
         }
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return formatter.string(from: date)
+    }
+}
+
+private extension CommentSubjectDTO {
+    var fallbackShareContext: CommentShareContextDTO {
+        switch self {
+        case let .answer(id):
+            return CommentShareContextDTO(
+                title: "回答 #\(id)",
+                excerpt: nil,
+                sourceURL: URL(string: "https://www.zhihu.com/answer/\(id)")!
+            )
+        case let .article(id):
+            return CommentShareContextDTO(
+                title: "文章 #\(id)",
+                excerpt: nil,
+                sourceURL: URL(string: "https://zhuanlan.zhihu.com/p/\(id)")!
+            )
+        case let .question(id):
+            return CommentShareContextDTO(
+                title: "问题 #\(id)",
+                excerpt: nil,
+                sourceURL: URL(string: "https://www.zhihu.com/question/\(id)")!
+            )
+        case let .pin(id):
+            return CommentShareContextDTO(
+                title: "想法 #\(id)",
+                excerpt: nil,
+                sourceURL: URL(string: "https://www.zhihu.com/pin/\(id)")!
+            )
+        case let .segment(contentID, contentTypeRaw, _):
+            let title: String
+            let sourceURL: URL
+            switch contentTypeRaw {
+            case "answer":
+                title = "回答 #\(contentID)"
+                sourceURL = URL(string: "https://www.zhihu.com/answer/\(contentID)")!
+            case "article":
+                title = "文章 #\(contentID)"
+                sourceURL = URL(string: "https://zhuanlan.zhihu.com/p/\(contentID)")!
+            case "question":
+                title = "问题 #\(contentID)"
+                sourceURL = URL(string: "https://www.zhihu.com/question/\(contentID)")!
+            case "pin":
+                title = "想法 #\(contentID)"
+                sourceURL = URL(string: "https://www.zhihu.com/pin/\(contentID)")!
+            default:
+                title = "知乎内容"
+                sourceURL = URL(string: "https://www.zhihu.com")!
+            }
+            return CommentShareContextDTO(title: title, excerpt: nil, sourceURL: sourceURL)
+        }
     }
 }
 

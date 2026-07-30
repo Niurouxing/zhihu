@@ -23,6 +23,11 @@ protocol PersonRepository {
     ) async throws -> PersonPageResult
     func setFollowing(_ target: Bool, profile: PersonProfile) async throws -> PersonFollowResult
     func setBlocking(_ target: Bool, profile: PersonProfile) async throws
+    func recordReadHistory(profileID: String) async
+}
+
+extension PersonRepository {
+    func recordReadHistory(profileID: String) async {}
 }
 
 actor URLSessionPersonRepository: PersonRepository {
@@ -52,6 +57,10 @@ actor URLSessionPersonRepository: PersonRepository {
         let data = try await client.data(for: url, authentication: .accountRequired)
         let response = try JSONDecoder.person.decode(ProfileResponse.self, from: data)
         return response.profile(provisionalDisplayName: provisionalDisplayName)
+    }
+
+    func recordReadHistory(profileID: String) async {
+        await client.recordReadHistory(contentToken: profileID, contentType: "profile")
     }
 
     func fetchPage(

@@ -14,6 +14,7 @@ final class HotFeedStore: ObservableObject {
     private var isEnd = false
     private var hasLoaded = false
     private var failedOperation: FailedOperation?
+    private var generation: UInt64 = 0
 
     init(
         repository: HotFeedRepository,
@@ -60,17 +61,33 @@ final class HotFeedStore: ObservableObject {
         refreshTracker.needsRefreshAfterIdle(metadata: refreshMetadata, at: date)
     }
 
+    func accountDidChange() {
+        generation &+= 1
+        items = []
+        isLoading = false
+        isRefreshing = false
+        errorMessage = nil
+        nextURL = nil
+        isEnd = false
+        hasLoaded = false
+        failedOperation = nil
+        refreshMetadata = refreshTracker.clearing()
+    }
+
     func loadNextPage() async {
         guard hasLoaded, !isEnd, !isLoading, let nextURL else { return }
+        let current = generation
         isLoading = true
         errorMessage = nil
         do {
             let page = try await repository.fetchPage(after: nextURL)
+            guard current == generation else { return }
             appendUnique(page.items)
             self.nextURL = page.nextURL
             isEnd = page.isEnd
             failedOperation = nil
         } catch {
+            guard current == generation else { return }
             if error.isNativeRequestCancellation {
                 isLoading = false
                 return
@@ -78,7 +95,7 @@ final class HotFeedStore: ObservableObject {
             errorMessage = error.localizedDescription
             failedOperation = .next
         }
-        isLoading = false
+        if current == generation { isLoading = false }
     }
 
     func retry() async {
@@ -92,11 +109,13 @@ final class HotFeedStore: ObservableObject {
 
     private func replacePage(isRefresh: Bool) async {
         guard !isLoading else { return }
+        let current = generation
         isLoading = true
         isRefreshing = isRefresh
         errorMessage = nil
         do {
             let page = try await repository.fetchPage(after: nil)
+            guard current == generation else { return }
             items = page.items
             nextURL = page.nextURL
             isEnd = page.isEnd
@@ -104,6 +123,7 @@ final class HotFeedStore: ObservableObject {
             failedOperation = nil
             refreshMetadata = refreshTracker.recordingSuccessfulRefresh(in: refreshMetadata)
         } catch {
+            guard current == generation else { return }
             if error.isNativeRequestCancellation {
                 isLoading = false
                 isRefreshing = false
@@ -112,8 +132,10 @@ final class HotFeedStore: ObservableObject {
             errorMessage = error.localizedDescription
             failedOperation = .initial
         }
-        isLoading = false
-        isRefreshing = false
+        if current == generation {
+            isLoading = false
+            isRefreshing = false
+        }
     }
 
     private func appendUnique(_ incoming: [FeedItemDTO]) {

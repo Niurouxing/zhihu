@@ -292,6 +292,9 @@ struct HomeChannelsNativeView: View {
                   selectedChannelID == channel.id,
                   needsRefreshAfterIdle(channel)
             else { return }
+            if channel == .recommendation, recommendationStore.isLoading {
+                return
+            }
 
             scrollToTopRequests[channel, default: 0] &+= 1
             do {
@@ -304,9 +307,13 @@ struct HomeChannelsNativeView: View {
             guard !Task.isCancelled,
                   isEffectivelyVisible,
                   selectedChannelID == channel.id,
-                  await waitUntilIdle(for: channel),
                   needsRefreshAfterIdle(channel)
             else { return }
+            if channel == .recommendation {
+                _ = await recommendationStore.refresh(intent: .automatic)
+                return
+            }
+            guard await waitUntilIdle(for: channel) else { return }
             let previousSuccessfulRefresh = successfulRefreshDate(for: channel)
             await refresh(channel)
             guard !Task.isCancelled,
@@ -333,6 +340,15 @@ struct HomeChannelsNativeView: View {
                 if generation == doubleTapRefreshGeneration {
                     doubleTapRefreshTask = nil
                 }
+            }
+            if channel == .recommendation {
+                guard !Task.isCancelled,
+                      generation == doubleTapRefreshGeneration,
+                      isEffectivelyVisible,
+                      selectedChannelID == channel.id
+                else { return }
+                _ = await recommendationStore.refresh(intent: .returnToTop)
+                return
             }
             do {
                 try await Task.sleep(nanoseconds: 500_000_000)

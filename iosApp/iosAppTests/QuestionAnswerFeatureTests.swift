@@ -179,6 +179,303 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         XCTAssertEqual(images.map(\.url.absoluteString), ["https://pic.zhimg.com/real.jpg"])
     }
 
+    func testParserPreservesTrustedZhihuImageDimensionsBeforeLoading() throws {
+        let blocks = QARichContentParser.blocks(from: """
+        <figure>
+          <img
+            src="https://pic.zhimg.com/example.jpg"
+            data-rawwidth="1200"
+            data-rawheight="880"
+            width="300"
+            height="200"
+          />
+          <figcaption>尺寸图</figcaption>
+        </figure>
+        """)
+
+        guard case let .image(image) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected image")
+        }
+        XCTAssertEqual(image.dimensions, QAImageDimensions(width: 1200, height: 880))
+        XCTAssertEqual(
+            try XCTUnwrap(image.dimensions).aspectRatio,
+            1200.0 / 880.0,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(image.caption, "尺寸图")
+    }
+
+    func testParserFallsBackToWidthHeightAndRejectsUntrustedImageDimensions() {
+        let blocks = QARichContentParser.blocks(from: """
+        <img src="https://pic.zhimg.com/fallback.jpg"
+             data-rawwidth="unknown" data-rawheight="unknown"
+             width="640" height="480" />
+        <img src="https://pic.zhimg.com/invalid.jpg" data-rawwidth="-1" data-rawheight="999999999" />
+        """)
+        let images = blocks.compactMap { block -> QAImageDTO? in
+            guard case let .image(image) = block else { return nil }
+            return image
+        }
+
+        XCTAssertEqual(images.first?.dimensions, QAImageDimensions(width: 640, height: 480))
+        XCTAssertNil(images.last?.dimensions)
+    }
+
+    func testParserPreservesNestedAndSiblingListHierarchyAndOrderedStart() throws {
+        let blocks = QARichContentParser.blocks(from: """
+        <ol start="3">
+          <li>继续跳票。</li>
+          <li>在较短时间内推出，但是</li>
+          <ol>
+            <li>分词器和灰测表现不一致</li>
+            <ol>
+              <li>正式版性能约等于 Fable。</li>
+              <li>正式版性能远不及 Fable。</li>
+            </ol>
+            <li>分词器和灰测表现一致</li>
+          </ol>
+        </ol>
+        """)
+
+        guard case let .list(_, .ordered, items) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected ordered list")
+        }
+        XCTAssertEqual(items.map(\.ordinal), [3, 4])
+        XCTAssertEqual(items.map { $0.runs.map(\.text).joined() }, ["继续跳票。", "在较短时间内推出，但是"])
+        let secondLevel = try XCTUnwrap(items[1].nestedLists.first)
+        XCTAssertEqual(secondLevel.kind, .ordered)
+        XCTAssertEqual(secondLevel.items.count, 2)
+        XCTAssertEqual(secondLevel.items[0].nestedLists.first?.items.count, 2)
+    }
+
+    func testParserKeepsItemsFromMalformedNestedListWithoutPrecedingItem() throws {
+        let blocks = QARichContentParser.blocks(from: """
+        <h3>1.2 国际带宽分配</h3>
+        <ul><ul>
+          <li>电信的国际带宽总量最大，约为7.7T</li>
+          <li>带宽分配较为均衡，各省都有一定的国际带宽</li>
+        </ul></ul>
+        """)
+
+        let list = try XCTUnwrap(blocks.first { block in
+            if case .list = block { return true }
+            return false
+        })
+        guard case let .list(_, .unordered, items) = list else {
+            return XCTFail("expected unordered list")
+        }
+        XCTAssertEqual(
+            items.map { $0.runs.map(\.text).joined() },
+            ["电信的国际带宽总量最大，约为7.7T", "带宽分配较为均衡，各省都有一定的国际带宽"]
+        )
+    }
+
+    func testSelectableRichTextKeepsStrikethroughAndTypedLinkInOneTextRun() throws {
+        let blocks = QARichContentParser.blocks(
+            from: #"<p><a href="/question/7"><del>可选择的划线链接</del></a></p>"#
+        )
+        guard case let .paragraph(_, runs) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected paragraph")
+        }
+        XCTAssertEqual(runs.first?.link, .question(7))
+        XCTAssertTrue(try XCTUnwrap(runs.first).style.contains(.strikethrough))
+
+        let attributed = QARichTextFormatter.attributed(runs)
+        XCTAssertEqual(String(attributed.characters), "可选择的划线链接")
+        XCTAssertEqual(attributed.runs.first?.link, URL(string: "zhihu://questions/7"))
+        XCTAssertNotNil(attributed.runs.first?.strikethroughStyle)
+    }
+
+    func testLatexReadableFallbackSupportsEscapesSpacingAndConsecutiveScripts() {
+        XCTAssertEqual(
+            QALatexReadableText.render("\\{ \\} \\$ \\% \\# \\& \\_ \\| \\backslash"),
+            "{ } $ % # & _ ‖ \\"
+        )
+        XCTAssertEqual(QALatexReadableText.render("a_ib_jx^{i+j}"), "aᵢbⱼxⁱ⁺ʲ")
+        XCTAssertEqual(
+            QALatexReadableText.render(#"\frac{a}{b}"#),
+            #"\frac{a}{b}"#,
+            "unknown commands must remain lossless"
+        )
+        XCTAssertEqual(
+            QALatexReadableText.render(#"a\ b\,c\:d\>e\;f\quad g\qquad h"#),
+            "a b\u{2009}c\u{2005}d\u{2005}e\u{2004}f\u{2003}g\u{2003}\u{2003}h"
+        )
+    }
+
+    func testMarkdownConverterProjectsSemanticBlocksWithoutReparsingDisplayText() {
+        let nested = QAListGroup(
+            kind: .ordered,
+            startIndex: 3,
+            items: [
+                QAListItem(runs: [QAInlineRun(text: "内层一")], ordinal: 3),
+                QAListItem(
+                    runs: [QAInlineRun(text: "内层二")],
+                    ordinal: 4,
+                    nestedLists: [
+                        QAListGroup(
+                            kind: .unordered,
+                            items: [QAListItem(runs: [QAInlineRun(text: "三级")])]
+                        ),
+                    ]
+                ),
+            ]
+        )
+        let blocks: [QABodyBlock] = [
+            .paragraph(UUID(), [
+                QAInlineRun(text: "普通 * 文本 "),
+                QAInlineRun(text: "加粗", style: .strong),
+                QAInlineRun(text: " 强调", style: .emphasis),
+                QAInlineRun(text: " 删除", style: .strikethrough, link: .question(7)),
+                QAInlineRun(text: " code`value", style: .code),
+            ]),
+            .heading(UUID(), level: 3, runs: [QAInlineRun(text: "小节")]),
+            .quote(UUID(), [QAInlineRun(text: "引用\n第二行")]),
+            .list(
+                UUID(),
+                kind: .unordered,
+                items: [
+                    QAListItem(
+                        runs: [QAInlineRun(text: "外层")],
+                        nestedLists: [nested]
+                    ),
+                ]
+            ),
+            .code(UUID(), language: "swift unsafe", text: "let fence = ```"),
+            .formula(UUID(), latex: "a_ib_j"),
+            .image(QAImageDTO(
+                url: URL(string: "https://pic.zhimg.com/a.jpg")!,
+                caption: "说明",
+                altText: "图]像"
+            )),
+            .segment(UUID(), segmentID: "seg", runs: [QAInlineRun(text: "划线正文")]),
+            .divider(UUID()),
+        ]
+
+        XCTAssertEqual(
+            QAMarkdownConverter.blocks(blocks),
+            """
+            普通 \\* 文本 **加粗** *强调* [~~删除~~](https://www.zhihu.com/question/7) ``code`value``
+
+            ### 小节
+
+            > 引用
+            > 第二行
+
+            - 外层
+                3. 内层一
+                4. 内层二
+                    - 三级
+
+            ````swift
+            let fence = ```
+            ````
+
+            $$
+            a_ib_j
+            $$
+
+            ![图\\]像](https://pic.zhimg.com/a.jpg)
+
+            _说明_
+
+            划线正文
+
+            ---
+            """
+        )
+    }
+
+    func testMarkdownDocumentIncludesTitleAuthorSourceAndOnlyLoadedBlocks() {
+        let answer = QAFixtures.answerDTO
+        let document = QAMarkdownConverter.document(from: answer)
+
+        XCTAssertEqual(document.title, "原生问题")
+        XCTAssertEqual(document.authorName, "作者")
+        XCTAssertEqual(document.sourceURL, answer.sourceURL)
+        XCTAssertEqual(document.suggestedFileName, "原生问题.md")
+        XCTAssertEqual(
+            document.markdown,
+            "# 原生问题\n\n作者：作者\n\n" +
+                "原文：[https://www.zhihu.com/question/7/answer/42]" +
+                "(https://www.zhihu.com/question/7/answer/42)\n\n正文\n"
+        )
+
+        let article = AnswerDTO(
+            route: .init(contentID: 9, kind: .article),
+            title: "文章 / 标题",
+            questionID: nil,
+            author: answer.author,
+            blocks: [.paragraph(UUID(), [QAInlineRun(text: "当前已加载内容")])],
+            attachment: nil,
+            sourceURL: URL(string: "https://zhuanlan.zhihu.com/p/9")!,
+            voteUpCount: 0,
+            favoriteCount: 0,
+            commentCount: 0,
+            voteState: .neutral,
+            favoriteState: .unknown,
+            createdTimeSeconds: 0,
+            updatedTimeSeconds: 0,
+            ipLocation: nil,
+            invitationPreface: nil,
+            endorsements: []
+        )
+        let articleDocument = QAMarkdownConverter.document(from: article)
+        XCTAssertTrue(articleDocument.markdown.contains("当前已加载内容"))
+        XCTAssertFalse(articleDocument.markdown.contains("未加载"))
+        XCTAssertEqual(articleDocument.suggestedFileName, "文章-标题.md")
+    }
+
+    func testMarkdownSharePayloadUsesTextThenSafeTemporaryFileForLongContent() throws {
+        let short = QAMarkdownDocument(
+            title: "短文",
+            authorName: "作者",
+            sourceURL: URL(string: "https://www.zhihu.com/answer/1")!,
+            markdown: "短正文",
+            suggestedFileName: "短文.md"
+        )
+        XCTAssertEqual(
+            QAMarkdownSharePayloadBuilder.payload(for: short, inlineTextByteLimit: 100),
+            .text("短正文")
+        )
+
+        let long = QAMarkdownDocument(
+            title: "长文",
+            authorName: "作者",
+            sourceURL: short.sourceURL,
+            markdown: String(repeating: "长", count: 101),
+            suggestedFileName: "../../不可覆盖.md"
+        )
+        XCTAssertEqual(
+            QAMarkdownSharePayloadBuilder.payload(for: long, inlineTextByteLimit: 100),
+            .file(contents: long.markdown, suggestedFileName: "../../不可覆盖.md")
+        )
+
+        let fileManager = FileManager.default
+        let base = fileManager.temporaryDirectory.appendingPathComponent(
+            "QAMarkdownTemporaryFileStoreTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(at: base, withIntermediateDirectories: false)
+        defer { try? fileManager.removeItem(at: base) }
+        let sibling = base.appendingPathComponent("keep.txt")
+        try Data("keep".utf8).write(to: sibling)
+
+        let temporary = try QAMarkdownTemporaryFileStore.write(
+            contents: long.markdown,
+            suggestedFileName: "../../不可覆盖.md",
+            baseDirectory: base,
+            fileManager: fileManager
+        )
+        XCTAssertEqual(temporary.fileURL.lastPathComponent, "不可覆盖.md")
+        XCTAssertEqual(try String(contentsOf: temporary.fileURL), long.markdown)
+        XCTAssertTrue(fileManager.fileExists(atPath: sibling.path))
+
+        temporary.cleanup(fileManager: fileManager)
+        XCTAssertFalse(fileManager.fileExists(atPath: temporary.directoryURL.path))
+        XCTAssertTrue(fileManager.fileExists(atPath: sibling.path))
+    }
+
     func testParserProjectsZhihuVideoBoxInsteadOfTreatingCoverAsImage() throws {
         let blocks = QARichContentParser.blocks(from: """
         <a class="video-box" href="https://link.zhihu.com/?target=https%3A//www.zhihu.com/video/2029631316597973958" data-lens-id="2029631316597973958">
@@ -203,6 +500,34 @@ final class QuestionAnswerFeatureTests: XCTestCase {
             return XCTFail("expected paragraph")
         }
         XCTAssertEqual(runs.first?.link, .external(URL(string: "https://example.com/path")!))
+    }
+
+    func testAppViewLinksResolveToTypedQADestinations() throws {
+        XCTAssertEqual(
+            QABodyLinkResolver.resolve(URL(string: "https://www.zhihu.com/appview/pin/11")!),
+            .pin(11)
+        )
+        XCTAssertEqual(
+            QABodyLinkResolver.resolve(URL(string: "https://www.zhihu.com/appview/answer/12")!),
+            .answer(12)
+        )
+        XCTAssertEqual(
+            QABodyLinkResolver.resolve(URL(string: "https://www.zhihu.com/appview/p/13")!),
+            .article(13)
+        )
+
+        let external = URL(string: "https://attacker.example/appview/answer/12")!
+        XCTAssertEqual(QABodyLinkResolver.resolve(external), .external(external))
+    }
+
+    func testRichContentParserUsesUnifiedAppViewResolver() throws {
+        let blocks = QARichContentParser.blocks(
+            from: #"<p><a href="/appview/pin/22">站内想法</a></p>"#
+        )
+        guard case let .paragraph(_, runs) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected paragraph")
+        }
+        XCTAssertEqual(runs.first?.link, .pin(22))
     }
 
     func testPinDateNeverMovesIPFromTrailingMetadata() {
@@ -264,6 +589,84 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         }
     }
 
+    func testVideoRepositoryPostsWebPlayerContractAndChoosesHighestTrustedBitrate() async throws {
+        let recorder = QARequestRecorder()
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            return (
+                200,
+                Data(
+                    #"{"video_play":{"playlist":{"mp4":[{"bitrate":100,"url":["https://video.vzuu.com/low.mp4"]},{"bitrate":300,"url":["https://video.vzuu.com/high.mp4"]}]}}}"#.utf8
+                ),
+                [:]
+            )
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [QAURLProtocol.self]
+        let client = ZhihuAPIClient(
+            accountStore: QAAccountStore(),
+            session: URLSession(configuration: configuration)
+        )
+        let repository = URLSessionNativeVideoRepository(client: client)
+        let route = NativeVideoRouteDTO(
+            contentID: 42,
+            videoID: 99,
+            contentType: .answer
+        )
+
+        let playbackURL = try await repository.resolvePlaybackURL(for: route)
+
+        XCTAssertEqual(playbackURL, URL(string: "https://video.vzuu.com/high.mp4"))
+        let request = try XCTUnwrap(recorder.requests.first)
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path, "/api/v4/video/play_info")
+        XCTAssertEqual(
+            URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "r" })?.value,
+            "99"
+        )
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-app-za"), "OS=webplayer")
+        let body = try XCTUnwrap(request.httpBody)
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        XCTAssertEqual(json["content_id"] as? String, "42")
+        XCTAssertEqual(json["content_type_str"] as? String, "answer")
+        XCTAssertEqual(json["video_id"] as? String, "99")
+        XCTAssertEqual(json["scene_code"] as? String, "answer_detail_web")
+        XCTAssertEqual(json["is_only_video"] as? Bool, true)
+    }
+
+    func testVideoRepositoryRejectsUntrustedPlaybackHost() async {
+        QAURLProtocol.setHandler { _ in
+            (
+                200,
+                Data(
+                    #"{"video_play":{"playlist":{"mp4":[{"bitrate":300,"url":["https://attacker.example/video.mp4"]}]}}}"#.utf8
+                ),
+                [:]
+            )
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [QAURLProtocol.self]
+        let client = ZhihuAPIClient(
+            accountStore: QAAccountStore(),
+            session: URLSession(configuration: configuration)
+        )
+        let repository = URLSessionNativeVideoRepository(client: client)
+
+        do {
+            _ = try await repository.resolvePlaybackURL(for: .init(
+                contentID: 42,
+                videoID: 99,
+                contentType: .answer
+            ))
+            XCTFail("Expected untrusted playback URL to be rejected")
+        } catch {
+            XCTAssertEqual(error as? NativeVideoRepositoryError, .playbackUnavailable)
+        }
+    }
+
     func testQuestionAndAnswerReadRequestsRejectMissingAccountBeforeNetwork() async {
         let recorder = QARequestRecorder()
         QAURLProtocol.setHandler { request in
@@ -314,7 +717,7 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         XCTAssertEqual(answer.favoriteState, .unknown)
         XCTAssertEqual(answer.ipLocation, "江苏")
         XCTAssertEqual(answer.endorsements.first?.text, "周刊收录")
-        XCTAssertEqual(answer.endorsements.first?.actionURL?.path, "/weekly/1")
+        XCTAssertEqual(answer.endorsements.first?.actionURL?.path, "/column/c_1533471233991028736")
         XCTAssertEqual(
             answer.sourceURL.absoluteString,
             "https://www.zhihu.com/question/7/answer/42"
@@ -421,6 +824,41 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         XCTAssertEqual(request.url?.path, "/api/v4/answers/42/voters")
         let body = try XCTUnwrap(request.httpBody)
         XCTAssertEqual((try JSONSerialization.jsonObject(with: body) as? [String: String])?["type"], "down")
+    }
+
+    func testReadHistoryUsesOfficialAddEndpointAndPayload() async throws {
+        let recorder = QARequestRecorder()
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            return (200, Data(#"{}"#.utf8), [:])
+        }
+        let repository = makeRepository()
+
+        await repository.recordReadHistory(contentToken: "42", contentType: "answer")
+
+        let request = try XCTUnwrap(recorder.requests.first)
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.absoluteString, "https://www.zhihu.com/api/v4/read_history/add")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        let body = try XCTUnwrap(request.httpBody)
+        let payload = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: body) as? [String: String]
+        )
+        XCTAssertEqual(payload["content_token"], "42")
+        XCTAssertEqual(payload["content_type"], "answer")
+    }
+
+    func testReadHistoryIgnoresUnsupportedContentType() async {
+        let recorder = QARequestRecorder()
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            return (200, Data(#"{}"#.utf8), [:])
+        }
+        let repository = makeRepository()
+
+        await repository.recordReadHistory(contentToken: "42", contentType: "advertisement")
+
+        XCTAssertTrue(recorder.requests.isEmpty)
     }
 
     @MainActor
@@ -639,7 +1077,7 @@ private enum QAFixtures {
     )
 
     static let answer = Data(
-        #"{"id":42,"content":"<p>回答正文</p>","author":{"id":"member","url_token":"author","name":"作者","headline":"简介","avatar_url":"https://pic.zhimg.com/avatar.jpg"},"question":{"id":7,"title":"原生问题"},"attachment":null,"voteup_count":100,"favlists_count":2,"comment_count":3,"thanks_count":99,"created_time":1000,"updated_time":2000,"ip_info":"江苏","url":"https://www.zhihu.com/question/7/answer/42","reaction":{"relation":{"vote":"UP"}},"endorsements":[{"action_url":"https://www.zhihu.com/weekly/1","elements":[{"type":"IMAGE","image_key":"seal"},{"type":"TEXT","content":"周刊收录"},{"type":"IMAGE","image_key":"arrow"}]}]}"#.utf8
+        #"{"id":42,"content":"<p>回答正文</p>","author":{"id":"member","url_token":"author","name":"作者","headline":"简介","avatar_url":"https://pic.zhimg.com/avatar.jpg"},"question":{"id":7,"title":"原生问题"},"attachment":null,"voteup_count":100,"favlists_count":2,"comment_count":3,"thanks_count":99,"created_time":1000,"updated_time":2000,"ip_info":"江苏","url":"https://www.zhihu.com/question/7/answer/42","reaction":{"relation":{"vote":"UP"}},"endorsements":[{"action_url":"https://www.zhihu.com/column/c_1533471233991028736","elements":[{"type":"IMAGE","image_key":"seal"},{"type":"TEXT","content":"周刊收录"},{"type":"IMAGE","image_key":"arrow"}]}]}"#.utf8
     )
 
     static func answerPage(next: String?) -> Data {

@@ -6,8 +6,10 @@ enum NativeShellRoute: Hashable {
     case answer(AnswerRouteDTO)
     case question(QuestionRouteDTO)
     case person(PersonRoutePayload)
+    case personConnections(PersonConnectionsRoute)
     case personWeb(PersonWebRoute)
     case pin(PinRouteDTO)
+    case video(NativeVideoRouteDTO)
     case comments(CommentThreadRouteDTO)
     case search(SearchRouteDTO)
     case hotList
@@ -16,11 +18,40 @@ enum NativeShellRoute: Hashable {
     case account
     case collections(userToken: String)
     case collectionContent(String)
+    case special(String)
+    case column(String)
     case history
     case notifications
     case notificationSettings
     case settings
     case systemAndUpdate
+
+    var diagnosticRouteType: String {
+        switch self {
+        case .answer: return "answer"
+        case .question: return "question"
+        case .person: return "person"
+        case .personConnections: return "person_connections"
+        case .personWeb: return "person_web"
+        case .pin: return "pin"
+        case .video: return "video"
+        case .comments: return "comments"
+        case .search: return "search"
+        case .hotList: return "hot_list"
+        case .writeAnswer: return "write_answer"
+        case .writePin: return "write_pin"
+        case .account: return "account"
+        case .collections: return "collections"
+        case .collectionContent: return "collection_content"
+        case .special: return "special"
+        case .column: return "column"
+        case .history: return "history"
+        case .notifications: return "notifications"
+        case .notificationSettings: return "notification_settings"
+        case .settings: return "settings"
+        case .systemAndUpdate: return "system_and_update"
+        }
+    }
 }
 
 enum NativeHotSystemNavigationTarget: Equatable {
@@ -77,6 +108,13 @@ enum NativeSearchFocusRequestPolicy {
         if lastConsumedToken == 0 { return true }
         let forwardDistance = request.token &- lastConsumedToken
         return forwardDistance > 0 && forwardDistance <= UInt.max / 2
+    }
+
+    static func pushedRouteRequest(_ route: SearchRouteDTO) -> NativeSearchFocusRequest {
+        guard route.isMemberRestricted, route.query.isEmpty else {
+            return .inactive
+        }
+        return NativeSearchFocusRequest(token: 1, isActive: true)
     }
 
     static func shouldRequestForTabSelection(
@@ -153,6 +191,8 @@ extension PersonNavigationIntent {
         case let .pin(id): return .pin(.init(pinID: id))
         case let .collection(id): return .collectionContent(id)
         case let .person(payload): return .person(payload)
+        case let .connections(route): return .personConnections(route)
+        case let .search(route): return .search(route)
         case let .web(route): return .personWeb(route)
         }
     }
@@ -161,14 +201,33 @@ extension PersonNavigationIntent {
 @MainActor
 final class NativeTabNavigationState: ObservableObject {
     @Published private var paths: [NativeAppTab: [NativeShellRoute]] = [:]
+    private let diagnostics: PerformanceDiagnosticsClient
+
+    init(diagnostics: PerformanceDiagnosticsClient = .disabled) {
+        self.diagnostics = diagnostics
+    }
 
     func binding(for tab: NativeAppTab) -> Binding<[NativeShellRoute]> {
-        Binding(get: { self.paths[tab] ?? [] }, set: { self.paths[tab] = $0 })
+        Binding(
+            get: { self.paths[tab] ?? [] },
+            set: { newPath in
+                let oldPath = self.paths[tab] ?? []
+                if newPath.count < oldPath.count {
+                    for route in oldPath.dropFirst(newPath.count).reversed() {
+                        self.record(route, operation: "pop")
+                    }
+                }
+                self.paths[tab] = newPath
+            }
+        )
     }
 
     func navigate(to route: NativeShellRoute, in tab: NativeAppTab) {
         var path = paths[tab] ?? []
-        if path.last != route { path.append(route) }
+        if path.last != route {
+            path.append(route)
+            record(route, operation: "push")
+        }
         paths[tab] = path
     }
 
@@ -177,6 +236,7 @@ final class NativeTabNavigationState: ObservableObject {
         if !path.isEmpty { path.removeLast() }
         path.append(route)
         paths[tab] = path
+        record(route, operation: "replace")
     }
 
     func isAtRoot(in tab: NativeAppTab) -> Bool {
@@ -186,6 +246,15 @@ final class NativeTabNavigationState: ObservableObject {
     func reset(in tab: NativeAppTab) { paths[tab] = [] }
 
     func resetAll() { paths.removeAll() }
+
+    private func record(_ route: NativeShellRoute, operation: String) {
+        diagnostics.record(.init(
+            category: "navigation",
+            operation: operation,
+            result: .success,
+            routeType: route.diagnosticRouteType
+        ))
+    }
 }
 
 private struct NativeMediaPresentation: Identifiable, Hashable {
@@ -198,16 +267,18 @@ private struct NativeMediaPresentation: Identifiable, Hashable {
 struct NativeAppShell: View {
     let hostModel: HostModel
     let isAppUnlocked: Bool
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var preferences: NativeShellPreferences
     @ObservedObject private var account: NativeAccountStore
     @ObservedObject private var notifications: NativeNotificationStore
     @ObservedObject private var notificationPreferences: NativeNotificationPreferences
 
-    @StateObject private var navigation = NativeTabNavigationState()
+    @StateObject private var navigation: NativeTabNavigationState
     @StateObject private var recommendationStore: HomeFeedNativeStore
     @StateObject private var followingStore: FollowNativeStore
     @StateObject private var hotStore: HotFeedStore
     @StateObject private var dailyStore: DailyNativeStore
+    @StateObject private var clipboardLinkMonitor = NativeClipboardZhihuLinkMonitor()
     @State private var selectedTab: NativeAppTab
     @State private var selectedHomeChannelID: HomeChannel.ID
     @State private var mediaPresentation: NativeMediaPresentation?
@@ -218,6 +289,7 @@ struct NativeAppShell: View {
     @State private var homeDoubleTapRefreshRequest: UInt = 0
     @State private var searchRootRoute = SearchRouteDTO()
     @State private var searchFocusRequestToken: UInt = 0
+    @State private var clipboardInspectionArmed = false
 
     init(hostModel: HostModel, isAppUnlocked: Bool) {
         self.hostModel = hostModel
@@ -226,7 +298,20 @@ struct NativeAppShell: View {
         _account = ObservedObject(wrappedValue: hostModel.account)
         _notifications = ObservedObject(wrappedValue: hostModel.notifications)
         _notificationPreferences = ObservedObject(wrappedValue: hostModel.notificationPreferences)
-        _recommendationStore = StateObject(wrappedValue: HomeFeedNativeStore(repository: hostModel.homeRepository))
+        _navigation = StateObject(wrappedValue: NativeTabNavigationState(
+            diagnostics: hostModel.performanceDiagnostics.client
+        ))
+        _recommendationStore = StateObject(wrappedValue: HomeFeedNativeStore(
+            repository: hostModel.homeRepository,
+            configuration: {
+                hostModel.preferences.homeRecommendationRefreshConfiguration
+            },
+            cachePersistence: hostModel.homeRecommendationCachePersistence,
+            cacheAccountID: {
+                hostModel.account.identity?.id
+            },
+            diagnostics: hostModel.performanceDiagnostics.client
+        ))
         _followingStore = StateObject(wrappedValue: FollowNativeStore(repository: hostModel.followRepository))
         _hotStore = StateObject(wrappedValue: HotFeedStore(repository: hostModel.hotRepository))
         _dailyStore = StateObject(wrappedValue: DailyNativeStore(repository: hostModel.dailyRepository))
@@ -276,6 +361,19 @@ struct NativeAppShell: View {
         .alert("链接已复制", isPresented: $showsCopiedLinkConfirmation) {
             Button("好", role: .cancel) {}
         }
+        .alert(item: $clipboardLinkMonitor.candidate) { candidate in
+            Alert(
+                title: Text("发现知乎链接"),
+                message: Text("是否在知乎++中打开？"),
+                primaryButton: .default(Text("打开")) {
+                    clipboardLinkMonitor.candidate = nil
+                    openContent(candidate.destination)
+                },
+                secondaryButton: .cancel(Text("取消")) {
+                    clipboardLinkMonitor.candidate = nil
+                }
+            )
+        }
         .fullScreenCover(item: $mediaPresentation) { presentation in
             NativeMediaGallery(urls: presentation.urls, initialIndex: presentation.initialIndex)
         }
@@ -287,15 +385,52 @@ struct NativeAppShell: View {
         }
         .onChange(of: isAppUnlocked) { isUnlocked in
             if !isUnlocked { homeTabDoubleTapGate.cancel() }
+            if isUnlocked, scenePhase == .active {
+                inspectClipboardAfterActivationIfNeeded()
+            }
+        }
+        .onChange(of: scenePhase) { phase in
+            switch phase {
+            case .active:
+                inspectClipboardAfterActivationIfNeeded()
+            case .inactive, .background:
+                clipboardInspectionArmed = true
+            @unknown default:
+                clipboardInspectionArmed = true
+            }
         }
         .onChange(of: account.identity.map { "\($0.id)|\($0.urlToken ?? "")" }) { _ in
             navigation.resetAll()
-            Task { await notifications.refreshUnreadCounts() }
+            recommendationStore.accountDidChange()
+            followingStore.accountDidChange()
+            hotStore.accountDidChange()
+            dailyStore.accountDidChange()
+            notifications.accountDidChange()
+            Task {
+                switch HomeChannel(rawValue: selectedHomeChannelID) ?? .recommendation {
+                case .recommendation:
+                    await recommendationStore.loadInitialIfNeeded()
+                case .following:
+                    await followingStore.loadInitialIfNeeded()
+                case .hot:
+                    await hotStore.loadInitialIfNeeded()
+                case .daily:
+                    await dailyStore.loadInitialIfNeeded()
+                }
+                if account.isSignedIn {
+                    await notifications.refresh()
+                }
+            }
+        }
+        .onChange(of: preferences.homeRecommendationSource) { _ in
+            Task { await recommendationStore.recommendationSourceDidChange() }
         }
         .task {
             if case .loading = account.state { account.reloadFromKeychain() }
             if account.isSignedIn { await notifications.refreshUnreadCounts() }
             SystemNavigationRequestCenter.shared.installHandler(handleSystemNavigation)
+            clipboardInspectionArmed = true
+            inspectClipboardAfterActivationIfNeeded()
         }
         .onDisappear { SystemNavigationRequestCenter.shared.removeHandler() }
         .onContinueUserActivity(CSSearchableItemActionType) { activity in
@@ -310,6 +445,7 @@ struct NativeAppShell: View {
             \.nativeHapticFeedback,
             .live(configuration: preferences.hapticFeedbackConfiguration)
         )
+        .environmentObject(hostModel.questionAuthorBlocklist)
     }
 
     @ViewBuilder
@@ -435,6 +571,7 @@ struct NativeAppShell: View {
                     route: route,
                     repository: hostModel.questionAnswerRepository,
                     openedHistory: hostModel.answerOpenedHistory,
+                    diagnostics: hostModel.performanceDiagnostics.client,
                     onNavigate: { handleQAIntent($0, in: tab) }
                 )
         case let .question(route):
@@ -447,10 +584,22 @@ struct NativeAppShell: View {
             NativePersonRouteView(
                 payload: payload,
                 accountStore: hostModel.accountStore,
+                diagnostics: hostModel.performanceDiagnostics.client,
+                onNavigate: { handlePersonIntent($0, in: tab) }
+            )
+        case let .personConnections(route):
+            NativePersonConnectionsRouteView(
+                route: route,
+                accountStore: hostModel.accountStore,
+                diagnostics: hostModel.performanceDiagnostics.client,
                 onNavigate: { handlePersonIntent($0, in: tab) }
             )
         case let .personWeb(route):
-            PersonWebDestinationView(route: route, accountStore: hostModel.accountStore)
+            PersonWebDestinationView(
+                route: route,
+                accountStore: hostModel.accountStore,
+                openExternal: hostModel.openExternal
+            )
         case let .pin(route):
             PinNativeView(
                 route: route,
@@ -461,6 +610,12 @@ struct NativeAppShell: View {
                     navigate(.comments(.init(subject: .pin($0))), in: tab)
                 }
             )
+        case let .video(route):
+            NativeVideoPlayerScreen(
+                route: route,
+                repository: hostModel.videoRepository,
+                openExternal: hostModel.openExternal
+            )
         case let .comments(route):
             NativeCommentNavigationRouteView(
                 route: route,
@@ -468,7 +623,12 @@ struct NativeAppShell: View {
                 onPersonNavigate: { handlePersonIntent($0, in: tab) }
             )
         case let .search(route):
-            SearchNativeView(route: route, repository: hostModel.searchRepository, onOpen: openFeed)
+            SearchNativeView(
+                route: route,
+                repository: hostModel.searchRepository,
+                focusRequest: NativeSearchFocusRequestPolicy.pushedRouteRequest(route),
+                onOpen: openFeed
+            )
         case .hotList:
             HotListNativeView(store: hotStore, onOpen: openFeed)
         case let .writeAnswer(route):
@@ -495,6 +655,18 @@ struct NativeAppShell: View {
             NativeCollectionsView(userToken: token, repository: hostModel.libraryRepository, onOpenContent: openContent)
         case let .collectionContent(id):
             NativeCollectionContentView(collectionID: id, repository: hostModel.libraryRepository, onOpenContent: openContent)
+        case let .special(id):
+            NativeSpecialView(
+                specialID: id,
+                repository: hostModel.specialRepository,
+                onOpenContent: { openFeed($0, in: tab) }
+            )
+        case let .column(id):
+            NativeColumnView(
+                columnID: id,
+                repository: hostModel.columnRepository,
+                onOpenContent: openContent
+            )
         case .history:
             NativeHistoryView(repository: hostModel.libraryRepository, onOpenContent: openContent)
         case .notifications:
@@ -507,6 +679,7 @@ struct NativeAppShell: View {
                 notificationPreferences: notificationPreferences,
                 systemSettings: hostModel.systemSettings,
                 appLock: hostModel.appLock,
+                performanceDiagnostics: hostModel.performanceDiagnostics,
                 setAppLock: hostModel.setAppLock
             )
             case .systemAndUpdate:
@@ -564,6 +737,12 @@ struct NativeAppShell: View {
         )
     }
 
+    private func inspectClipboardAfterActivationIfNeeded() {
+        guard clipboardInspectionArmed, isAppUnlocked else { return }
+        clipboardInspectionArmed = false
+        Task { await clipboardLinkMonitor.inspectIfNeeded() }
+    }
+
     private func openFeed(_ route: FeedItemRoute) {
         openFeed(route, in: selectedTab)
     }
@@ -578,8 +757,8 @@ struct NativeAppShell: View {
             navigate(.question(.init(questionID: id, provisionalTitle: title)), in: tab)
         case let .pin(id):
             navigate(.pin(.init(pinID: id)), in: tab)
-        case let .video(id):
-            openVideoPage(URL(string: "https://www.zhihu.com/zvideo/\(id)")!, in: tab)
+        case let .video(route):
+            navigate(.video(route), in: tab)
         }
     }
 
@@ -593,6 +772,8 @@ struct NativeAppShell: View {
                 navigate(.person(payload))
             }
         case let .pin(id): navigate(.pin(.init(pinID: id)))
+        case let .special(id): navigate(.special(id))
+        case let .column(id): navigate(.column(id))
         case let .search(query): navigate(.search(.init(query: query)))
         case let .external(url): hostModel.openExternal(url)
         }
@@ -630,14 +811,9 @@ struct NativeAppShell: View {
             } else {
                 hostModel.openExternal(url)
             }
-        case let .videoPage(url): openVideoPage(url, in: tab)
+        case let .video(route): navigate(.video(route), in: tab)
         case let .share(url): handleShare(url)
         }
-    }
-
-    private func openVideoPage(_ url: URL, in tab: NativeAppTab) {
-        guard let route = PersonWebRoute(kind: .video, title: "视频", url: url) else { return }
-        navigate(.personWeb(route), in: tab)
     }
 
     private func handleShare(_ url: URL) {
@@ -653,6 +829,7 @@ struct NativeAppShell: View {
 
     private func copyShareURL(_ url: URL) {
         UIPasteboard.general.url = url
+        clipboardLinkMonitor.recordAsHandled(url)
         showsCopiedLinkConfirmation = true
     }
 
@@ -661,6 +838,7 @@ struct NativeAppShell: View {
         case let .answer(id): navigate(.answer(.init(contentID: id, kind: .answer)), in: tab)
         case let .article(id): navigate(.answer(.init(contentID: id, kind: .article)), in: tab)
         case let .question(id): navigate(.question(.init(questionID: id)), in: tab)
+        case let .pin(id): navigate(.pin(.init(pinID: id)), in: tab)
         case let .person(token):
             if let payload = PersonRoutePayload(memberID: nil, urlToken: token, displayName: "") {
                 navigate(.person(payload), in: tab)
@@ -909,10 +1087,16 @@ private struct NativeQuestionRouteView: View {
 private struct NativePersonRouteView: View {
     @StateObject private var model: PersonHostModel
 
-    init(payload: PersonRoutePayload, accountStore: AccountJSONStore, onNavigate: @escaping (PersonNavigationIntent) -> Void) {
+    init(
+        payload: PersonRoutePayload,
+        accountStore: AccountJSONStore,
+        diagnostics: PerformanceDiagnosticsClient = .disabled,
+        onNavigate: @escaping (PersonNavigationIntent) -> Void
+    ) {
         _model = StateObject(wrappedValue: PersonHostModel(
             routeEntry: PersonRouteEntry(payload: payload),
             accountStore: accountStore,
+            diagnostics: diagnostics,
             onNavigate: onNavigate
         ))
     }
@@ -920,6 +1104,30 @@ private struct NativePersonRouteView: View {
     // Pushing a child route makes this view disappear temporarily. Do not dispose here: returning
     // must preserve the profile tab, paging state and scroll context.
     var body: some View { PersonHostView(model: model) }
+}
+
+private struct NativePersonConnectionsRouteView: View {
+    @StateObject private var model: PersonHostModel
+    private let title: String
+
+    init(
+        route: PersonConnectionsRoute,
+        accountStore: AccountJSONStore,
+        diagnostics: PerformanceDiagnosticsClient = .disabled,
+        onNavigate: @escaping (PersonNavigationIntent) -> Void
+    ) {
+        title = route.title
+        _model = StateObject(wrappedValue: PersonHostModel(
+            routeEntry: PersonRouteEntry(payload: route.person),
+            accountStore: accountStore,
+            diagnostics: diagnostics,
+            onNavigate: onNavigate
+        ))
+    }
+
+    var body: some View {
+        PersonConnectionsView(model: model, title: title)
+    }
 }
 
 @available(iOS 16.0, *)

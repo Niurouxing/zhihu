@@ -59,6 +59,26 @@ final class ArticleRoutingTests: XCTestCase {
         ))
     }
 
+    func testPushedMemberSearchRequestsFocusWithoutChangingOtherSearchRoutes() {
+        let memberSearch = SearchRouteDTO(
+            restrictedMemberHashID: "member-hash",
+            restrictedMemberName: "作者"
+        )
+
+        XCTAssertEqual(
+            NativeSearchFocusRequestPolicy.pushedRouteRequest(memberSearch),
+            NativeSearchFocusRequest(token: 1, isActive: true)
+        )
+        XCTAssertEqual(
+            NativeSearchFocusRequestPolicy.pushedRouteRequest(SearchRouteDTO(query: "热搜词")),
+            .inactive
+        )
+        XCTAssertEqual(
+            NativeSearchFocusRequestPolicy.pushedRouteRequest(SearchRouteDTO()),
+            .inactive
+        )
+    }
+
     func testHomeToSearchSelectionIssuesExactlyOneFocusToken() {
         var token: UInt = 0
         if NativeSearchFocusRequestPolicy.shouldRequestForTabSelection(

@@ -37,6 +37,7 @@ enum FeedResponseMapper {
         var seen: Set<FeedItemID> = []
         let items = envelope.data
             .flatMap(\.flattenedEntries)
+            .filter { !$0.isPromoted }
             .compactMap { item(from: $0, policy: policy) }
             .filter { seen.insert($0.id).inserted }
         let rawNextURL = envelope.paging?.next
@@ -214,8 +215,30 @@ enum FeedResponseMapper {
             )
             route = .question(questionID: numericID, title: title)
         case .pin:
-            title = target.decodedAuthor?.name.trimmedNonEmpty.map { "\(plainText($0))的想法" } ?? "想法"
-            summary = plainTextOptional(target.excerptTitle ?? target.excerpt)
+            let textContent = target.pinContentItems.compactMap(\.text).first
+            // `title` is already plain text. Running it through an HTML parser
+            // would incorrectly strip valid angle-bracket content such as
+            // `List<Integer>`.
+            let contentTitle = textContent?.title.trimmedNonEmpty
+            let contentSummary = plainTextOptional(textContent?.content)
+            let excerptSummary = plainTextOptional(target.excerptTitle ?? target.excerpt)
+            if let contentTitle {
+                title = contentTitle
+                summary = (contentSummary ?? excerptSummary).flatMap { $0 == contentTitle ? nil : $0 }
+            } else if let contentSummary {
+                // Zhihu pins commonly have no separate title. Promoting the body
+                // keeps the row readable and prevents a tall image from becoming
+                // the first and visually dominant element in the feed.
+                title = contentSummary
+                summary = excerptSummary.flatMap { $0 == contentSummary ? nil : $0 }
+            } else if let excerptSummary {
+                title = excerptSummary
+                summary = nil
+            } else {
+                title = target.decodedAuthor?.name.trimmedNonEmpty
+                    .map { "\(plainText($0))的想法" } ?? "想法"
+                summary = nil
+            }
             details = metricText(
                 kind: "想法",
                 first: target.likeCount.map { "\($0) 赞" },
@@ -233,7 +256,15 @@ enum FeedResponseMapper {
                 second: target.commentCount.map { "\($0) 评论" },
                 source: entry.sourceLabel
             )
-            route = .video(videoID: numericID)
+            route = .video(NativeVideoRouteDTO(
+                contentID: numericID,
+                videoID: target.thumbnailExtraInfo?.videoID,
+                contentType: .zvideo,
+                title: title,
+                thumbnailURL: target.thumbnailURL,
+                playbackURL: target.thumbnailExtraInfo?.playbackURL,
+                webURL: URL(string: "https://www.zhihu.com/zvideo/\(numericID)")
+            ))
         }
 
         return FeedItemDTO(
@@ -244,7 +275,11 @@ enum FeedResponseMapper {
             details: details,
             sourceLabel: entry.sourceLabel.map(plainText),
             author: policy == .hot ? nil : target.decodedAuthor?.dto,
+            questionAuthor: target.decodedQuestionAuthor?.dto,
             thumbnailURL: policy == .hot ? nil : target.thumbnailURL,
+            thumbnailPixelWidth: policy == .hot ? nil : target.thumbnailPixelWidth,
+            thumbnailPixelHeight: policy == .hot ? nil : target.thumbnailPixelHeight,
+            media: policy == .hot ? [] : target.feedMedia(contentID: contentID),
             route: route
         )
     }
@@ -299,10 +334,19 @@ private struct FeedAPIEntry: Decodable {
     let detailText: String?
     let actionText: String?
     let momentDesc: String?
+    let promotionExtra: FeedPromotionMarker?
+    let adInfo: FeedPromotionMarker?
+    let monitorUrls: FeedPromotionMarker?
     let list: [FeedAPIEntry]?
     let children: [Child]?
 
     var displayTarget: FeedTargetPayload? { target ?? object }
+    var isPromoted: Bool {
+        type?.lowercased() == "feed_advert"
+            || promotionExtra?.isMeaningful == true
+            || adInfo?.isMeaningful == true
+            || monitorUrls?.isMeaningful == true
+    }
 
     var sourceLabel: String? {
         (detailText ?? actionText ?? momentDesc)?.trimmedNonEmpty
@@ -315,6 +359,30 @@ private struct FeedAPIEntry: Decodable {
     struct Child: Decodable {
         let type: String?
         let thumbnail: String?
+    }
+}
+
+private struct FeedPromotionMarker: Decodable {
+    let isMeaningful: Bool
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            isMeaningful = false
+        } else if let value = try? container.decode(String.self) {
+            isMeaningful = value.trimmedNonEmpty != nil
+        } else if let value = try? container.decode(Bool.self) {
+            isMeaningful = value
+        } else if (try? container.decode(Int.self)) != nil
+            || (try? container.decode(Double.self)) != nil {
+            isMeaningful = true
+        } else if let values = try? container.decode([FeedPromotionMarker].self) {
+            isMeaningful = !values.isEmpty
+        } else if let values = try? container.decode([String: FeedPromotionMarker].self) {
+            isMeaningful = !values.isEmpty
+        } else {
+            isMeaningful = true
+        }
     }
 }
 
@@ -336,14 +404,76 @@ private struct FeedTargetPayload: Decodable {
     let answerCount: Int?
     let thumbnail: String?
     let thumbnailInfo: ThumbnailInfo?
+    let thumbnailExtraInfo: VideoInfo?
     let author: AuthorField?
     let question: Question?
+    let content: PinContentField?
 
     var decodedAuthor: Author? { author?.value }
+    var decodedQuestionAuthor: Author? {
+        switch type {
+        case FeedItemKind.answer.rawValue:
+            return question?.author?.value
+        case FeedItemKind.question.rawValue:
+            return decodedAuthor
+        default:
+            return nil
+        }
+    }
+    var pinContentItems: [PinContentItem] { content?.items ?? [] }
 
     var thumbnailURL: URL? {
-        (thumbnail ?? thumbnailInfo?.thumbnails.first?.url)
+        (thumbnail ?? thumbnailInfo?.thumbnails.first?.url ?? thumbnailExtraInfo?.url)
             .flatMap(validHTTPSURL)
+    }
+    var thumbnailPixelWidth: Int? {
+        thumbnailInfo?.thumbnails.first?.width.flatMap { $0 > 0 ? $0 : nil }
+    }
+    var thumbnailPixelHeight: Int? {
+        thumbnailInfo?.thumbnails.first?.height.flatMap { $0 > 0 ? $0 : nil }
+    }
+
+    func feedMedia(contentID: String) -> [FeedMediaDTO] {
+        pinContentItems.enumerated().compactMap { index, item in
+            guard case let .image(image) = item,
+                  let sourceURL = image.url.flatMap(validHTTPSURL)
+            else { return nil }
+            return FeedMediaDTO(
+                id: "\(contentID):\(index)",
+                kind: image.isGIF ? .animatedImage : .image,
+                sourceURL: sourceURL,
+                thumbnailURL: image.thumbnail.flatMap(validHTTPSURL),
+                pixelWidth: image.width.flatMap { $0 > 0 ? $0 : nil },
+                pixelHeight: image.height.flatMap { $0 > 0 ? $0 : nil }
+            )
+        }
+    }
+
+    struct VideoInfo: Decodable {
+        let videoId: JSONIdentifier?
+        let url: String?
+        let playlist: Playlist?
+
+        var videoID: Int64? { videoId.flatMap { Int64($0.value) } }
+
+        var playbackURL: URL? {
+            [playlist?.hd, playlist?.sd, playlist?.ld]
+                .compactMap { $0 }
+                .max { ($0.bitrate ?? 0) < ($1.bitrate ?? 0) }?
+                .url
+                .flatMap(validPlaybackURL)
+        }
+
+        struct Playlist: Decodable {
+            let ld: Playback?
+            let sd: Playback?
+            let hd: Playback?
+        }
+
+        struct Playback: Decodable {
+            let url: String?
+            let bitrate: Int?
+        }
     }
 
     struct ThumbnailInfo: Decodable {
@@ -351,6 +481,8 @@ private struct FeedTargetPayload: Decodable {
 
         struct Thumbnail: Decodable {
             let url: String?
+            let width: Int?
+            let height: Int?
         }
     }
 
@@ -358,6 +490,7 @@ private struct FeedTargetPayload: Decodable {
         let id: JSONIdentifier?
         let title: String?
         let name: String?
+        let author: AuthorField?
     }
 
     struct AuthorField: Decodable {
@@ -411,6 +544,74 @@ private struct FeedTargetPayload: Decodable {
     }
 }
 
+private struct PinContentField: Decodable {
+    let items: [PinContentItem]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        items = (try? container.decode([PinContentItem].self)) ?? []
+    }
+}
+
+private enum PinContentItem: Decodable {
+    struct TextContent {
+        let title: String
+        let content: String
+    }
+
+    struct ImageContent {
+        let url: String?
+        let thumbnail: String?
+        let width: Int?
+        let height: Int?
+        let isGIF: Bool
+        let originalURL: String?
+    }
+
+    case text(TextContent)
+    case image(ImageContent)
+    case unknown
+
+    var text: TextContent? {
+        guard case let .text(value) = self else { return nil }
+        return value
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case title
+        case content
+        case url
+        case thumbnail
+        case width
+        case height
+        case isGif
+        case originalUrl
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decodeIfPresent(String.self, forKey: .type) {
+        case "text":
+            self = .text(TextContent(
+                title: try container.decodeIfPresent(String.self, forKey: .title) ?? "",
+                content: try container.decodeIfPresent(String.self, forKey: .content) ?? ""
+            ))
+        case "image":
+            self = .image(ImageContent(
+                url: try container.decodeIfPresent(String.self, forKey: .url),
+                thumbnail: try container.decodeIfPresent(String.self, forKey: .thumbnail),
+                width: try container.decodeIfPresent(Int.self, forKey: .width),
+                height: try container.decodeIfPresent(Int.self, forKey: .height),
+                isGIF: try container.decodeIfPresent(Bool.self, forKey: .isGif) ?? false,
+                originalURL: try container.decodeIfPresent(String.self, forKey: .originalUrl)
+            ))
+        default:
+            self = .unknown
+        }
+    }
+}
+
 private struct FeedDescriptionPayload: Decodable {
     let text: String?
 
@@ -454,6 +655,20 @@ private struct JSONIdentifier: Decodable {
 
 private func validHTTPSURL(_ value: String) -> URL? {
     guard let url = URL(string: value), url.scheme?.lowercased() == "https" else { return nil }
+    return url
+}
+
+private func validPlaybackURL(_ value: String) -> URL? {
+    let normalized = value.hasPrefix("//") ? "https:\(value)" : value
+    guard let url = URL(string: normalized),
+          url.scheme?.lowercased() == "https",
+          url.user == nil,
+          url.password == nil,
+          let host = url.host?.lowercased(),
+          host == "vzuu.com" || host.hasSuffix(".vzuu.com") ||
+          host == "zhimg.com" || host.hasSuffix(".zhimg.com") ||
+          host == "zhihu.com" || host.hasSuffix(".zhihu.com")
+    else { return nil }
     return url
 }
 

@@ -299,6 +299,7 @@ struct NativeRootCompactTitle: View {
 @available(iOS 16.0, *)
 struct HomeNativeView: View {
     @ObservedObject private var store: HomeFeedNativeStore
+    @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
     @Environment(\.nativeChannelIsActive) private var isActiveChannel
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
     @Binding private var collapseProgress: CGFloat
@@ -336,7 +337,7 @@ struct HomeNativeView: View {
                         .listRowSeparator(.hidden)
                 }
 
-                ForEach(store.items) { item in
+                ForEach(visibleItems) { item in
                     FeedItemRow(item: item, showsThumbnail: true) { route in
                         store.opened(item)
                         onOpen(route)
@@ -359,7 +360,7 @@ struct HomeNativeView: View {
                             else { return }
                             await store.loadMore()
                         }
-                } else if store.items.isEmpty, !store.isLoading {
+                } else if visibleItems.isEmpty, !store.isLoading {
                     Label("暂无推荐", systemImage: "sparkles")
                         .foregroundStyle(.secondary)
                 }
@@ -375,14 +376,9 @@ struct HomeNativeView: View {
             .navigationBarTitleDisplayMode(.inline)
             .refreshable {
                 guard isActiveChannel else { return }
-                let previousSuccessfulRefresh = store.refreshMetadata.lastSuccessfulRefreshAt
-                await store.refresh()
-                if !Task.isCancelled,
-                   NativeRefreshHapticPolicy.shouldEmit(
-                    previousSuccessfulRefreshAt: previousSuccessfulRefresh,
-                    currentSuccessfulRefreshAt: store.refreshMetadata.lastSuccessfulRefreshAt
-                   ) {
-                    hapticFeedback(.refreshSucceeded)
+                let outcome = await store.refresh(intent: .pull)
+                if outcome == .ignored {
+                    hapticFeedback(.refreshIgnored)
                 }
             }
             .onAppear {
@@ -401,12 +397,23 @@ struct HomeNativeView: View {
                     scrollToTop(proxy, animated: true)
                 }
             }
+            .onChange(of: store.refreshFeedbackSequence) { _ in
+                guard isActiveChannel else { return }
+                hapticFeedback(.refreshSucceeded)
+            }
             .task(id: isActiveChannel) {
                 guard isActiveChannel else { return }
                 await store.loadInitialIfNeeded()
             }
         }
         .accessibilityIdentifier("home_native")
+    }
+
+    private var visibleItems: [FeedItemDTO] {
+        FeedQuestionAuthorVisibilityPolicy.visibleItems(
+            from: store.items,
+            blockedMemberIDs: questionAuthorBlocklist.blockedMemberIDs
+        )
     }
 
     private func scrollToTop(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -430,6 +437,7 @@ struct HomeNativeView: View {
 
 struct FollowNativeView: View {
     @ObservedObject private var store: FollowNativeStore
+    @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
     @Environment(\.nativeChannelIsActive) private var isActiveChannel
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
     @Binding private var collapseProgress: CGFloat
@@ -471,7 +479,7 @@ struct FollowNativeView: View {
                         .listRowSeparator(.hidden)
                 }
 
-                ForEach(store.moments.items) { item in
+                ForEach(visibleItems) { item in
                     FeedItemRow(item: item, showsThumbnail: true, onOpen: onOpen)
                         .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
                 }
@@ -493,7 +501,7 @@ struct FollowNativeView: View {
                             else { return }
                             await store.loadMore(section: .moments)
                         }
-                } else if store.moments.items.isEmpty, !store.moments.isLoading {
+                } else if visibleItems.isEmpty, !store.moments.isLoading {
                     Label("暂无关注内容", systemImage: "person.2")
                         .foregroundStyle(.secondary)
                 }
@@ -531,6 +539,13 @@ struct FollowNativeView: View {
             await store.loadMomentsIfNeeded()
         }
         .accessibilityIdentifier("follow_native")
+    }
+
+    private var visibleItems: [FeedItemDTO] {
+        FeedQuestionAuthorVisibilityPolicy.visibleItems(
+            from: store.moments.items,
+            blockedMemberIDs: questionAuthorBlocklist.blockedMemberIDs
+        )
     }
 
     private let followCoordinateSpaceName = "follow-moments-root-scroll"

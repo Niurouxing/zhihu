@@ -74,10 +74,91 @@ struct NativeLibraryRepository {
     }
 }
 
+struct NativeSpecialRepository {
+    var fetchSpecial: (_ specialID: String) async throws -> NativeSpecialDetail
+
+    static func live(client: ZhihuAPIClient) -> NativeSpecialRepository {
+        NativeSpecialRepository(fetchSpecial: { specialID in
+            guard !specialID.isEmpty, specialID.allSatisfy(\.isNumber) else {
+                throw ZhihuAPIError.malformedPayload
+            }
+            let url = URL(string: "https://www.zhihu.com/api/v4/news_specials")!
+                .appendingPathComponent(specialID)
+            let data = try await client.data(for: url, authentication: .accountIfAvailable)
+            return try decodeSpecial(data)
+        })
+    }
+
+    static func decodeSpecial(_ data: Data) throws -> NativeSpecialDetail {
+        try JSONDecoder().decode(RawSpecialPayload.self, from: data).detail
+    }
+}
+
+struct NativeColumnRepository {
+    var fetchColumn: (_ columnID: String) async throws -> NativeColumnDetail
+    var fetchItems: (_ columnID: String, _ next: URL?) async throws -> NativePage<NativeLibraryItem>
+
+    static func live(client: ZhihuAPIClient) -> NativeColumnRepository {
+        NativeColumnRepository(
+            fetchColumn: { columnID in
+                guard NativeColumnIDPolicy.isValid(columnID) else {
+                    throw ZhihuAPIError.malformedPayload
+                }
+                let url = URL(string: "https://www.zhihu.com/api/v4/columns")!
+                    .appendingPathComponent(columnID)
+                return try decodeColumn(await client.data(
+                    for: url,
+                    authentication: .accountIfAvailable
+                ))
+            },
+            fetchItems: { columnID, next in
+                guard NativeColumnIDPolicy.isValid(columnID) else {
+                    throw ZhihuAPIError.malformedPayload
+                }
+                let initial = columnItemsURL(columnID)
+                let url = try ZhihuAPIURLPolicy.validatedPagingURL(next) ?? initial
+                return try decodeItems(await client.data(
+                    for: url,
+                    authentication: .accountIfAvailable
+                ))
+            }
+        )
+    }
+
+    static func decodeColumn(_ data: Data) throws -> NativeColumnDetail {
+        try JSONDecoder().decode(RawColumnDetail.self, from: data).detail
+    }
+
+    static func decodeItems(_ data: Data) throws -> NativePage<NativeLibraryItem> {
+        let payload = try JSONDecoder().decode(ColumnItemsPayload.self, from: data)
+        return try NativePage(
+            items: payload.data.compactMap(\.value).compactMap(\.libraryItem),
+            paging: NativePaging(
+                next: ZhihuAPIURLPolicy.validatedPagingURL(payload.paging?.nextURL),
+                isEnd: payload.paging?.isEnd ?? true
+            )
+        )
+    }
+}
+
 private func collectionURLWithInclude(_ url: URL) -> URL {
     var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
     components.queryItems = [
         URLQueryItem(name: "include", value: "data[*].content,excerpt,headline,target.author.badge_v2")
+    ]
+    return components.url!
+}
+
+private func columnItemsURL(_ columnID: String) -> URL {
+    var components = URLComponents(
+        url: URL(string: "https://www.zhihu.com/api/v4/columns")!
+            .appendingPathComponent(columnID)
+            .appendingPathComponent("items"),
+        resolvingAgainstBaseURL: false
+    )!
+    components.queryItems = [
+        URLQueryItem(name: "limit", value: "10"),
+        URLQueryItem(name: "offset", value: "0"),
     ]
     return components.url!
 }
@@ -105,6 +186,11 @@ private struct CollectionDetailPayload: Decodable {
 
 private struct CollectionItemsPayload: Decodable {
     let data: [NativeLossyDecoded<RawCollectionItem>]
+    let paging: PagingPayload?
+}
+
+private struct ColumnItemsPayload: Decodable {
+    let data: [NativeLossyDecoded<RawCollectionContent>]
     let paging: PagingPayload?
 }
 
@@ -215,6 +301,73 @@ private struct RawPerson: Decodable {
     }
 }
 
+private struct RawColumnDetail: Decodable {
+    let id: String
+    let title: String
+    let description: String?
+    let imageURLString: String?
+    let itemCount: Int?
+    let articleCount: Int?
+    let followersCount: Int?
+    let voteupCount: Int?
+    let author: RawColumnAuthor?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, description, author
+        case imageURLString = "image_url"
+        case itemCount = "items_count"
+        case articleCount = "articles_count"
+        case followersCount = "followers"
+        case voteupCount = "voteup_count"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeFlexibleString(forKey: .id)
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        imageURLString = try container.decodeIfPresent(String.self, forKey: .imageURLString)
+        itemCount = try container.decodeIfPresent(Int.self, forKey: .itemCount)
+        articleCount = try container.decodeIfPresent(Int.self, forKey: .articleCount)
+        followersCount = try container.decodeIfPresent(Int.self, forKey: .followersCount)
+        voteupCount = try container.decodeIfPresent(Int.self, forKey: .voteupCount)
+        author = try container.decodeIfPresent(RawColumnAuthor.self, forKey: .author)
+    }
+
+    var detail: NativeColumnDetail {
+        NativeColumnDetail(
+            id: id,
+            title: title,
+            description: description ?? "",
+            imageURL: imageURLString.flatMap(URL.init(string:)),
+            itemCount: itemCount ?? articleCount ?? 0,
+            followersCount: followersCount ?? 0,
+            voteupCount: voteupCount ?? 0,
+            author: author?.value
+        )
+    }
+}
+
+private struct RawColumnAuthor: Decodable {
+    let name: String?
+    let urlToken: String?
+    let avatarURLString: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case urlToken = "url_token"
+        case avatarURLString = "avatar_url"
+    }
+
+    var value: NativeColumnAuthor {
+        NativeColumnAuthor(
+            name: name ?? "",
+            urlToken: urlToken ?? "",
+            avatarURL: avatarURLString.flatMap(URL.init(string:))
+        )
+    }
+}
+
 private struct HistoryPayload: Decodable {
     let data: [NativeLossyDecoded<RawHistoryItem>]
     let paging: PagingPayload?
@@ -281,4 +434,204 @@ private struct RawHistoryExtra: Decodable {
         case contentType = "content_type"
         case readTime = "read_time"
     }
+}
+
+private struct RawSpecialPayload: Decodable {
+    let id: String
+    let title: String
+    let introduction: String?
+    let banner: String?
+    let contentCount: Int?
+    let viewCount: Int?
+    let followersCount: Int?
+    let updated: Int64?
+    let selectedContents: [NativeLossyDecoded<RawSpecialGroup>]?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, introduction, banner, updated
+        case contentCount = "content_count"
+        case viewCount = "view_count"
+        case followersCount = "followers_count"
+        case selectedContents = "selected_contents"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeFlexibleString(forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        introduction = try container.decodeIfPresent(String.self, forKey: .introduction)
+        banner = try container.decodeIfPresent(String.self, forKey: .banner)
+        contentCount = try container.decodeIfPresent(Int.self, forKey: .contentCount)
+        viewCount = try container.decodeIfPresent(Int.self, forKey: .viewCount)
+        followersCount = try container.decodeIfPresent(Int.self, forKey: .followersCount)
+        updated = try container.decodeIfPresent(Int64.self, forKey: .updated)
+        selectedContents = try container.decodeIfPresent(
+            [NativeLossyDecoded<RawSpecialGroup>].self,
+            forKey: .selectedContents
+        )
+    }
+
+    var detail: NativeSpecialDetail {
+        NativeSpecialDetail(
+            id: id,
+            title: title,
+            introduction: introduction ?? "",
+            bannerURL: banner.flatMap(specialTrustedImageURL),
+            contentCount: contentCount ?? 0,
+            viewCount: viewCount ?? 0,
+            followersCount: followersCount ?? 0,
+            updatedTime: updated ?? 0,
+            groups: (selectedContents ?? []).compactMap(\.value).map(\.group)
+        )
+    }
+}
+
+private struct RawSpecialGroup: Decodable {
+    let id: String
+    let title: String?
+    let content: [RawSpecialSection]?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeFlexibleString(forKey: .id)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        content = try container.decodeIfPresent([RawSpecialSection].self, forKey: .content)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, content
+    }
+
+    var group: NativeSpecialGroup {
+        NativeSpecialGroup(
+            id: id,
+            title: title ?? "",
+            sections: (content ?? []).map(\.section)
+        )
+    }
+}
+
+private struct RawSpecialSection: Decodable {
+    let id: String
+    let title: String?
+    let content: [NativeLossyDecoded<RawSpecialItem>]?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeFlexibleString(forKey: .id)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        content = try container.decodeIfPresent([NativeLossyDecoded<RawSpecialItem>].self, forKey: .content)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, content
+    }
+
+    var section: NativeSpecialSection {
+        NativeSpecialSection(
+            id: id,
+            title: title ?? "",
+            items: (content ?? []).compactMap(\.value).map(\.item)
+        )
+    }
+}
+
+private struct RawSpecialItem: Decodable {
+    let id: String
+    let type: String
+    let title: String?
+    let excerpt: String?
+    let thumbnail: String?
+    let imagePath: String?
+    let videoToken: String?
+    let author: RawSpecialAuthor?
+    let tags: [RawSpecialTag]?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeFlexibleString(forKey: .id)
+        type = try container.decode(String.self, forKey: .type)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        excerpt = try container.decodeIfPresent(String.self, forKey: .excerpt)
+        thumbnail = try container.decodeIfPresent(String.self, forKey: .thumbnail)
+        imagePath = try container.decodeIfPresent(String.self, forKey: .imagePath)
+        videoToken = try? container.decodeFlexibleString(forKey: .videoToken)
+        author = try container.decodeIfPresent(RawSpecialAuthor.self, forKey: .author)
+        tags = try container.decodeIfPresent([RawSpecialTag].self, forKey: .tags)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, type, title, excerpt, thumbnail, author, tags
+        case imagePath = "image_path"
+        case videoToken = "video_token"
+    }
+
+    var item: NativeSpecialItem {
+        let displayTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTitle = displayTitle.flatMap { $0.isEmpty ? nil : $0 } ?? type
+        let imageURL = [imagePath, thumbnail]
+            .compactMap { $0 }
+            .compactMap(specialTrustedImageURL)
+            .first
+        return NativeSpecialItem(
+            id: "\(type):\(id)",
+            contentType: type,
+            title: resolvedTitle,
+            excerpt: excerpt ?? "",
+            authorName: author?.name,
+            imageURL: imageURL,
+            tags: (tags ?? []).map(\.tag),
+            route: route(title: resolvedTitle, imageURL: imageURL)
+        )
+    }
+
+    private func route(title: String, imageURL: URL?) -> FeedItemRoute? {
+        guard let numericID = Int64(id) else { return nil }
+        switch type {
+        case "answer":
+            return .answer(answerID: numericID, questionID: nil, questionTitle: title)
+        case "article":
+            return .article(articleID: numericID, title: title)
+        case "question":
+            return .question(questionID: numericID, title: title)
+        case "pin":
+            return .pin(pinID: numericID)
+        case "zvideo":
+            return .video(.init(
+                contentID: numericID,
+                videoID: videoToken.flatMap(Int64.init),
+                contentType: .zvideo,
+                title: title,
+                thumbnailURL: imageURL,
+                webURL: URL(string: "https://www.zhihu.com/zvideo/\(numericID)")
+            ))
+        default:
+            return nil
+        }
+    }
+}
+
+private struct RawSpecialAuthor: Decodable {
+    let name: String?
+}
+
+private struct RawSpecialTag: Decodable {
+    let name: String?
+    let value: Int64?
+
+    var tag: NativeSpecialTag {
+        NativeSpecialTag(name: name ?? "", value: value ?? 0)
+    }
+}
+
+private func specialTrustedImageURL(_ rawValue: String) -> URL? {
+    let normalized = rawValue.hasPrefix("//") ? "https:\(rawValue)" : rawValue
+    guard let url = URL(string: normalized),
+          url.scheme?.lowercased() == "https",
+          url.user == nil,
+          url.password == nil,
+          let host = url.host?.lowercased(),
+          host == "zhimg.com" || host.hasSuffix(".zhimg.com")
+    else { return nil }
+    return url
 }

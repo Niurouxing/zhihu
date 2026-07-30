@@ -79,9 +79,13 @@ final class HostModel: ObservableObject {
     let apiClient: ZhihuAPIClient
     let account: NativeAccountStore
     let preferences: NativeShellPreferences
+    let questionAuthorBlocklist: QuestionAuthorBlocklistStore
     let notificationPreferences: NativeNotificationPreferences
     let notifications: NativeNotificationStore
     let libraryRepository: NativeLibraryRepository
+    let specialRepository: NativeSpecialRepository
+    let columnRepository: NativeColumnRepository
+    let homeRecommendationCachePersistence: HomeRecommendationCachePersisting
     let homeRepository: HomeFeedRepository
     let followRepository: FollowRepository
     let hotRepository: HotFeedRepository
@@ -90,8 +94,10 @@ final class HostModel: ObservableObject {
     let pinRepository: PinRepository
     let creationRepository: CreationRepository
     let questionAnswerRepository: QuestionAnswerRepository
+    let videoRepository: NativeVideoRepository
     let answerOpenedHistory: AnswerOpenedHistory
     let systemSettings: NativeSystemIntegrationSettings
+    let performanceDiagnostics: NativePerformanceDiagnosticsController
     let appLock: NativeAppLockCoordinator
 
     private let externalURLCoordinator: ExternalURLCoordinator
@@ -107,7 +113,11 @@ final class HostModel: ObservableObject {
         let externalURLCoordinator = externalURLCoordinator ?? ExternalURLCoordinator(
             opener: UIApplicationExternalURLOpener()
         )
-        let client = ZhihuAPIClient(accountStore: accountStore)
+        let performanceDiagnostics = NativePerformanceDiagnosticsController(defaults: defaults)
+        let client = ZhihuAPIClient(
+            accountStore: accountStore,
+            diagnostics: performanceDiagnostics.client
+        )
         let notificationPreferences = NativeNotificationPreferences(defaults: defaults)
         let systemSettings = NativeSystemIntegrationSettings(defaults: defaults)
 
@@ -118,12 +128,18 @@ final class HostModel: ObservableObject {
             repository: .live(accountStore: accountStore, client: client)
         )
         preferences = NativeShellPreferences(defaults: defaults)
+        questionAuthorBlocklist = QuestionAuthorBlocklistStore(defaults: defaults)
         self.notificationPreferences = notificationPreferences
         notifications = NativeNotificationStore(
             repository: .live(client: client),
             preferences: notificationPreferences
         )
         libraryRepository = .live(client: client)
+        specialRepository = .live(client: client)
+        columnRepository = .live(client: client)
+        homeRecommendationCachePersistence = UserDefaultsHomeRecommendationCachePersistence(
+            defaults: defaults
+        )
         homeRepository = URLSessionHomeFeedRepository(client: client)
         followRepository = URLSessionFollowRepository(client: client)
         hotRepository = URLSessionHotFeedRepository(client: client)
@@ -132,8 +148,10 @@ final class HostModel: ObservableObject {
         pinRepository = URLSessionPinRepository(client: client)
         creationRepository = URLSessionCreationRepository(client: client)
         questionAnswerRepository = URLSessionQuestionAnswerRepository(client: client)
+        videoRepository = URLSessionNativeVideoRepository(client: client)
         answerOpenedHistory = UserDefaultsAnswerOpenedHistory(defaults: defaults)
         self.systemSettings = systemSettings
+        self.performanceDiagnostics = performanceDiagnostics
         appLock = NativeAppLockCoordinator(storedPreference: systemSettings.appLock)
         self.externalURLCoordinator = externalURLCoordinator
     }
@@ -203,7 +221,10 @@ final class HostModel: ObservableObject {
             )
             return
         }
-        externalURLCoordinator.open(validated) { [weak router] failure in
+        externalURLCoordinator.open(
+            validated,
+            mode: preferences.externalPageOpeningMode
+        ) { [weak router] failure in
             router?.externalURLFailure = failure
         }
     }

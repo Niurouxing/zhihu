@@ -112,15 +112,18 @@ actor ZhihuAPIClient {
     private let accountStore: AccountJSONStore
     private let session: URLSession
     private let signer: ZhihuRequestSigning
+    private let diagnostics: PerformanceDiagnosticsClient
 
     init(
         accountStore: AccountJSONStore,
         session: URLSession? = nil,
-        signer: ZhihuRequestSigning = ZhihuRequestSigner()
+        signer: ZhihuRequestSigning = ZhihuRequestSigner(),
+        diagnostics: PerformanceDiagnosticsClient = .disabled
     ) {
         self.accountStore = accountStore
         self.session = session ?? Self.makeSession()
         self.signer = signer
+        self.diagnostics = diagnostics
     }
 
     func data(
@@ -130,35 +133,65 @@ actor ZhihuAPIClient {
         additionalHeaders: [String: String] = [:],
         authentication: ZhihuRequestAuthentication = .accountIfAvailable
     ) async throws -> Data {
-        guard ZhihuAPIURLPolicy.allowsAPIRequest(url) else { throw ZhihuAPIError.untrustedURL }
-        let credentials = try credentials(authentication: authentication)
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.httpBody = body
-        additionalHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
-        request.setValue(credentials.userAgent, forHTTPHeaderField: "User-Agent")
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let endpoint = PerformanceDiagnosticEndpoint(url: url)
+        var statusCode: Int?
+        do {
+            guard ZhihuAPIURLPolicy.allowsAPIRequest(url) else { throw ZhihuAPIError.untrustedURL }
+            let credentials = try credentials(authentication: authentication)
+            var request = URLRequest(url: url)
+            request.httpMethod = method
+            request.httpBody = body
+            additionalHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+            request.setValue(credentials.userAgent, forHTTPHeaderField: "User-Agent")
 
-        if !credentials.cookies.isEmpty {
-            request.setValue(
-                credentials.cookies.keys.sorted().map { "\($0)=\(credentials.cookies[$0] ?? "")" }.joined(separator: "; "),
-                forHTTPHeaderField: "Cookie"
-            )
-        }
-        if let xsrf = credentials.cookies["_xsrf"]?.nonBlank {
-            request.setValue(xsrf, forHTTPHeaderField: "x-xsrftoken")
-        }
-        signer.applySignature(to: &request, cookies: credentials.cookies, body: body)
+            if !credentials.cookies.isEmpty {
+                request.setValue(
+                    credentials.cookies.keys.sorted().map { "\($0)=\(credentials.cookies[$0] ?? "")" }.joined(separator: "; "),
+                    forHTTPHeaderField: "Cookie"
+                )
+            }
+            if let xsrf = credentials.cookies["_xsrf"]?.nonBlank {
+                request.setValue(xsrf, forHTTPHeaderField: "x-xsrftoken")
+            }
+            signer.applySignature(to: &request, cookies: credentials.cookies, body: body)
 
-        let (data, response) = try await session.data(for: request)
-        guard let response = response as? HTTPURLResponse,
-              let finalURL = response.url,
-              ZhihuAPIURLPolicy.allowsAPIRequest(finalURL)
-        else { throw ZhihuAPIError.invalidResponse }
-        try persistResponseCookies(response)
-        guard (200..<300).contains(response.statusCode) else {
-            throw ZhihuAPIError.httpStatus(response.statusCode)
+            let (data, response) = try await session.data(for: request)
+            guard let response = response as? HTTPURLResponse,
+                  let finalURL = response.url,
+                  ZhihuAPIURLPolicy.allowsAPIRequest(finalURL)
+            else { throw ZhihuAPIError.invalidResponse }
+            statusCode = response.statusCode
+            try persistResponseCookies(response)
+            guard (200..<300).contains(response.statusCode) else {
+                throw ZhihuAPIError.httpStatus(response.statusCode)
+            }
+            diagnostics.record(.init(
+                durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                category: "network",
+                operation: "zhihu_api_request",
+                result: .success,
+                endpoint: endpoint,
+                httpStatus: response.statusCode,
+                responseBytes: data.count
+            ))
+            return data
+        } catch {
+            let result: PerformanceDiagnosticEvent.Result =
+                error is CancellationError || (error as? URLError)?.code == .cancelled
+                ? .cancelled
+                : .failure
+            diagnostics.record(.init(
+                durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                category: "network",
+                operation: "zhihu_api_request",
+                result: result,
+                endpoint: endpoint,
+                httpStatus: statusCode,
+                errorKind: PerformanceDiagnosticEvent.sanitizedErrorKind(error)
+            ))
+            throw error
         }
-        return data
     }
 
     private func credentials(authentication: ZhihuRequestAuthentication) throws -> Credentials {
@@ -309,6 +342,29 @@ enum ZhihuAccountCookieWriter {
         try store.update { accountJSON in
             try ZhihuAccountSessionCodec.merging(cookieValues: cookieValues, into: accountJSON)
         }
+    }
+}
+
+extension ZhihuAPIClient {
+    func recordReadHistory(contentToken: String, contentType: String) async {
+        let allowedTypes = Set(["answer", "article", "question", "pin", "profile"])
+        guard !contentToken.isEmpty, allowedTypes.contains(contentType) else { return }
+        guard let url = URL(string: "https://www.zhihu.com/api/v4/read_history/add"),
+              let body = try? JSONSerialization.data(
+                withJSONObject: [
+                    "content_token": contentToken,
+                    "content_type": contentType,
+                ],
+                options: [.sortedKeys]
+              )
+        else { return }
+        _ = try? await data(
+            for: url,
+            method: "POST",
+            body: body,
+            additionalHeaders: ["Content-Type": "application/json"],
+            authentication: .accountIfAvailable
+        )
     }
 }
 

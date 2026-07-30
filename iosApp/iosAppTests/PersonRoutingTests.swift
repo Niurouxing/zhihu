@@ -44,6 +44,17 @@ final class PersonRoutingTests: XCTestCase {
             title: "话题",
             url: URL(string: "https://www.zhihu.com/topic/7")!
         ))
+        let connectionPayload = try XCTUnwrap(PersonRoutePayload(
+            memberID: "member",
+            urlToken: "token",
+            displayName: "用户",
+            initialTab: .followers
+        ))
+        let connections = try XCTUnwrap(PersonConnectionsRoute(person: connectionPayload))
+        let search = SearchRouteDTO(
+            restrictedMemberHashID: "member-hash",
+            restrictedMemberName: "用户"
+        )
 
         XCTAssertEqual(
             PersonNavigationIntent.article(.init(id: 1, kind: .answer)).nativeShellRoute,
@@ -57,6 +68,8 @@ final class PersonRoutingTests: XCTestCase {
         XCTAssertEqual(PersonNavigationIntent.pin(4).nativeShellRoute, .pin(.init(pinID: 4)))
         XCTAssertEqual(PersonNavigationIntent.collection("5").nativeShellRoute, .collectionContent("5"))
         XCTAssertEqual(PersonNavigationIntent.person(payload).nativeShellRoute, .person(payload))
+        XCTAssertEqual(PersonNavigationIntent.connections(connections).nativeShellRoute, .personConnections(connections))
+        XCTAssertEqual(PersonNavigationIntent.search(search).nativeShellRoute, .search(search))
         XCTAssertEqual(PersonNavigationIntent.web(webRoute).nativeShellRoute, .personWeb(webRoute))
     }
 

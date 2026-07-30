@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SearchNativeView: View {
     @StateObject private var store: SearchStore
+    @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
     @FocusState private var isSearchFieldFocused: Bool
     @State private var lastConsumedFocusRequestToken: UInt = 0
     @Environment(\.nativeSearchPresentation) private var searchPresentation
@@ -29,31 +30,44 @@ struct SearchNativeView: View {
     }
 
     var body: some View {
-        List {
-            if store.submittedQuery.isEmpty {
-                suggestionContent
-            } else {
-                resultContent
+        ZStack {
+            List {
+                if store.submittedQuery.isEmpty {
+                    suggestionContent
+                } else {
+                    resultContent
+                }
+            }
+            .listStyle(.plain)
+            .refreshable {
+                if store.submittedQuery.isEmpty {
+                    await store.refreshSuggestions()
+                } else {
+                    await store.refreshResults()
+                }
+            }
+
+            if visibleItems.isEmpty, store.isLoadingResults {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .controlSize(.regular)
+                    Text("正在搜索")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(uiColor: .systemBackground))
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("正在搜索")
             }
         }
-        .listStyle(.plain)
         .navigationBarTitleDisplayMode(.inline)
-        .onSubmit(of: .search) {
-            Task { await store.submitQuery() }
-        }
         .onChange(of: store.queryText) { value in
             if value.isEmpty, !store.submittedQuery.isEmpty {
                 store.clearQuery()
                 if store.showsHotSearch {
                     Task { await store.refreshSuggestions() }
                 }
-            }
-        }
-        .refreshable {
-            if store.submittedQuery.isEmpty {
-                await store.refreshSuggestions()
-            } else {
-                await store.refreshResults()
             }
         }
         .toolbar {
@@ -81,6 +95,9 @@ struct SearchNativeView: View {
                 .focused($isSearchFieldFocused)
                 .accessibilityIdentifier("search_input")
                 .submitLabel(.search)
+                .onSubmit {
+                    submitKeyboardQuery()
+                }
                 .textInputAutocapitalization(.never)
                 .disableAutocorrection(true)
             if !store.queryText.isEmpty {
@@ -100,6 +117,13 @@ struct SearchNativeView: View {
         .background(.quaternary, in: Capsule())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("search_field")
+    }
+
+    private func submitKeyboardQuery() {
+        let query = store.queryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        isSearchFieldFocused = false
+        Task { await store.submitQuery(query) }
     }
 
     @MainActor
@@ -135,6 +159,8 @@ struct SearchNativeView: View {
                         Task { await store.submitQuery(row.query) }
                     } label: {
                         Label(row.query, systemImage: "clock.arrow.circlepath")
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -168,6 +194,8 @@ struct SearchNativeView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -220,15 +248,7 @@ struct SearchNativeView: View {
                 .foregroundStyle(.secondary)
         }
 
-        if store.items.isEmpty, store.isLoadingResults {
-            HStack {
-                Spacer()
-                ProgressView("正在搜索")
-                Spacer()
-            }
-        }
-
-        ForEach(store.items) { item in
+        ForEach(visibleItems) { item in
             FeedItemRow(item: item, showsThumbnail: true, onOpen: onOpen)
         }
 
@@ -244,10 +264,17 @@ struct SearchNativeView: View {
             }
             .listRowSeparator(.hidden)
             .task { await store.loadNextPage() }
-        } else if store.items.isEmpty, !store.isLoadingResults {
+        } else if visibleItems.isEmpty, !store.isLoadingResults {
             Text("没有找到相关内容")
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var visibleItems: [FeedItemDTO] {
+        FeedQuestionAuthorVisibilityPolicy.visibleItems(
+            from: store.items,
+            blockedMemberIDs: questionAuthorBlocklist.blockedMemberIDs
+        )
     }
 
     private var filterMenu: some View {

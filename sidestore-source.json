@@ -22,6 +22,16 @@
       "category": "social",
       "versions": [
         {
+          "version": "0.3.0",
+          "buildVersion": "4",
+          "date": "2026-07-30",
+          "localizedDescription": "新增 App/Web 推荐源、推广过滤、刷新数量设置、原生专题与专栏、长图海报分享、多账号管理、GIF/视频/KaTeX 渲染和性能诊断；优化瀑布流、评论、个人主页、搜索、历史记录及刷新状态。",
+          "downloadURL": "https://github.com/kangyun1994/zhihu-plus-plus-swift/releases/download/v0.3.0/ZhihuPlusPlus-0.3.0-unsigned-final.ipa",
+          "size": 3886488,
+          "sha256": "30367aed549f28cc615b261203b5fc66cdcc8646f8001ba19d0c3ac601b46e5a",
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "0.2.0",
           "buildVersion": "3",
           "date": "2026-07-23",

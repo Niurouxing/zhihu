@@ -110,6 +110,6 @@ struct SystemAndUpdateView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityHint("将在其他 App 中打开")
+        .accessibilityHint("将按设置的外部页面打开方式打开")
     }
 }

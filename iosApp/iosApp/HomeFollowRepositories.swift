@@ -2,11 +2,23 @@ import Foundation
 
 protocol HomeFeedRepository: Sendable {
     func fetchPage(after nextURL: URL?) async throws -> FeedPageDTO
+    func fetchPage(
+        source: HomeRecommendationSource,
+        after nextURL: URL?
+    ) async throws -> FeedPageDTO
     func reportOpened(_ item: FeedItemDTO) async
 }
 
+extension HomeFeedRepository {
+    func fetchPage(
+        source: HomeRecommendationSource,
+        after nextURL: URL?
+    ) async throws -> FeedPageDTO {
+        try await fetchPage(after: nextURL)
+    }
+}
+
 actor URLSessionHomeFeedRepository: HomeFeedRepository {
-    private static let initialURL = URL(string: "https://api.zhihu.com/topstory/recommend")!
     private static let touchURL = URL(string: "https://www.zhihu.com/lastread/touch")!
 
     private let client: ZhihuAPIClient
@@ -16,11 +28,22 @@ actor URLSessionHomeFeedRepository: HomeFeedRepository {
     }
 
     func fetchPage(after nextURL: URL?) async throws -> FeedPageDTO {
-        let baseURL = try ZhihuAPIURLPolicy.validatedPagingURL(nextURL) ?? Self.initialURL
+        try await fetchPage(source: .app, after: nextURL)
+    }
+
+    func fetchPage(
+        source: HomeRecommendationSource,
+        after nextURL: URL?
+    ) async throws -> FeedPageDTO {
+        let baseURL = try ZhihuAPIURLPolicy.validatedPagingURL(nextURL)
+            ?? HomeFollowRequestURL.recommendationInitialURL(for: source)
         let url = try HomeFollowRequestURL.addingRecommendationFeedParameters(
             to: baseURL
         )
-        let data = try await client.data(for: url, authentication: .accountIfAvailable)
+        let authentication: ZhihuRequestAuthentication = source == .web
+            ? .accountRequired
+            : .accountIfAvailable
+        let data = try await client.data(for: url, authentication: authentication)
         return try FeedResponseMapper.page(from: data, policy: .search)
     }
 
@@ -82,9 +105,30 @@ actor URLSessionFollowRepository: FollowRepository {
 }
 
 enum HomeFollowRequestURL {
-    private static let include = "data[*].content,excerpt,headline,target.author.badge_v2"
+    private static let appRecommendationInitialURL = URL(
+        string: "https://api.zhihu.com/topstory/recommend?limit=10"
+    )!
+    private static let webRecommendationInitialURL = URL(
+        string: "https://www.zhihu.com/api/v3/feed/topstory/recommend"
+            + "?desktop=true&limit=10&offset=0"
+            + "&include=data[*].content,excerpt,headline,target.author.badge_v2,target.question.author"
+    )!
+
+    private static let include =
+        "data[*].content,excerpt,headline,target.author.badge_v2,target.question.author"
     private static let standardPageSize = "20"
-    private static let recommendationPageSize = "40"
+    private static let recommendationPageSize = String(
+        HomeRecommendationRefreshConfiguration.requestLimit
+    )
+
+    static func recommendationInitialURL(
+        for source: HomeRecommendationSource
+    ) -> URL {
+        switch source {
+        case .app: return appRecommendationInitialURL
+        case .web: return webRecommendationInitialURL
+        }
+    }
 
     static func addingRecommendationFeedParameters(to url: URL) throws -> URL {
         try addingFeedParameters(
@@ -108,8 +152,16 @@ enum HomeFollowRequestURL {
         if !items.contains(where: { $0.name == "include" }) {
             items.append(URLQueryItem(name: "include", value: include))
         }
-        items.removeAll(where: { $0.name == "limit" })
-        items.append(URLQueryItem(name: "limit", value: pageSize))
+        var replacedLimit = false
+        items = items.compactMap { item in
+            guard item.name == "limit" else { return item }
+            guard !replacedLimit else { return nil }
+            replacedLimit = true
+            return URLQueryItem(name: "limit", value: pageSize)
+        }
+        if !replacedLimit {
+            items.append(URLQueryItem(name: "limit", value: pageSize))
+        }
         components.queryItems = items
         guard let result = components.url else { throw ZhihuAPIError.malformedPayload }
         return result

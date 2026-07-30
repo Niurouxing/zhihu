@@ -114,6 +114,44 @@ final class PersonStoreTests: XCTestCase {
         XCTAssertEqual(store.sortByTab[.answers], .created)
     }
 
+    func testFollowerStatisticsPushConnectionPagesWithoutReplacingSelectedContentTab() throws {
+        var intents: [PersonNavigationIntent] = []
+        let store = makeStore(repository: PersonStoreRepository()) { intents.append($0) }
+
+        store.selectTab(.followers)
+        store.selectTab(.following)
+
+        XCTAssertEqual(store.selectedTab, .answers)
+        XCTAssertEqual(intents.count, 2)
+        guard case let .connections(followers) = intents[0],
+              case let .connections(following) = intents[1]
+        else { return XCTFail("Expected connection-list navigation intents") }
+        XCTAssertEqual(followers.person.initialTab, .followers)
+        XCTAssertEqual(following.person.initialTab, .following)
+        XCTAssertEqual(followers.person.memberID, "member-id")
+        XCTAssertEqual(following.person.urlToken, "author-token")
+    }
+
+    func testMemberSearchUsesNativeRestrictedSearchRoute() async throws {
+        let repository = PersonStoreRepository(
+            profiles: [.success(fixtureProfile())],
+            pages: [.main(.answers): [.success(.init(items: [], nextURL: nil, isEnd: true))]]
+        )
+        var intents: [PersonNavigationIntent] = []
+        let store = makeStore(repository: repository) { intents.append($0) }
+        store.start()
+        await waitUntil { store.profile != nil }
+
+        store.openMemberSearch()
+
+        guard case let .search(route) = intents.last else {
+            return XCTFail("Expected native restricted search route")
+        }
+        XCTAssertEqual(route.restrictedMemberHashID, "member-id")
+        XCTAssertEqual(route.restrictedMemberName, "作者")
+        XCTAssertEqual(route.query, "")
+    }
+
     func testUnknownActivityHasNoVisibleNavigationEffect() throws {
         var intents: [PersonNavigationIntent] = []
         let store = makeStore(repository: PersonStoreRepository()) { intents.append($0) }

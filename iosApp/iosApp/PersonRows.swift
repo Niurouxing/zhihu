@@ -6,12 +6,17 @@ struct PersonPageRow: View {
 
     var body: some View {
         if item.allowsNavigation {
-            Button(action: open) { content }
+            Button(action: open) { rowContent }
                 .buttonStyle(.plain)
-                .contentShape(Rectangle())
         } else {
-            content
+            rowContent
         }
+    }
+
+    private var rowContent: some View {
+        content
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
     }
 
     @ViewBuilder
@@ -21,45 +26,39 @@ struct PersonPageRow: View {
             textRow(
                 title: value.questionTitle,
                 summary: value.excerpt,
-                metadata: "回答 · \(compact(value.voteUpCount)) 赞同 · \(compact(value.commentCount)) 评论",
-                symbol: "text.bubble"
+                metadata: "回答 · \(compact(value.voteUpCount)) 赞同 · \(compact(value.commentCount)) 评论"
             )
         case let .article(value):
             textRow(
                 title: value.title,
                 summary: value.excerpt,
-                metadata: "文章 · \(compact(value.voteUpCount)) 赞同 · \(compact(value.commentCount)) 评论",
-                symbol: "doc.text"
+                metadata: "文章 · \(compact(value.voteUpCount)) 赞同 · \(compact(value.commentCount)) 评论"
             )
         case let .activity(value):
-            textRow(title: value.title, summary: value.summary, metadata: value.details, symbol: "bolt.horizontal.circle")
+            textRow(title: value.title, summary: value.summary, metadata: value.details)
         case let .collection(value):
             textRow(
                 title: value.title,
                 summary: nil,
-                metadata: "\(compact(value.contentCount)) 内容 · \(compact(value.followerCount)) 关注",
-                symbol: "rectangle.stack"
+                metadata: "\(compact(value.contentCount)) 内容 · \(compact(value.followerCount)) 关注"
             )
         case let .question(value):
             textRow(
                 title: value.title,
                 summary: nil,
-                metadata: "\(compact(value.answerCount)) 回答 · \(compact(value.followerCount)) 关注",
-                symbol: "questionmark.bubble"
+                metadata: "\(compact(value.answerCount)) 回答 · \(compact(value.followerCount)) 关注"
             )
         case let .pin(value):
             textRow(
                 title: value.excerptPlainText.isEmpty ? "想法" : value.excerptPlainText,
                 summary: nil,
-                metadata: "\(compact(value.likeCount)) 赞 · \(compact(value.commentCount)) 评论",
-                symbol: "quote.bubble"
+                metadata: "\(compact(value.likeCount)) 赞 · \(compact(value.commentCount)) 评论"
             )
         case let .column(value):
             textRow(
                 title: value.title,
                 summary: value.description,
-                metadata: "\(compact(value.articleCount)) 文章 · \(compact(value.followerCount)) 关注",
-                symbol: "newspaper"
+                metadata: "\(compact(value.articleCount)) 文章 · \(compact(value.followerCount)) 关注"
             )
         case let .person(value):
             personRow(value)
@@ -74,19 +73,13 @@ struct PersonPageRow: View {
             textRow(
                 title: value.title,
                 summary: value.questionID == nil ? "该问题暂时无法打开" : nil,
-                metadata: "关注的问题",
-                symbol: "questionmark.circle"
+                metadata: "关注的问题"
             )
         }
     }
 
-    private func textRow(title: String, summary: String?, metadata: String, symbol: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: symbol)
-                .font(.title3)
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 28, height: 28)
-                .accessibilityHidden(true)
+    private func textRow(title: String, summary: String?, metadata: String) -> some View {
+        HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
                     .font(.headline)
@@ -103,12 +96,6 @@ struct PersonPageRow: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            if item.allowsNavigation {
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                    .accessibilityHidden(true)
-            }
         }
         .padding(.vertical, 6)
     }
@@ -155,12 +142,6 @@ struct PersonPageRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            if item.allowsNavigation {
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                    .accessibilityHidden(true)
-            }
         }
         .padding(.vertical, 6)
     }

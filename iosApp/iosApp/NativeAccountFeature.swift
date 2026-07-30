@@ -27,9 +27,36 @@ struct NativeAccountRepository {
     var load: () throws -> NativeStoredAccount
     var refreshProfile: () async throws -> NativeStoredAccount
     var signOut: () throws -> Void
+    var listAccounts: () throws -> [NativeSavedAccountSummary]
+    var currentAccountID: () throws -> String?
+    var switchAccount: (_ accountID: String) throws -> NativeStoredAccount
+    var deleteAccount: (_ accountID: String) throws -> Void
+
+    init(
+        load: @escaping () throws -> NativeStoredAccount,
+        refreshProfile: @escaping () async throws -> NativeStoredAccount,
+        signOut: @escaping () throws -> Void,
+        listAccounts: @escaping () throws -> [NativeSavedAccountSummary] = { [] },
+        currentAccountID: @escaping () throws -> String? = { nil },
+        switchAccount: @escaping (_ accountID: String) throws -> NativeStoredAccount = { _ in
+            throw MultipleAccountStoreError.accountNotFound
+        },
+        deleteAccount: @escaping (_ accountID: String) throws -> Void = { _ in
+            throw MultipleAccountStoreError.accountNotFound
+        }
+    ) {
+        self.load = load
+        self.refreshProfile = refreshProfile
+        self.signOut = signOut
+        self.listAccounts = listAccounts
+        self.currentAccountID = currentAccountID
+        self.switchAccount = switchAccount
+        self.deleteAccount = deleteAccount
+    }
 
     static func live(accountStore: AccountJSONStore, client: ZhihuAPIClient) -> NativeAccountRepository {
-        NativeAccountRepository(
+        let multipleAccountStore = accountStore as? MultipleAccountJSONStore
+        return NativeAccountRepository(
             load: {
                 try NativeAccountCodec.decode(accountStore.load())
             },
@@ -42,7 +69,45 @@ struct NativeAccountRepository {
                 }
                 return try NativeAccountCodec.decode(accountStore.load())
             },
-            signOut: accountStore.clear
+            signOut: {
+                if let multipleAccountStore {
+                    try multipleAccountStore.clearCurrentAccount()
+                } else {
+                    try accountStore.clear()
+                }
+            },
+            listAccounts: {
+                if let multipleAccountStore {
+                    return try multipleAccountStore.listAccounts()
+                }
+                let current = try NativeAccountCodec.decode(accountStore.load())
+                guard current.isLoggedIn, let identity = current.identity else { return [] }
+                return [NativeSavedAccountSummary(
+                    id: identity.id,
+                    name: identity.name,
+                    urlToken: identity.urlToken,
+                    avatarURL: identity.avatarURL
+                )]
+            },
+            currentAccountID: {
+                if let multipleAccountStore {
+                    return try multipleAccountStore.currentAccountID()
+                }
+                return try NativeAccountCodec.decode(accountStore.load()).identity?.id
+            },
+            switchAccount: { accountID in
+                guard let multipleAccountStore else {
+                    throw MultipleAccountStoreError.accountNotFound
+                }
+                try multipleAccountStore.switchAccount(to: accountID)
+                return try NativeAccountCodec.decode(accountStore.load())
+            },
+            deleteAccount: { accountID in
+                guard let multipleAccountStore else {
+                    throw MultipleAccountStoreError.accountNotFound
+                }
+                try multipleAccountStore.deleteAccount(accountID)
+            }
         )
     }
 }
@@ -142,6 +207,10 @@ final class NativeAccountStore: ObservableObject {
     @Published private(set) var state: State = .loading
     @Published private(set) var isRefreshing = false
     @Published private(set) var isSigningOut = false
+    @Published private(set) var accounts: [NativeSavedAccountSummary] = []
+    @Published private(set) var currentAccountID: String?
+    @Published private(set) var switchingToAccountID: String?
+    @Published private(set) var deletingAccountID: String?
 
     private let repository: NativeAccountRepository
     init(repository: NativeAccountRepository) {
@@ -161,6 +230,7 @@ final class NativeAccountStore: ObservableObject {
     func reloadFromKeychain() {
         do {
             apply(try repository.load())
+            try reloadAccountList()
         } catch {
             state = .failed(message: error.localizedDescription, retainedIdentity: identity)
         }
@@ -172,6 +242,7 @@ final class NativeAccountStore: ObservableObject {
         defer { isRefreshing = false }
         do {
             apply(try await repository.refreshProfile())
+            try reloadAccountList()
         } catch is CancellationError {
             return
         } catch {
@@ -186,6 +257,34 @@ final class NativeAccountStore: ObservableObject {
         do {
             try repository.signOut()
             state = .signedOut
+            try reloadAccountList()
+        } catch {
+            state = .failed(message: error.localizedDescription, retainedIdentity: identity)
+        }
+    }
+
+    func switchAccount(to accountID: String) {
+        guard switchingToAccountID == nil, deletingAccountID == nil, currentAccountID != accountID else { return }
+        switchingToAccountID = accountID
+        defer { switchingToAccountID = nil }
+        do {
+            apply(try repository.switchAccount(accountID))
+            try reloadAccountList()
+        } catch {
+            state = .failed(message: error.localizedDescription, retainedIdentity: identity)
+        }
+    }
+
+    func deleteAccount(_ accountID: String) {
+        guard switchingToAccountID == nil,
+              deletingAccountID == nil,
+              currentAccountID != accountID
+        else { return }
+        deletingAccountID = accountID
+        defer { deletingAccountID = nil }
+        do {
+            try repository.deleteAccount(accountID)
+            try reloadAccountList()
         } catch {
             state = .failed(message: error.localizedDescription, retainedIdentity: identity)
         }
@@ -197,6 +296,11 @@ final class NativeAccountStore: ObservableObject {
         } else {
             state = .signedOut
         }
+    }
+
+    private func reloadAccountList() throws {
+        accounts = try repository.listAccounts()
+        currentAccountID = try repository.currentAccountID()
     }
 }
 
@@ -222,6 +326,7 @@ struct NativeAccountView: View {
                 collapseProgress: $titleCollapseProgress
             )
             accountSection
+            accountManagementSection
             if let identity = store.identity {
                 librarySection(identity: identity)
             }
@@ -259,7 +364,70 @@ struct NativeAccountView: View {
             Button("取消", role: .cancel) {}
             Button("退出", role: .destructive, action: store.signOut)
         } message: {
-            Text("退出后，本机保存的知乎登录状态将被清除。")
+            Text("退出后，当前账号保存的知乎登录状态将从本机移除，其他已保存账号不受影响。")
+        }
+    }
+
+    @ViewBuilder
+    private var accountManagementSection: some View {
+        if store.isSignedIn || !store.accounts.isEmpty {
+            Section {
+                ForEach(store.accounts) { account in
+                    Button {
+                        store.switchAccount(to: account.id)
+                    } label: {
+                        HStack(spacing: 12) {
+                            NativeSavedAccountAvatar(account: account, diameter: 40)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(account.name)
+                                    .foregroundStyle(.primary)
+                                if let token = account.urlToken, !token.isEmpty {
+                                    Text("@\(token)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text("已验证账号")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            if store.currentAccountID == account.id {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.tint)
+                                    .accessibilityLabel("当前账号")
+                            } else if store.switchingToAccountID == account.id {
+                                ProgressView()
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(
+                        store.currentAccountID == account.id ||
+                        store.switchingToAccountID != nil ||
+                        store.deletingAccountID != nil
+                    )
+                    .swipeActions {
+                        if store.currentAccountID != account.id {
+                            Button(role: .destructive) {
+                                store.deleteAccount(account.id)
+                            } label: {
+                                Label("删除", systemImage: "trash")
+                            }
+                        }
+                    }
+                }
+
+                Button(action: actions.openLogin) {
+                    Label("添加账号", systemImage: "person.crop.circle.badge.plus")
+                }
+                .disabled(store.switchingToAccountID != nil || store.deletingAccountID != nil)
+            } header: {
+                Text("账号管理")
+            } footer: {
+                Text("账号登录状态仅保存在本机 Keychain 中。")
+            }
         }
     }
 
@@ -366,5 +534,25 @@ struct NativeAccountAvatar: View {
         .frame(width: diameter, height: diameter)
         .clipShape(Circle())
         .accessibilityLabel(identity.map { "\($0.name)的头像" } ?? "账号")
+    }
+}
+
+private struct NativeSavedAccountAvatar: View {
+    let account: NativeSavedAccountSummary
+    let diameter: CGFloat
+
+    var body: some View {
+        AsyncImage(url: account.avatarURL) { phase in
+            if case let .success(image) = phase {
+                image.resizable().scaledToFill()
+            } else {
+                Image(systemName: "person.crop.circle.fill")
+                    .resizable()
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: diameter, height: diameter)
+        .clipShape(Circle())
+        .accessibilityLabel("\(account.name)的头像")
     }
 }

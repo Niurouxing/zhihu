@@ -20,10 +20,40 @@ enum DailyStoryDestination: Hashable, Sendable {
     case external(URL)
 }
 
+enum DailyStoryResolutionFailureReason: Hashable, Sendable {
+    case detailUnavailable
+    case missingBody
+    case missingOrigin
+}
+
+struct DailyStoryResolutionFailure: Identifiable, Hashable, Sendable {
+    let storyID: Int64
+    let sourceURL: URL
+    let reason: DailyStoryResolutionFailureReason
+
+    var id: Int64 { storyID }
+
+    var message: String {
+        switch reason {
+        case .detailUnavailable:
+            return "暂时无法读取日报详情，可以尝试在浏览器中打开。"
+        case .missingBody:
+            return "日报详情没有可解析的正文，可以尝试在浏览器中打开。"
+        case .missingOrigin:
+            return "由于知乎日报内容异常，无法找到原文地址。"
+        }
+    }
+}
+
+enum DailyStoryResolution: Hashable, Sendable {
+    case destination(DailyStoryDestination)
+    case failure(DailyStoryResolutionFailure)
+}
+
 protocol DailyRepository: Sendable {
     func fetchLatest() async throws -> DailySectionDTO
     func fetchBefore(_ date: String) async throws -> DailySectionDTO
-    func resolveDestination(for story: DailyStoryDTO) async -> DailyStoryDestination
+    func resolveDestination(for story: DailyStoryDTO) async -> DailyStoryResolution
 }
 
 actor URLSessionDailyRepository: DailyRepository {
@@ -46,14 +76,42 @@ actor URLSessionDailyRepository: DailyRepository {
         return try await fetch(path: "/before/\(date)")
     }
 
-    func resolveDestination(for story: DailyStoryDTO) async -> DailyStoryDestination {
-        guard let detailURL = URL(string: "https://daily.zhihu.com/api/7/story/\(story.id)"),
-              let data = try? await client.data(for: detailURL, authentication: .guest),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    func resolveDestination(for story: DailyStoryDTO) async -> DailyStoryResolution {
+        guard let detailURL = URL(string: "https://daily.zhihu.com/api/7/story/\(story.id)") else {
+            return .failure(.init(
+                storyID: story.id,
+                sourceURL: story.sourceURL,
+                reason: .detailUnavailable
+            ))
+        }
+        let data: Data
+        do {
+            data = try await client.data(for: detailURL, authentication: .guest)
+        } catch {
+            return .failure(.init(
+                storyID: story.id,
+                sourceURL: story.sourceURL,
+                reason: .detailUnavailable
+            ))
+        }
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let body = root["body"] as? String,
-              let originURL = DailyHTMLOriginParser.originURL(in: body)
-        else { return .external(story.sourceURL) }
-        return DailyRouteResolver.destination(url: originURL, fallbackTitle: story.title)
+              !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return .failure(.init(
+                storyID: story.id,
+                sourceURL: story.sourceURL,
+                reason: .missingBody
+            ))
+        }
+        guard let originURL = DailyHTMLOriginParser.originURL(in: body) else {
+            return .failure(.init(
+                storyID: story.id,
+                sourceURL: story.sourceURL,
+                reason: .missingOrigin
+            ))
+        }
+        return .destination(DailyRouteResolver.destination(url: originURL, fallbackTitle: story.title))
     }
 
     private func fetch(path: String) async throws -> DailySectionDTO {
@@ -125,22 +183,44 @@ enum DailyHTMLOriginParser {
 enum DailyRouteResolver {
     static func destination(url: URL, fallbackTitle: String) -> DailyStoryDestination {
         let parts = url.pathComponents.filter { $0 != "/" }
-        if let questionIndex = parts.firstIndex(of: "question"), parts.indices.contains(questionIndex + 1),
-           let questionID = Int64(parts[questionIndex + 1]) {
-            if parts.indices.contains(questionIndex + 3), parts[questionIndex + 2] == "answer",
-               let answerID = Int64(parts[questionIndex + 3]) {
-                return .feed(.answer(answerID: answerID, questionID: questionID, questionTitle: fallbackTitle))
+        let host = url.host?.lowercased()
+        if (host == "zhihu.com" || host == "www.zhihu.com"),
+           parts.count == 2, parts[0] == "zvideo", let id = Int64(parts[1]) {
+            return .feed(.video(.init(
+                contentID: id,
+                contentType: .zvideo,
+                title: fallbackTitle,
+                webURL: url
+            )))
+        }
+        if let destination = NativeContentDestinationResolver.resolve(url.absoluteString) {
+            switch destination {
+            case let .article(id, kind):
+                switch kind {
+                case .answer:
+                    let questionID: Int64?
+                    if parts.count == 4, parts[0] == "question", parts[2] == "answer" {
+                        questionID = Int64(parts[1])
+                    } else {
+                        questionID = nil
+                    }
+                    return .feed(.answer(
+                        answerID: id,
+                        questionID: questionID,
+                        questionTitle: fallbackTitle
+                    ))
+                case .article:
+                    return .feed(.article(articleID: id, title: fallbackTitle))
+                }
+            case let .question(id):
+                return .feed(.question(questionID: id, title: fallbackTitle))
+            case let .pin(id):
+                return .feed(.pin(pinID: id))
+            case let .external(externalURL):
+                return .external(externalURL)
+            case .person, .special, .column, .search:
+                break
             }
-            return .feed(.question(questionID: questionID, title: fallbackTitle))
-        }
-        if let index = parts.firstIndex(of: "p"), parts.indices.contains(index + 1), let id = Int64(parts[index + 1]) {
-            return .feed(.article(articleID: id, title: fallbackTitle))
-        }
-        if let index = parts.firstIndex(of: "pin"), parts.indices.contains(index + 1), let id = Int64(parts[index + 1]) {
-            return .feed(.pin(pinID: id))
-        }
-        if let index = parts.firstIndex(of: "zvideo"), parts.indices.contains(index + 1), let id = Int64(parts[index + 1]) {
-            return .feed(.video(videoID: id))
         }
         return .external(url)
     }
@@ -209,6 +289,17 @@ final class DailyNativeStore: ObservableObject {
         refreshTracker.needsRefreshAfterIdle(metadata: refreshMetadata, at: date)
     }
 
+    func accountDidChange() {
+        generation &+= 1
+        sections = []
+        isLoading = false
+        isLoadingMore = false
+        errorMessage = nil
+        nextDate = nil
+        hasLoaded = false
+        refreshMetadata = refreshTracker.clearing()
+    }
+
     func load(date: Date, calendar: Calendar = .current) async {
         guard let requestDate = calendar.date(byAdding: .day, value: 1, to: date) else { return }
         let formatter = DateFormatter()
@@ -221,9 +312,11 @@ final class DailyNativeStore: ObservableObject {
 
     func loadMore() async {
         guard !isLoading, !isLoadingMore, let nextDate else { return }
+        let current = generation
         isLoadingMore = true
         do {
             let section = try await repository.fetchBefore(nextDate)
+            guard current == generation else { return }
             guard !Task.isCancelled else {
                 isLoadingMore = false
                 return
@@ -233,16 +326,17 @@ final class DailyNativeStore: ObservableObject {
             }
             self.nextDate = section.date
         } catch {
+            guard current == generation else { return }
             if Task.isCancelled || error.isNativeRequestCancellation {
                 isLoadingMore = false
                 return
             }
             errorMessage = error.localizedDescription
         }
-        isLoadingMore = false
+        if current == generation { isLoadingMore = false }
     }
 
-    func destination(for story: DailyStoryDTO) async -> DailyStoryDestination {
+    func destination(for story: DailyStoryDTO) async -> DailyStoryResolution {
         await repository.resolveDestination(for: story)
     }
 
@@ -287,6 +381,7 @@ struct DailyNativeView: View {
     @Binding private var collapseProgress: CGFloat
     @State private var navigationTask: Task<Void, Never>?
     @State private var supplementalLoadTask: Task<Void, Never>?
+    @State private var resolutionFailure: DailyStoryResolutionFailure?
     let scrollToTopRequest: UInt
     let onOpen: (DailyStoryDestination) -> Void
 
@@ -325,9 +420,14 @@ struct DailyNativeView: View {
                             Button {
                                 navigationTask?.cancel()
                                 navigationTask = Task {
-                                    let destination = await store.destination(for: story)
+                                    let resolution = await store.destination(for: story)
                                     guard !Task.isCancelled else { return }
-                                    onOpen(destination)
+                                    switch resolution {
+                                    case let .destination(destination):
+                                        onOpen(destination)
+                                    case let .failure(failure):
+                                        resolutionFailure = failure
+                                    }
                                 }
                             } label: {
                                 HStack(alignment: .top, spacing: 12) {
@@ -412,6 +512,24 @@ struct DailyNativeView: View {
             .onDisappear {
                 navigationTask?.cancel()
                 supplementalLoadTask?.cancel()
+            }
+            .alert(
+                "无法找到日报原文",
+                isPresented: Binding(
+                    get: { resolutionFailure != nil },
+                    set: { if !$0 { resolutionFailure = nil } }
+                ),
+                presenting: resolutionFailure
+            ) { failure in
+                Button("浏览器打开") {
+                    resolutionFailure = nil
+                    onOpen(.external(failure.sourceURL))
+                }
+                Button("取消", role: .cancel) {
+                    resolutionFailure = nil
+                }
+            } message: { failure in
+                Text(failure.message)
             }
         }
         .accessibilityIdentifier("daily_native")

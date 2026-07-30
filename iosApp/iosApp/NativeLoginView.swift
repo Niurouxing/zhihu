@@ -254,6 +254,14 @@ struct NativeLoginView: View {
     }
 }
 
+enum NativeLoginWebSessionPolicy {
+    static func makeConfiguration() -> WKWebViewConfiguration {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        return configuration
+    }
+}
+
 private struct NativeLoginWebView: UIViewRepresentable {
     let url: URL
     let onNavigationStarted: () -> Void
@@ -265,9 +273,7 @@ private struct NativeLoginWebView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
-
+        let configuration = NativeLoginWebSessionPolicy.makeConfiguration()
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true

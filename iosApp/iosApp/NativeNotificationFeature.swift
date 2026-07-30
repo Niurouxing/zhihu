@@ -26,6 +26,10 @@ enum NativeNotificationCategory: String, CaseIterable, Identifiable {
         case .follows: return "关注订阅"
         }
     }
+
+    var readAllURL: URL {
+        URL(string: "https://api.zhihu.com/notifications/v3/timeline/entry/\(rawValue)/actions/readall")!
+    }
 }
 
 enum NativeNotificationType: String, CaseIterable, Identifiable {
@@ -122,7 +126,7 @@ struct NativeNotificationItem: Identifiable, Equatable, Hashable {
 struct NativeNotificationRepository {
     var fetchPage: (_ category: NativeNotificationCategory, _ next: URL?) async throws -> NativePage<NativeNotificationItem>
     var fetchUnreadCounts: () async throws -> [NativeNotificationCategory: Int]
-    var markAllAsRead: () async throws -> Void
+    var markCategoryAsRead: (_ category: NativeNotificationCategory) async throws -> Void
 
     static func live(client: ZhihuAPIClient) -> NativeNotificationRepository {
         let decoder = JSONDecoder()
@@ -159,18 +163,13 @@ struct NativeNotificationRepository {
                     (category, (overview.head ?? []).first(where: { $0.detailTitle == category.overviewTitle })?.unreadCount ?? 0)
                 })
             },
-            markAllAsRead: {
-                for rawURL in [
-                    "https://www.zhihu.com/api/v4/notifications/v2/default/actions/readall",
-                    "https://www.zhihu.com/api/v4/notifications/v2/follow/actions/readall",
-                    "https://www.zhihu.com/api/v4/notifications/v2/vote_thank/actions/readall",
-                ] {
-                    _ = try await client.data(
-                        for: URL(string: rawURL)!,
-                        method: "POST",
-                        authentication: .accountRequired
-                    )
-                }
+            markCategoryAsRead: { category in
+                _ = try await client.data(
+                    for: category.readAllURL,
+                    method: "POST",
+                    additionalHeaders: mobileHeaders,
+                    authentication: .accountRequired
+                )
             }
         )
     }
@@ -199,6 +198,20 @@ final class NativeNotificationStore: ObservableObject {
     }
 
     var unreadCount: Int { unreadCounts.values.reduce(0, +) }
+    var selectedCategoryUnreadCount: Int { unreadCounts[selectedCategory, default: 0] }
+
+    func accountDidChange() {
+        revision = UUID()
+        pages.removeAll()
+        next.removeAll()
+        ended.removeAll()
+        items = []
+        unreadCounts = Dictionary(
+            uniqueKeysWithValues: NativeNotificationCategory.allCases.map { ($0, 0) }
+        )
+        isLoading = false
+        errorMessage = nil
+    }
 
     func select(_ category: NativeNotificationCategory) async {
         guard selectedCategory != category else { return }
@@ -206,7 +219,11 @@ final class NativeNotificationStore: ObservableObject {
         isLoading = false
         selectedCategory = category
         items = visibleItems(for: category)
-        if items.isEmpty, !ended.contains(category) { await loadMore() }
+        if items.isEmpty, !ended.contains(category) {
+            await loadMore()
+        } else if preferences.autoMarkAsRead {
+            await markCategoryAsReadReportingError(category)
+        }
     }
 
     func refresh() async {
@@ -250,7 +267,7 @@ final class NativeNotificationStore: ObservableObject {
             unreadCounts = counts
             items = visibleItems(for: category)
             if preferences.autoMarkAsRead {
-                try await markAllAsRead()
+                try await markCategoryAsRead(category)
             }
         } catch is CancellationError {
             return
@@ -260,31 +277,35 @@ final class NativeNotificationStore: ObservableObject {
         }
     }
 
-    func markAllAsRead() async throws {
-        try await repository.markAllAsRead()
-        unreadCounts = Dictionary(uniqueKeysWithValues: NativeNotificationCategory.allCases.map { ($0, 0) })
-        for category in NativeNotificationCategory.allCases {
-            pages[category] = (pages[category] ?? []).map {
-                NativeNotificationItem(
-                    id: $0.id,
-                    title: $0.title,
-                    subtitle: $0.subtitle,
-                    body: $0.body,
-                    created: $0.created,
-                    createdText: $0.createdText,
-                    isRead: true,
-                    authorName: $0.authorName,
-                    avatarURL: $0.avatarURL,
-                    destination: $0.destination
-                )
-            }
+    func markCategoryAsRead(_ category: NativeNotificationCategory) async throws {
+        try await repository.markCategoryAsRead(category)
+        unreadCounts[category] = 0
+        pages[category] = (pages[category] ?? []).map {
+            NativeNotificationItem(
+                id: $0.id,
+                title: $0.title,
+                subtitle: $0.subtitle,
+                body: $0.body,
+                created: $0.created,
+                createdText: $0.createdText,
+                isRead: true,
+                authorName: $0.authorName,
+                avatarURL: $0.avatarURL,
+                destination: $0.destination
+            )
         }
-        items = visibleItems(for: selectedCategory)
+        if selectedCategory == category {
+            items = visibleItems(for: category)
+        }
     }
 
-    func markAllAsReadFromUser() async {
+    func markCurrentCategoryAsReadFromUser() async {
+        await markCategoryAsReadReportingError(selectedCategory)
+    }
+
+    private func markCategoryAsReadReportingError(_ category: NativeNotificationCategory) async {
         do {
-            try await markAllAsRead()
+            try await markCategoryAsRead(category)
             errorMessage = nil
         } catch is CancellationError {
             return
@@ -337,11 +358,12 @@ struct NativeNotificationsView: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
-                    Task { await store.markAllAsReadFromUser() }
+                    Task { await store.markCurrentCategoryAsReadFromUser() }
                 } label: {
                     Image(systemName: "checkmark.circle")
                 }
-                .disabled(store.unreadCount == 0)
+                .disabled(store.selectedCategoryUnreadCount == 0)
+                .accessibilityLabel("标记当前分类为已读")
                 NavigationLink(value: NativeShellRoute.notificationSettings) {
                     Image(systemName: "gearshape")
                 }
@@ -384,12 +406,18 @@ private struct NativeNotificationRow: View {
     var body: some View {
         Group {
             if let destination = item.destination {
-                Button { onOpenContent(destination) } label: { row }
+                Button { onOpenContent(destination) } label: { rowContent }
                     .buttonStyle(.plain)
             } else {
-                row
+                rowContent
             }
         }
+    }
+
+    private var rowContent: some View {
+        row
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
     }
 
     private var row: some View {
@@ -413,7 +441,6 @@ private struct NativeNotificationRow: View {
             }
         }
         .padding(.vertical, 5)
-        .contentShape(Rectangle())
     }
 }
 

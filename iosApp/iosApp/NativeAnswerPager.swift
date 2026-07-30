@@ -33,6 +33,9 @@ private struct QAAnswerPagerSurface: View {
     let preferences: QAReadingPreferences
     let hapticFeedback: NativeHapticFeedbackAction
     let onNavigate: (QANavigationIntent) -> Void
+    @State private var markdownSharePresentation: QAMarkdownSharePresentation?
+    @State private var markdownShareErrorMessage: String?
+    @State private var posterDocument: NativeContentPosterDocument?
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -72,14 +75,31 @@ private struct QAAnswerPagerSurface: View {
                 if let content = answer.content {
                     Menu {
                         Button {
+                            posterDocument = NativeContentPosterDocument(answer: content)
+                        } label: {
+                            Label("分享内容海报", systemImage: "photo.on.rectangle.angled")
+                        }
+                        Button {
                             onNavigate(.share(content.sourceURL))
                         } label: {
-                            Label("分享", systemImage: "square.and.arrow.up")
+                            Label("分享链接", systemImage: "square.and.arrow.up")
                         }
                         Button {
                             UIPasteboard.general.url = content.sourceURL
                         } label: {
                             Label("复制链接", systemImage: "doc.on.doc")
+                        }
+                        Button {
+                            UIPasteboard.general.string = QAMarkdownConverter
+                                .document(from: content)
+                                .markdown
+                        } label: {
+                            Label("复制 Markdown", systemImage: "doc.on.clipboard")
+                        }
+                        Button {
+                            presentMarkdownShare(content)
+                        } label: {
+                            Label("分享 Markdown", systemImage: "text.document")
                         }
                     } label: {
                         Image(systemName: "ellipsis")
@@ -88,8 +108,118 @@ private struct QAAnswerPagerSurface: View {
                 }
             }
         }
+        .sheet(item: $markdownSharePresentation) { presentation in
+            QAMarkdownActivityView(presentation: presentation)
+                .onDisappear { presentation.cleanup() }
+        }
+        .sheet(item: $posterDocument) { document in
+            NativeContentPosterShareView(document: document)
+        }
+        .alert(
+            "无法分享 Markdown",
+            isPresented: Binding(
+                get: { markdownShareErrorMessage != nil },
+                set: { if !$0 { markdownShareErrorMessage = nil } }
+            )
+        ) {
+            Button("好", role: .cancel) { markdownShareErrorMessage = nil }
+        } message: {
+            Text(markdownShareErrorMessage ?? "请稍后重试")
+        }
         .background(NativeAnswerInteractivePopBridge())
     }
+
+    private func presentMarkdownShare(_ content: AnswerDTO) {
+        do {
+            markdownSharePresentation = try QAMarkdownSharePresentation(
+                document: QAMarkdownConverter.document(from: content)
+            )
+        } catch {
+            markdownShareErrorMessage = error.localizedDescription
+        }
+    }
+}
+
+struct QAMarkdownTemporaryFile: Equatable {
+    let fileURL: URL
+    let directoryURL: URL
+
+    func cleanup(fileManager: FileManager = .default) {
+        try? fileManager.removeItem(at: directoryURL)
+    }
+}
+
+enum QAMarkdownTemporaryFileStore {
+    static func write(
+        contents: String,
+        suggestedFileName: String,
+        baseDirectory: URL = FileManager.default.temporaryDirectory,
+        fileManager: FileManager = .default
+    ) throws -> QAMarkdownTemporaryFile {
+        let directory = baseDirectory.appendingPathComponent(
+            "zhihu-plus-plus-markdown-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false
+        )
+        do {
+            let rawName = URL(fileURLWithPath: suggestedFileName).lastPathComponent
+            let fileName = rawName.lowercased().hasSuffix(".md") ? rawName : "\(rawName).md"
+            let fileURL = directory.appendingPathComponent(fileName, isDirectory: false)
+            try Data(contents.utf8).write(to: fileURL, options: .atomic)
+            return QAMarkdownTemporaryFile(fileURL: fileURL, directoryURL: directory)
+        } catch {
+            try? fileManager.removeItem(at: directory)
+            throw error
+        }
+    }
+}
+
+private struct QAMarkdownSharePresentation: Identifiable {
+    let id = UUID()
+    let activityItem: Any
+    let temporaryFile: QAMarkdownTemporaryFile?
+
+    init(document: QAMarkdownDocument) throws {
+        switch QAMarkdownSharePayloadBuilder.payload(for: document) {
+        case let .text(markdown):
+            activityItem = markdown
+            temporaryFile = nil
+        case let .file(contents, suggestedFileName):
+            let file = try QAMarkdownTemporaryFileStore.write(
+                contents: contents,
+                suggestedFileName: suggestedFileName
+            )
+            activityItem = file.fileURL
+            temporaryFile = file
+        }
+    }
+
+    func cleanup() {
+        temporaryFile?.cleanup()
+    }
+}
+
+private struct QAMarkdownActivityView: UIViewControllerRepresentable {
+    let presentation: QAMarkdownSharePresentation
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(
+            activityItems: [presentation.activityItem],
+            applicationActivities: nil
+        )
+        controller.completionWithItemsHandler = { _, _, _, _ in
+            presentation.cleanup()
+        }
+        return controller
+    }
+
+    func updateUIViewController(
+        _ uiViewController: UIActivityViewController,
+        context: Context
+    ) {}
 }
 
 private struct NativeAnswerInteractivePopBridge: UIViewControllerRepresentable {

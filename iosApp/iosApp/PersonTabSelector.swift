@@ -25,7 +25,7 @@ struct PersonTabSelector: View {
 
     private var tabs: some View {
         HStack(spacing: 8) {
-            ForEach(PersonTab.allCases) { tab in
+            ForEach(PersonTab.profileContentTabs) { tab in
                 Button(tab.title) { onSelect(tab) }
                     .font(.subheadline.weight(selection == tab ? .semibold : .regular))
                     .buttonStyle(PersonGlassTabButtonStyle(isSelected: selection == tab))
