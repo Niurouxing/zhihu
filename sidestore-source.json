@@ -22,6 +22,16 @@
       "category": "social",
       "versions": [
         {
+          "version": "0.3.1",
+          "buildVersion": "5",
+          "date": "2026-07-30",
+          "localizedDescription": "修复未登录热榜加载；优化首页频道栏边距和定位；完善海报主题色、Zhihu++ 标识、二维码及作者头像；统一回答、文章和想法的分享入口。",
+          "downloadURL": "https://github.com/kangyun1994/zhihu-plus-plus-swift/releases/download/v0.3.1/ZhihuPlusPlus-0.3.1-unsigned-final.ipa",
+          "size": 3873247,
+          "sha256": "b7f6be04c1d8fda090a1d76ac5683da1a66112ff23e6bb23160631afb974bfad",
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "0.3.0",
           "buildVersion": "4",
           "date": "2026-07-30",

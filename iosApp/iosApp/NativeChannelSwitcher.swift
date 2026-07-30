@@ -112,7 +112,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20)
+            .padding(.horizontal, NativeHomeHeaderLayoutPolicy.horizontalContentInset)
             .frame(
                 height: NativeHomeHeaderLayoutPolicy.expandedTitleHeight
                     * (1 - normalizedCollapseProgress),
@@ -450,6 +450,36 @@ struct NativeChannelSwipeExclusionPolicy {
     }
 }
 
+enum NativeChannelSelectorScrollAlignment: Equatable {
+    case leading
+    case center
+    case trailing
+
+    var anchor: UnitPoint {
+        switch self {
+        case .leading: return .leading
+        case .center: return .center
+        case .trailing: return .trailing
+        }
+    }
+
+    static func alignment<ID: Equatable>(
+        for selection: ID,
+        in channelIDs: [ID]
+    ) -> Self {
+        guard let selectedIndex = channelIDs.firstIndex(of: selection) else {
+            return .center
+        }
+        if selectedIndex == channelIDs.startIndex {
+            return .leading
+        }
+        if selectedIndex == channelIDs.index(before: channelIDs.endIndex) {
+            return .trailing
+        }
+        return .center
+    }
+}
+
 private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
     let channels: [Channel]
     @Binding var selection: Channel.ID
@@ -462,29 +492,17 @@ private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
 
     var body: some View {
-        GeometryReader { geometry in
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        Color.clear
-                            .frame(width: geometry.size.width / 2)
-                            .accessibilityHidden(true)
-
-                        channelButtons
-
-                        Color.clear
-                            .frame(width: geometry.size.width / 2)
-                            .accessibilityHidden(true)
-                    }
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                channelButtons
                     .padding(.vertical, 8)
-                }
-                .nativeChannelSwipeExclusion()
-                .onAppear {
-                    scrollToSelection(using: proxy, animated: false)
-                }
-                .onChange(of: selection) { _ in
-                    scrollToSelection(using: proxy, animated: !reduceMotion)
-                }
+            }
+            .nativeChannelSwipeExclusion()
+            .onAppear {
+                scrollToSelection(using: proxy, animated: false)
+            }
+            .onChange(of: selection) { _ in
+                scrollToSelection(using: proxy, animated: !reduceMotion)
             }
         }
         .frame(height: expandedHeight * (1 - collapseProgress))
@@ -495,9 +513,13 @@ private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
         .accessibilityIdentifier("home_channel_selector")
     }
 
+    private var channelIDs: [Channel.ID] {
+        channels.map(\.id)
+    }
+
     private var channelButtons: some View {
         HStack(spacing: 8) {
-            ForEach(channels) { channel in
+            ForEach(Array(channels.enumerated()), id: \.element.id) { index, channel in
                 let isSelected = channel.id == selection
                 Button {
                     guard !isSelected else { return }
@@ -521,6 +543,18 @@ private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
                     }
                 }
                 .buttonStyle(NativeChannelPillButtonStyle(isSelected: isSelected))
+                .padding(
+                    .leading,
+                    index == channels.startIndex
+                        ? NativeHomeHeaderLayoutPolicy.horizontalContentInset
+                        : 0
+                )
+                .padding(
+                    .trailing,
+                    index == channels.index(before: channels.endIndex)
+                        ? NativeHomeHeaderLayoutPolicy.horizontalContentInset
+                        : 0
+                )
                 .id(channel.id)
                 .accessibilityLabel(title(channel))
                 .accessibilityValue(isSelected ? "已选择" : "")
@@ -531,13 +565,17 @@ private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
     }
 
     private func scrollToSelection(using proxy: ScrollViewProxy, animated: Bool) {
+        let anchor = NativeChannelSelectorScrollAlignment.alignment(
+            for: selection,
+            in: channelIDs
+        ).anchor
         DispatchQueue.main.async {
             if animated {
                 withAnimation(NativeChannelSwitcherTuning.selectorAnimation) {
-                    proxy.scrollTo(selection, anchor: .center)
+                    proxy.scrollTo(selection, anchor: anchor)
                 }
             } else {
-                proxy.scrollTo(selection, anchor: .center)
+                proxy.scrollTo(selection, anchor: anchor)
             }
         }
     }

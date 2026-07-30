@@ -617,10 +617,12 @@ final class NativeLibraryFeatureTests: XCTestCase {
 
     func testPosterDocumentDeduplicatesImageURLsAndQRCodeRenders() throws {
         let sourceURL = try XCTUnwrap(URL(string: "https://www.zhihu.com/pin/9"))
+        let avatarURL = try XCTUnwrap(URL(string: "https://pic.example.com/avatar.jpg"))
         let imageURL = try XCTUnwrap(URL(string: "https://pic.example.com/a.jpg"))
         let document = NativeContentPosterDocument(
             title: "标题",
             authorName: "作者",
+            authorAvatarURL: avatarURL,
             sourceURL: sourceURL,
             metadata: "1 赞 · 2 评论 · 想法",
             blocks: [
@@ -630,8 +632,9 @@ final class NativeLibraryFeatureTests: XCTestCase {
             ]
         )
 
-        XCTAssertEqual(document.imageURLs, [imageURL])
+        XCTAssertEqual(document.imageURLs, [avatarURL, imageURL])
         XCTAssertNotNil(NativeContentPosterQRCode.image(for: sourceURL))
+        XCTAssertNotNil(NativeContentPosterBranding.appIcon())
     }
 
     func testPosterRendererProducesCompleteLongImage() async throws {

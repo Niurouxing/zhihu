@@ -6,7 +6,7 @@ protocol HotFeedRepository {
 
 actor URLSessionHotFeedRepository: HotFeedRepository {
     private static let initialURL = URL(
-        string: "https://www.zhihu.com/api/v3/feed/topstory/hot-lists/total?limit=50&mobile=true"
+        string: "https://api.zhihu.com/topstory/hot-list?limit=50"
     )!
     private static let include =
         "data[*].content,excerpt,headline,target.author.badge_v2,target.question.author"

@@ -33,8 +33,6 @@ private struct QAAnswerPagerSurface: View {
     let preferences: QAReadingPreferences
     let hapticFeedback: NativeHapticFeedbackAction
     let onNavigate: (QANavigationIntent) -> Void
-    @State private var markdownSharePresentation: QAMarkdownSharePresentation?
-    @State private var markdownShareErrorMessage: String?
     @State private var posterDocument: NativeContentPosterDocument?
 
     var body: some View {
@@ -75,31 +73,14 @@ private struct QAAnswerPagerSurface: View {
                 if let content = answer.content {
                     Menu {
                         Button {
-                            posterDocument = NativeContentPosterDocument(answer: content)
-                        } label: {
-                            Label("分享内容海报", systemImage: "photo.on.rectangle.angled")
-                        }
-                        Button {
-                            onNavigate(.share(content.sourceURL))
-                        } label: {
-                            Label("分享链接", systemImage: "square.and.arrow.up")
-                        }
-                        Button {
                             UIPasteboard.general.url = content.sourceURL
                         } label: {
                             Label("复制链接", systemImage: "doc.on.doc")
                         }
                         Button {
-                            UIPasteboard.general.string = QAMarkdownConverter
-                                .document(from: content)
-                                .markdown
+                            posterDocument = NativeContentPosterDocument(answer: content)
                         } label: {
-                            Label("复制 Markdown", systemImage: "doc.on.clipboard")
-                        }
-                        Button {
-                            presentMarkdownShare(content)
-                        } label: {
-                            Label("分享 Markdown", systemImage: "text.document")
+                            Label("分享内容海报", systemImage: "photo.on.rectangle.angled")
                         }
                     } label: {
                         Image(systemName: "ellipsis")
@@ -108,35 +89,10 @@ private struct QAAnswerPagerSurface: View {
                 }
             }
         }
-        .sheet(item: $markdownSharePresentation) { presentation in
-            QAMarkdownActivityView(presentation: presentation)
-                .onDisappear { presentation.cleanup() }
-        }
         .sheet(item: $posterDocument) { document in
             NativeContentPosterShareView(document: document)
         }
-        .alert(
-            "无法分享 Markdown",
-            isPresented: Binding(
-                get: { markdownShareErrorMessage != nil },
-                set: { if !$0 { markdownShareErrorMessage = nil } }
-            )
-        ) {
-            Button("好", role: .cancel) { markdownShareErrorMessage = nil }
-        } message: {
-            Text(markdownShareErrorMessage ?? "请稍后重试")
-        }
         .background(NativeAnswerInteractivePopBridge())
-    }
-
-    private func presentMarkdownShare(_ content: AnswerDTO) {
-        do {
-            markdownSharePresentation = try QAMarkdownSharePresentation(
-                document: QAMarkdownConverter.document(from: content)
-            )
-        } catch {
-            markdownShareErrorMessage = error.localizedDescription
-        }
     }
 }
 

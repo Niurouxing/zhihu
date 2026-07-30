@@ -57,6 +57,7 @@ struct NativeScrollToTopRequestPolicy {
 }
 
 struct NativeHomeHeaderLayoutPolicy {
+    static let horizontalContentInset: CGFloat = 20
     static let expandedTitleHeight: CGFloat = 76
     static let channelSelectorHeight: CGFloat = 60
     static let expandedHeaderHeight = expandedTitleHeight + channelSelectorHeight

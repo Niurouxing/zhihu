@@ -416,12 +416,14 @@ struct PinNativeView: View {
                     ToolbarItem(placement: .primaryAction) {
                         Menu {
                             Button {
+                                UIPasteboard.general.url = detail.sourceURL
+                            } label: {
+                                Label("复制链接", systemImage: "doc.on.doc")
+                            }
+                            Button {
                                 posterDocument = NativeContentPosterDocument(pin: detail)
                             } label: {
                                 Label("分享内容海报", systemImage: "photo.on.rectangle.angled")
-                            }
-                            ShareLink(item: detail.sourceURL) {
-                                Label("分享链接", systemImage: "square.and.arrow.up")
                             }
                         } label: {
                             Image(systemName: "square.and.arrow.up")

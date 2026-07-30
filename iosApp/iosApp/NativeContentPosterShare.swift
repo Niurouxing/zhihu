@@ -22,6 +22,7 @@ struct NativeContentPosterDocument: Identifiable {
     let title: String
     let authorName: String
     let authorHeadline: String
+    let authorAvatarURL: URL?
     let sourceURL: URL
     let metadata: String
     let blocks: [NativeContentPosterBlock]
@@ -32,6 +33,7 @@ struct NativeContentPosterDocument: Identifiable {
         title: String,
         authorName: String,
         authorHeadline: String = "",
+        authorAvatarURL: URL? = nil,
         sourceURL: URL,
         metadata: String,
         blocks: [NativeContentPosterBlock]
@@ -39,6 +41,7 @@ struct NativeContentPosterDocument: Identifiable {
         self.title = title
         self.authorName = authorName
         self.authorHeadline = authorHeadline
+        self.authorAvatarURL = authorAvatarURL
         self.sourceURL = sourceURL
         self.metadata = metadata
         self.blocks = blocks
@@ -50,11 +53,11 @@ struct NativeContentPosterDocument: Identifiable {
         authorName = answer.author.displayName.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
             ?? "匿名用户"
         authorHeadline = answer.author.headline
+        authorAvatarURL = answer.author.avatarURL
         sourceURL = answer.sourceURL
         metadata = [
             "\(answer.voteUpCount) 赞同",
             "\(answer.commentCount) 评论",
-            answer.route.kind == .answer ? "回答" : "文章",
         ].joined(separator: " · ")
         var posterBlocks = answer.blocks.flatMap(Self.answerBlocks)
         if let attachment = answer.attachment {
@@ -67,8 +70,9 @@ struct NativeContentPosterDocument: Identifiable {
         title = "\(pin.author.displayName)的想法"
         authorName = pin.author.displayName
         authorHeadline = pin.author.headline
+        authorAvatarURL = pin.author.avatarURL
         sourceURL = pin.sourceURL
-        metadata = "\(pin.likeCount) 赞 · \(pin.commentCount) 评论 · 想法"
+        metadata = "\(pin.likeCount) 赞 · \(pin.commentCount) 评论"
         var posterBlocks = pin.blocks.flatMap(Self.pinBlocks)
         if let poll = pin.poll {
             posterBlocks.append(.text("投票：\(poll.title)", style: .heading))
@@ -84,10 +88,14 @@ struct NativeContentPosterDocument: Identifiable {
 
     var imageURLs: [URL] {
         var known = Set<URL>()
-        return blocks.compactMap { block in
+        let contentURLs: [URL] = blocks.compactMap { block in
             guard case let .image(url, _) = block, known.insert(url).inserted else { return nil }
             return url
         }
+        guard let authorAvatarURL, known.insert(authorAvatarURL).inserted else {
+            return contentURLs
+        }
+        return [authorAvatarURL] + contentURLs
     }
 
     private static func answerBlocks(_ block: QABodyBlock) -> [NativeContentPosterBlock] {
@@ -157,6 +165,7 @@ private struct NativeContentPosterPreparedDocument {
     let document: NativeContentPosterDocument
     let images: [URL: UIImage]
     let qrCode: UIImage
+    let appIcon: UIImage?
 }
 
 @MainActor
@@ -175,7 +184,8 @@ enum NativeContentPosterRenderer {
         let prepared = NativeContentPosterPreparedDocument(
             document: document,
             images: images,
-            qrCode: qrCode
+            qrCode: qrCode,
+            appIcon: NativeContentPosterBranding.appIcon()
         )
         let content = NativeContentPosterView(prepared: prepared)
             .frame(width: 390)
@@ -222,6 +232,27 @@ private enum NativeContentPosterImageLoader {
     }
 }
 
+enum NativeContentPosterBranding {
+    static let zhihuBlue = Color(red: 23 / 255, green: 114 / 255, blue: 246 / 255)
+    static let headerBackground = Color(red: 242 / 255, green: 248 / 255, blue: 255 / 255)
+    static let primaryText = Color(red: 18 / 255, green: 18 / 255, blue: 18 / 255)
+    static let secondaryText = Color(red: 100 / 255, green: 100 / 255, blue: 100 / 255)
+    static let tertiaryText = Color(red: 133 / 255, green: 144 / 255, blue: 166 / 255)
+
+    static func appIcon(bundle: Bundle = .main) -> UIImage? {
+        let icons = bundle.infoDictionary?["CFBundleIcons"] as? [String: Any]
+        let primaryIcon = icons?["CFBundlePrimaryIcon"] as? [String: Any]
+        let iconFiles = primaryIcon?["CFBundleIconFiles"] as? [String] ?? []
+
+        for iconName in iconFiles.reversed() {
+            if let image = UIImage(named: iconName, in: bundle, compatibleWith: nil) {
+                return image
+            }
+        }
+        return UIImage(named: "AppIcon", in: bundle, compatibleWith: nil)
+    }
+}
+
 enum NativeContentPosterQRCode {
     static func image(for url: URL) -> UIImage? {
         let filter = CIFilter.qrCodeGenerator()
@@ -251,23 +282,31 @@ private struct NativeContentPosterView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            brandHeader
+
             VStack(alignment: .leading, spacing: 18) {
                 Text(prepared.document.title)
                     .font(.system(size: 25, weight: .bold))
-                    .foregroundStyle(Color(uiColor: .label))
+                    .foregroundStyle(NativeContentPosterBranding.primaryText)
                     .fixedSize(horizontal: false, vertical: true)
 
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(prepared.document.authorName)
-                        .font(.system(size: 17, weight: .semibold))
-                    if !prepared.document.authorHeadline.isEmpty {
-                        Text(prepared.document.authorHeadline)
+                HStack(alignment: .center, spacing: 12) {
+                    authorAvatar
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(prepared.document.authorName)
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(NativeContentPosterBranding.primaryText)
+                        if !prepared.document.authorHeadline.isEmpty {
+                            Text(prepared.document.authorHeadline)
+                                .font(.system(size: 13))
+                                .foregroundStyle(NativeContentPosterBranding.secondaryText)
+                                .lineLimit(2)
+                        }
+                        Text(prepared.document.metadata)
                             .font(.system(size: 13))
-                            .foregroundStyle(Color(uiColor: .secondaryLabel))
+                            .foregroundStyle(NativeContentPosterBranding.tertiaryText)
                     }
-                    Text(prepared.document.metadata)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color(uiColor: .secondaryLabel))
                 }
 
                 Divider()
@@ -279,34 +318,72 @@ private struct NativeContentPosterView: View {
                 }
             }
             .padding(24)
-
-            Divider()
-
-            HStack(spacing: 14) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("知乎++")
-                        .font(.system(size: 20, weight: .bold))
-                    Text("扫码查看原文")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color(uiColor: .secondaryLabel))
-                    Text(prepared.document.sourceURL.host ?? "zhihu.com")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Color(uiColor: .tertiaryLabel))
-                }
-                Spacer(minLength: 12)
-                Image(uiImage: prepared.qrCode)
-                    .interpolation(.none)
-                    .resizable()
-                    .frame(width: 78, height: 78)
-                    .padding(7)
-                    .background(.white)
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 18)
-            .background(Color(uiColor: .secondarySystemBackground))
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(.white)
         .environment(\.colorScheme, .light)
+    }
+
+    private var brandHeader: some View {
+        HStack(spacing: 12) {
+            Group {
+                if let appIcon = prepared.appIcon {
+                    Image(uiImage: appIcon)
+                        .resizable()
+                        .scaledToFit()
+                } else {
+                    Image(systemName: "plus")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(NativeContentPosterBranding.zhihuBlue)
+                }
+            }
+            .frame(width: 52, height: 52)
+            .background(.white, in: RoundedRectangle(cornerRadius: 12))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("知乎++")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundStyle(NativeContentPosterBranding.primaryText)
+                Text("扫码查看原文")
+                    .font(.system(size: 13))
+                    .foregroundStyle(NativeContentPosterBranding.secondaryText)
+            }
+
+            Spacer(minLength: 12)
+
+            Image(uiImage: prepared.qrCode)
+                .interpolation(.none)
+                .resizable()
+                .frame(width: 64, height: 64)
+                .padding(5)
+                .background(.white)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .background(NativeContentPosterBranding.headerBackground)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(NativeContentPosterBranding.zhihuBlue)
+                .frame(height: 2)
+        }
+    }
+
+    @ViewBuilder
+    private var authorAvatar: some View {
+        if let avatarURL = prepared.document.authorAvatarURL,
+           let avatarImage = prepared.images[avatarURL] {
+            Image(uiImage: avatarImage)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 50, height: 50)
+                .clipShape(Circle())
+        } else {
+            Text(prepared.document.authorName.prefix(1))
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(NativeContentPosterBranding.zhihuBlue)
+                .frame(width: 50, height: 50)
+                .background(NativeContentPosterBranding.headerBackground, in: Circle())
+        }
     }
 
     @ViewBuilder
@@ -320,7 +397,9 @@ private struct NativeContentPosterView: View {
                 .padding(.leading, style == .quote ? 12 : 0)
                 .overlay(alignment: .leading) {
                     if style == .quote {
-                        Capsule().fill(.secondary.opacity(0.35)).frame(width: 3)
+                        Capsule()
+                            .fill(NativeContentPosterBranding.zhihuBlue)
+                            .frame(width: 3)
                     }
                 }
                 .padding(style == .code ? 12 : 0)
@@ -371,8 +450,8 @@ private struct NativeContentPosterView: View {
 
     private func foreground(_ style: NativeContentPosterTextStyle) -> Color {
         style == .quote || style == .caption
-            ? Color(uiColor: .secondaryLabel)
-            : Color(uiColor: .label)
+            ? NativeContentPosterBranding.secondaryText
+            : NativeContentPosterBranding.primaryText
     }
 }
 

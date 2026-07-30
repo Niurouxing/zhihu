@@ -473,6 +473,35 @@ final class FeedInfrastructureTests: XCTestCase {
         XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
     }
 
+    func testHotListUsesGuestCompatibleMobileContract() async throws {
+        let recorder = FeedRequestRecorder()
+        FeedURLProtocol.setHandler { request in
+            recorder.record(request)
+            return (200, FeedFixtures.mobileHotPage, [:])
+        }
+        let repository = URLSessionHotFeedRepository(
+            accountStore: FeedAccountStore(json: nil),
+            session: makeFeedSession()
+        )
+
+        let page = try await repository.fetchPage(after: nil)
+
+        let request = try XCTUnwrap(recorder.request)
+        let url = try XCTUnwrap(request.url)
+        let items = try XCTUnwrap(
+            URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        )
+        XCTAssertEqual(url.host, "api.zhihu.com")
+        XCTAssertEqual(url.path, "/topstory/hot-list")
+        XCTAssertEqual(items.first(where: { $0.name == "limit" })?.value, "50")
+        XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+        XCTAssertEqual(page.items.count, 1)
+        XCTAssertEqual(
+            page.items.first?.route,
+            .question(questionID: 7, title: "游客热榜问题")
+        )
+    }
+
     func testAccountSessionCodecPreservesQuotedDeviceCookieRepresentation() throws {
         let account = [
             "cookies": [
@@ -690,6 +719,10 @@ final class FeedInfrastructureTests: XCTestCase {
 private enum FeedFixtures {
     static let hotPage = Data(
         #"{"data":[{"type":"hot_list_feed","detail_text":"热度 100 万","target":{"id":42,"type":"answer","url":"https://api.zhihu.com/answers/42","excerpt":"回答摘要","voteup_count":475,"comment_count":138,"thumbnail":"https://pic.zhimg.com/answer.jpg","question":{"id":7,"type":"question","title":"问题标题"},"author":{"id":"member","url_token":"author","name":"作者","headline":"简介","avatar_url":"https://pic.zhimg.com/avatar.jpg"}}}],"paging":{"is_end":false,"next":"http://www.zhihu.com/api/v3/hot?page=2"}}"#.utf8
+    )
+
+    static let mobileHotPage = Data(
+        #"{"data":[{"type":"hot_list_feed","detail_text":"622 万热度","target":{"id":7,"type":"question","title":"游客热榜问题","excerpt":"问题摘要","answer_count":254,"follower_count":951,"comment_count":0,"author":{"id":"0","url_token":"","name":"用户"}}}],"paging":{"is_end":true,"next":""}}"#.utf8
     )
 
     static let searchPage = Data(

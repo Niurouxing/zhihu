@@ -425,8 +425,9 @@ private struct CommentLevelView: View {
             title: context.title,
             authorName: comment.author.displayName,
             authorHeadline: replyContext,
+            authorAvatarURL: comment.author.avatarURL,
             sourceURL: context.sourceURL,
-            metadata: "\(CommentDateFormatter.string(seconds: comment.createdTimeSeconds)) · \(comment.likeCount) 赞 · 评论",
+            metadata: "\(CommentDateFormatter.string(seconds: comment.createdTimeSeconds)) · \(comment.likeCount) 赞",
             blocks: blocks
         )
     }

@@ -657,6 +657,7 @@ final class NativeShellPreferencesTests: XCTestCase {
     }
 
     func testHomeHeaderUsesRealSharedHeightWithoutMovingListViewport() {
+        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.horizontalContentInset, 20)
         XCTAssertEqual(NativeHomeHeaderLayoutPolicy.expandedTitleHeight, 76)
         XCTAssertEqual(NativeHomeHeaderLayoutPolicy.channelSelectorHeight, 60)
         XCTAssertEqual(NativeHomeHeaderLayoutPolicy.expandedHeaderHeight, 136)
@@ -719,6 +720,32 @@ final class NativeShellPreferencesTests: XCTestCase {
 
         XCTAssertEqual(anchors, HomeChannel.allCases)
         XCTAssertEqual(Set(anchors).count, 4)
+    }
+
+    func testChannelSelectorPinsEdgeChannelsBeforeCenteringMiddleChannels() {
+        let channelIDs = HomeChannel.allCases.map(\.id)
+
+        XCTAssertEqual(
+            NativeChannelSelectorScrollAlignment.alignment(
+                for: HomeChannel.recommendation.id,
+                in: channelIDs
+            ),
+            .leading
+        )
+        XCTAssertEqual(
+            NativeChannelSelectorScrollAlignment.alignment(
+                for: HomeChannel.following.id,
+                in: channelIDs
+            ),
+            .center
+        )
+        XCTAssertEqual(
+            NativeChannelSelectorScrollAlignment.alignment(
+                for: HomeChannel.daily.id,
+                in: channelIDs
+            ),
+            .trailing
+        )
     }
 
     func testOnlySelectedChannelOwnsScrolling() {
