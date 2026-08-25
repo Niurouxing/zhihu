@@ -179,6 +179,23 @@ struct UserDefaultsSearchHistoryPersistence: SearchHistoryPersistence {
     }
 }
 
+enum SearchHistoryPolicy {
+    static func inserting(
+        _ rawQuery: String,
+        into current: [String],
+        limit: Int = 20
+    ) -> [String] {
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, limit > 0 else { return current }
+        var updated = current.filter { $0 != query }
+        updated.insert(query, at: 0)
+        if updated.count > limit {
+            updated.removeSubrange(limit...)
+        }
+        return updated
+    }
+}
+
 @MainActor
 final class SearchStore: ObservableObject {
     @Published var queryText: String
@@ -282,9 +299,7 @@ final class SearchStore: ObservableObject {
         contentType = .all
         timeRange = .all
         if showsHistory {
-            history.removeAll { $0 == query }
-            history.insert(query, at: 0)
-            if history.count > 20 { history.removeSubrange(20...) }
+            history = SearchHistoryPolicy.inserting(query, into: history)
             historyPersistence.save(history)
         }
         await replaceResults()

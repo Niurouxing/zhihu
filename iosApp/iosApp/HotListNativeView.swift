@@ -6,34 +6,38 @@ struct HotListNativeView: View {
     @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
     @Environment(\.nativeChannelIsActive) private var isActiveChannel
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
-    @Binding private var collapseProgress: CGFloat
+    @State private var observedScrollToTopRequest: UInt
+    @State private var lastHiddenSearchEntryTarget: NativeHomeContentScrollTarget?
     private let scrollToTopRequest: UInt
+    private let onOpenSearch: (() -> Void)?
     private let onOpen: (FeedItemRoute) -> Void
 
     init(
         store: HotFeedStore,
-        collapseProgress: Binding<CGFloat> = .constant(0),
         scrollToTopRequest: UInt = 0,
+        onOpenSearch: (() -> Void)? = nil,
         onOpen: @escaping (FeedItemRoute) -> Void
     ) {
         _store = ObservedObject(wrappedValue: store)
-        _collapseProgress = collapseProgress
+        _observedScrollToTopRequest = State(initialValue: scrollToTopRequest)
         self.scrollToTopRequest = scrollToTopRequest
+        self.onOpenSearch = onOpenSearch
         self.onOpen = onOpen
     }
 
     var body: some View {
         ScrollViewReader { proxy in
             List {
-                NativeRootLargeTitle(
-                    "首页",
-                    coordinateSpaceName: "hot-root-scroll",
-                    displaysTitle: false,
-                    isActive: isActiveChannel,
-                    isRefreshing: store.isRefreshing,
-                    collapseProgress: $collapseProgress
-                )
-                .id(NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .hot))
+                Color.clear
+                    .frame(height: 0)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .accessibilityHidden(true)
+                    .id(NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .hot))
+
+                if let onOpenSearch {
+                    NativeHomeGlobalSearchEntry(action: onOpenSearch)
+                }
 
                 if store.items.isEmpty, store.isLoading {
                     HStack {
@@ -42,25 +46,25 @@ struct HotListNativeView: View {
                         Spacer()
                     }
                     .listRowSeparator(.hidden)
+                    .id(NativeHomeContentScrollTarget.hotStatus)
                 }
 
                 ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
-                    HStack(alignment: .top, spacing: 12) {
-                        Text("\(index + 1)")
-                            .font(.headline.monospacedDigit())
-                            .foregroundStyle(index < 3 ? Color.accentColor : Color.secondary)
-                            .frame(minWidth: 26, alignment: .trailing)
-                            .padding(.top, 5)
-                            .accessibilityHidden(true)
-                        FeedItemRow(item: item, showsThumbnail: false, onOpen: onOpen)
-                    }
-                    .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 18))
+                    FeedItemRow(
+                        item: item,
+                        showsThumbnail: false,
+                        rank: index + 1,
+                        onOpen: onOpen
+                    )
+                    .id(NativeHomeContentScrollTarget.hot(item.id))
+                    .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
                 }
 
                 if let errorMessage = store.errorMessage {
                     FeedRetryRow(message: errorMessage) {
                         Task { await store.retry() }
                     }
+                    .id(NativeHomeContentScrollTarget.hotStatus)
                 } else if store.canLoadNextPage {
                     let taskID = NativeChannelTaskIdentity(
                         isActive: isActiveChannel,
@@ -72,23 +76,21 @@ struct HotListNativeView: View {
                         Spacer()
                     }
                     .listRowSeparator(.hidden)
+                    .id(NativeHomeContentScrollTarget.hotStatus)
                     .task(id: taskID) {
                         guard taskID.isActive,
                               taskID.value == store.nextPageLoadID
                         else { return }
                         await store.loadNextPage()
                     }
+                } else if visibleItems.isEmpty, !store.isLoading {
+                    Label("暂无热榜", systemImage: "flame")
+                        .foregroundStyle(.secondary)
+                        .id(NativeHomeContentScrollTarget.hotStatus)
                 }
             }
             .listStyle(.plain)
             .nativeHomeFeedListLayout()
-            .coordinateSpace(name: "hot-root-scroll")
-            .nativeHomeFeedScrollTracking(
-                collapseProgress: $collapseProgress,
-                isActive: isActiveChannel
-            )
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
             .refreshable {
                 guard isActiveChannel else { return }
                 let previousSuccessfulRefresh = store.refreshMetadata.lastSuccessfulRefreshAt
@@ -102,9 +104,25 @@ struct HotListNativeView: View {
                 }
             }
             .onAppear {
-                if scrollToTopRequest > 0 { scrollToTop(proxy, animated: false) }
+                observedScrollToTopRequest = scrollToTopRequest
+                hideInitialSearchEntryIfNeeded(proxy)
             }
-            .onChange(of: scrollToTopRequest) { _ in scrollToTop(proxy, animated: true) }
+            .onChange(of: scrollToTopRequest) { newRequest in
+                let shouldScroll = NativeScrollToTopRequestPolicy.shouldHandleChange(
+                    previousRequest: observedScrollToTopRequest,
+                    newRequest: newRequest
+                )
+                observedScrollToTopRequest = newRequest
+                if shouldScroll { scrollToTop(proxy, animated: true) }
+            }
+            .onChange(of: firstContentScrollTarget) { _ in
+                hideInitialSearchEntryIfNeeded(proxy)
+            }
+            .onChange(of: isActiveChannel) { isActive in
+                if isActive {
+                    hideInitialSearchEntryIfNeeded(proxy)
+                }
+            }
             .task(id: isActiveChannel) {
                 guard isActiveChannel else { return }
                 await store.loadInitialIfNeeded()
@@ -120,15 +138,25 @@ struct HotListNativeView: View {
         )
     }
 
+    private var firstContentScrollTarget: NativeHomeContentScrollTarget? {
+        visibleItems.first.map { .hot($0.id) } ?? .hotStatus
+    }
+
     private func scrollToTop(_ proxy: ScrollViewProxy, animated: Bool) {
         DispatchQueue.main.async {
             if animated {
                 withAnimation {
-                    proxy.scrollTo(
-                        NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .hot),
-                        anchor: .top
-                    )
+                    if let firstContentScrollTarget {
+                        proxy.scrollTo(firstContentScrollTarget, anchor: .top)
+                    } else {
+                        proxy.scrollTo(
+                            NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .hot),
+                            anchor: .top
+                        )
+                    }
                 }
+            } else if let firstContentScrollTarget {
+                proxy.scrollTo(firstContentScrollTarget, anchor: .top)
             } else {
                 proxy.scrollTo(
                     NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .hot),
@@ -136,5 +164,14 @@ struct HotListNativeView: View {
                 )
             }
         }
+    }
+
+    private func hideInitialSearchEntryIfNeeded(_ proxy: ScrollViewProxy) {
+        NativeHomeSearchEntryScrollController.hideIfNeeded(
+            in: proxy,
+            target: firstContentScrollTarget,
+            isActive: isActiveChannel,
+            lastHiddenTarget: $lastHiddenSearchEntryTarget
+        )
     }
 }

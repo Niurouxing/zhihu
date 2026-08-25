@@ -3,7 +3,7 @@ import SwiftUI
 struct SearchNativeView: View {
     @StateObject private var store: SearchStore
     @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
-    @FocusState private var isSearchFieldFocused: Bool
+    @State private var isSearchFieldFocused = false
     @State private var lastConsumedFocusRequestToken: UInt = 0
     @Environment(\.nativeSearchPresentation) private var searchPresentation
     private let focusRequest: NativeSearchFocusRequest
@@ -78,12 +78,18 @@ struct SearchNativeView: View {
                 filterMenu
             }
         }
-        .task { await store.loadInitialIfNeeded() }
+        .task {
+            await store.loadInitialIfNeeded()
+        }
         .task(id: focusRequest) { await consumeFocusRequest(focusRequest) }
         .task(id: searchPresentation) {
             await store.updateSuggestionVisibility(searchPresentation)
         }
-        .background(SearchInteractivePopKeyboardBridge())
+        .background(
+            SearchInteractivePopKeyboardBridge {
+                isSearchFieldFocused = false
+            }
+        )
         .accessibilityIdentifier("search_screen")
     }
 
@@ -91,15 +97,12 @@ struct SearchNativeView: View {
         HStack(spacing: 7) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField(searchPrompt, text: $store.queryText)
-                .focused($isSearchFieldFocused)
-                .accessibilityIdentifier("search_input")
-                .submitLabel(.search)
-                .onSubmit {
-                    submitKeyboardQuery()
-                }
-                .textInputAutocapitalization(.never)
-                .disableAutocorrection(true)
+            NativeSearchTextField(
+                text: $store.queryText,
+                prompt: searchPrompt,
+                wantsFocus: $isSearchFieldFocused,
+                onSubmit: submitKeyboardQuery
+            )
             if !store.queryText.isEmpty {
                 Button {
                     store.queryText = ""
@@ -122,6 +125,10 @@ struct SearchNativeView: View {
     private func submitKeyboardQuery() {
         let query = store.queryText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return }
+        submitSuggestion(query)
+    }
+
+    private func submitSuggestion(_ query: String) {
         isSearchFieldFocused = false
         Task { await store.submitQuery(query) }
     }
@@ -132,14 +139,8 @@ struct SearchNativeView: View {
             request,
             lastConsumedToken: lastConsumedFocusRequestToken
         ) else { return }
-        await Task.yield()
-        guard !Task.isCancelled,
-              focusRequest == request,
-              NativeSearchFocusRequestPolicy.shouldConsume(
-                  request,
-                  lastConsumedToken: lastConsumedFocusRequestToken
-              )
-        else { return }
+
+        guard store.submittedQuery.isEmpty, store.queryText.isEmpty else { return }
         lastConsumedFocusRequestToken = request.token
         isSearchFieldFocused = true
     }
@@ -156,7 +157,7 @@ struct SearchNativeView: View {
             Section {
                 ForEach(historyRows) { row in
                     Button {
-                        Task { await store.submitQuery(row.query) }
+                        submitSuggestion(row.query)
                     } label: {
                         Label(row.query, systemImage: "clock.arrow.circlepath")
                             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -178,7 +179,7 @@ struct SearchNativeView: View {
             Section {
                 ForEach(Array(store.suggestions.enumerated()), id: \.element.id) { index, suggestion in
                     Button {
-                        Task { await store.submitQuery(suggestion.query) }
+                        submitSuggestion(suggestion.query)
                     } label: {
                         HStack(spacing: 12) {
                             Text("\(index + 1)")
@@ -331,16 +332,137 @@ struct SearchNativeView: View {
     }
 }
 
-private struct SearchInteractivePopKeyboardBridge: UIViewControllerRepresentable {
-    func makeUIViewController(context: Context) -> UIViewController {
-        SearchInteractivePopObserverController()
+private struct NativeSearchTextField: UIViewRepresentable {
+    @Binding var text: String
+    let prompt: String
+    @Binding var wantsFocus: Bool
+    let onSubmit: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
     }
 
-    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
+    func makeUIView(context: Context) -> FocusAwareSearchTextField {
+        let textField = FocusAwareSearchTextField()
+        textField.delegate = context.coordinator
+        textField.addTarget(
+            context.coordinator,
+            action: #selector(Coordinator.textDidChange(_:)),
+            for: .editingChanged
+        )
+        textField.borderStyle = .none
+        textField.backgroundColor = .clear
+        textField.font = .preferredFont(forTextStyle: .body)
+        textField.adjustsFontForContentSizeCategory = true
+        textField.textColor = .label
+        textField.tintColor = .tintColor
+        textField.returnKeyType = .search
+        textField.autocapitalizationType = .none
+        textField.autocorrectionType = .no
+        textField.spellCheckingType = .no
+        textField.smartQuotesType = .no
+        textField.smartDashesType = .no
+        textField.clearButtonMode = .never
+        textField.accessibilityIdentifier = "search_input"
+        textField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        textField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return textField
+    }
+
+    func updateUIView(_ textField: FocusAwareSearchTextField, context: Context) {
+        context.coordinator.parent = self
+        if textField.text != text {
+            textField.text = text
+        }
+        textField.placeholder = prompt
+        textField.wantsFirstResponder = wantsFocus
+    }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: NativeSearchTextField
+
+        init(parent: NativeSearchTextField) {
+            self.parent = parent
+        }
+
+        @objc func textDidChange(_ textField: UITextField) {
+            let value = textField.text ?? ""
+            if parent.text != value {
+                parent.text = value
+            }
+        }
+
+        func textFieldDidBeginEditing(_ textField: UITextField) {
+            if !parent.wantsFocus {
+                parent.wantsFocus = true
+            }
+        }
+
+        func textFieldDidEndEditing(_ textField: UITextField) {
+            if parent.wantsFocus {
+                parent.wantsFocus = false
+            }
+        }
+
+        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+            parent.onSubmit()
+            textField.resignFirstResponder()
+            return false
+        }
+    }
+}
+
+private final class FocusAwareSearchTextField: UITextField {
+    var wantsFirstResponder = false {
+        didSet { applyRequestedFocus() }
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        applyRequestedFocus()
+    }
+
+    private func applyRequestedFocus() {
+        guard window != nil else { return }
+        if wantsFirstResponder {
+            guard !isFirstResponder else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window != nil, self.wantsFirstResponder else { return }
+                self.becomeFirstResponder()
+            }
+        } else if isFirstResponder {
+            resignFirstResponder()
+        }
+    }
+}
+
+private struct SearchInteractivePopKeyboardBridge: UIViewControllerRepresentable {
+    let onPopBegan: () -> Void
+
+    func makeUIViewController(context: Context) -> SearchInteractivePopObserverController {
+        let controller = SearchInteractivePopObserverController()
+        controller.onPopBegan = onPopBegan
+        return controller
+    }
+
+    func updateUIViewController(
+        _ uiViewController: SearchInteractivePopObserverController,
+        context: Context
+    ) {
+        uiViewController.onPopBegan = onPopBegan
+    }
+
+    static func dismantleUIViewController(
+        _ uiViewController: SearchInteractivePopObserverController,
+        coordinator: ()
+    ) {
+        uiViewController.stopObservingInteractivePop()
+    }
 }
 
 private final class SearchInteractivePopObserverController: UIViewController {
     private weak var observedGesture: UIGestureRecognizer?
+    var onPopBegan: (() -> Void)?
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
@@ -353,12 +475,17 @@ private final class SearchInteractivePopObserverController: UIViewController {
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        stopObservingInteractivePop()
+    }
+
+    func stopObservingInteractivePop() {
         observedGesture?.removeTarget(self, action: #selector(interactivePopChanged(_:)))
         observedGesture = nil
     }
 
     @objc private func interactivePopChanged(_ gesture: UIGestureRecognizer) {
         guard gesture.state == .began else { return }
+        onPopBegan?()
         view.window?.endEditing(true)
     }
 }

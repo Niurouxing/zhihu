@@ -110,7 +110,6 @@ struct NativeSettingsView: View {
             }
 
             Section {
-                Toggle("再次点击当前标签回到顶部或刷新", isOn: topLevelReselectBinding)
                 Toggle("触觉反馈", isOn: hapticsEnabledBinding)
                 Picker("反馈力度", selection: hapticStrengthBinding) {
                     ForEach(NativeHapticStrength.allCases) { strength in
@@ -131,15 +130,7 @@ struct NativeSettingsView: View {
             } header: {
                 Text("交互")
             } footer: {
-                Text("再次点击当前标签时：列表不在顶部则先回到顶部；已经在顶部或连续再次点击则刷新。")
-            }
-
-            Section("App 布局") {
-                Picker("启动时打开", selection: startTabBinding) {
-                    ForEach(NativeAppTab.fixedBottomBarTabs) { tab in
-                        Text(tab.title).tag(tab)
-                    }
-                }
+                Text("首页采用单一内容层级；搜索从列表顶部下拉显示，继续下拉可刷新当前频道。")
             }
 
             Section("通知") {
@@ -209,10 +200,6 @@ struct NativeSettingsView: View {
         Binding(get: { preferences.themeMode }, set: preferences.setThemeMode)
     }
 
-    private var startTabBinding: Binding<NativeAppTab> {
-        Binding(get: { preferences.startTab }, set: preferences.setStartTab)
-    }
-
     private var fontSizeBinding: Binding<Double> {
         Binding(
             get: { Double(preferences.contentFontSizePercent) },
@@ -266,10 +253,6 @@ struct NativeSettingsView: View {
 
     private var searchHistoryBinding: Binding<Bool> {
         Binding(get: { preferences.showsSearchHistory }, set: preferences.setShowsSearchHistory)
-    }
-
-    private var topLevelReselectBinding: Binding<Bool> {
-        Binding(get: { preferences.topLevelReselectEnabled }, set: preferences.setTopLevelReselectEnabled)
     }
 
     private var hapticsEnabledBinding: Binding<Bool> {

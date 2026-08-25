@@ -7,11 +7,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
     @Binding var selection: Channel.ID
     let isEnabled: Bool
 
-    private let title: (Channel) -> String
-    private let systemImage: (Channel) -> String
-    private let status: (Channel) -> String?
     private let content: (Channel) -> ChannelContent
-    private let collapseProgress: CGFloat
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
@@ -23,40 +19,27 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
         channels: [Channel],
         selection: Binding<Channel.ID>,
         isEnabled: Bool = true,
-        title: @escaping (Channel) -> String,
-        systemImage: @escaping (Channel) -> String,
-        status: @escaping (Channel) -> String? = { _ in nil },
-        collapseProgress: CGFloat = 0,
         @ViewBuilder content: @escaping (Channel) -> ChannelContent
     ) {
         self.channels = channels
         _selection = selection
         self.isEnabled = isEnabled
-        self.title = title
-        self.systemImage = systemImage
-        self.status = status
-        self.collapseProgress = collapseProgress
         self.content = content
     }
 
     var body: some View {
         GeometryReader { geometry in
-            ZStack(alignment: .top) {
-                channelContent(containerWidth: geometry.size.width)
-                    .contentShape(Rectangle())
-                    .background {
-                        NativeHorizontalChannelSwipeObserver(
-                            containerWidth: geometry.size.width,
-                            excludedFrames: swipeExclusionFrames,
-                            onChanged: updateChannelSwipe,
-                            onCancelled: cancelChannelSwipe,
-                            onEnded: commitChannelSwipe
-                        )
-                    }
-
-                expandedHeader
-                    .zIndex(2)
-            }
+            channelContent(containerWidth: geometry.size.width)
+                .contentShape(Rectangle())
+                .background {
+                    NativeHorizontalChannelSwipeObserver(
+                        containerWidth: geometry.size.width,
+                        excludedFrames: swipeExclusionFrames,
+                        onChanged: updateChannelSwipe,
+                        onCancelled: cancelChannelSwipe,
+                        onEnded: commitChannelSwipe
+                    )
+                }
             .coordinateSpace(name: swipeCoordinateSpace)
             .environment(
                 \.nativeChannelSwipeCoordinateSpace,
@@ -70,72 +53,6 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
             if shouldReduceMotion { dragTranslation = 0 }
         }
         .onDisappear { dragTranslation = 0 }
-    }
-
-    private var expandedHeader: some View {
-        VStack(spacing: 0) {
-            expandedTitle
-
-            NativeChannelSelector(
-                channels: channels,
-                selection: $selection,
-                title: title,
-                systemImage: systemImage,
-                collapseProgress: normalizedCollapseProgress,
-                expandedHeight: NativeHomeHeaderLayoutPolicy.channelSelectorHeight
-            )
-        }
-        .background(Color(uiColor: .systemBackground))
-        .frame(
-            height: NativeHomeHeaderLayoutPolicy.expandedHeaderHeight,
-            alignment: .top
-        )
-        .clipped()
-        .allowsHitTesting(isEnabled && normalizedCollapseProgress < 1)
-        .environment(\.nativeChannelIsActive, isEnabled)
-        .accessibilityHidden(normalizedCollapseProgress >= 1)
-    }
-
-    @ViewBuilder
-    private var expandedTitle: some View {
-        if let selectedChannel = channels.first(where: { $0.id == selection }) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("首页")
-                    .font(.title.bold())
-                    .foregroundStyle(.primary)
-
-                if let status = status(selectedChannel) {
-                    Text(status)
-                        .font(.callout.weight(.medium))
-                        .foregroundStyle(Color.secondary.opacity(0.9))
-                        .accessibilityIdentifier("home_channel_refresh_status")
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, NativeHomeHeaderLayoutPolicy.horizontalContentInset)
-            .frame(
-                height: NativeHomeHeaderLayoutPolicy.expandedTitleHeight
-                    * (1 - normalizedCollapseProgress),
-                alignment: .bottom
-            )
-            .opacity(
-                NativeRootHeaderVisibility.expandedOpacity(
-                    collapseProgress: normalizedCollapseProgress
-                )
-            )
-            .clipped()
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(.isHeader)
-            .accessibilityHidden(
-                NativeRootHeaderVisibility.usesCompactSemantics(
-                    collapseProgress: normalizedCollapseProgress
-                )
-            )
-        }
-    }
-
-    private var normalizedCollapseProgress: CGFloat {
-        min(max(collapseProgress, 0), 1)
     }
 
     private func channelContent(containerWidth: CGFloat) -> some View {
@@ -477,126 +394,6 @@ enum NativeChannelSelectorScrollAlignment: Equatable {
             return .trailing
         }
         return .center
-    }
-}
-
-private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
-    let channels: [Channel]
-    @Binding var selection: Channel.ID
-    let title: (Channel) -> String
-    let systemImage: (Channel) -> String
-    let collapseProgress: CGFloat
-    let expandedHeight: CGFloat
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.nativeHapticFeedback) private var hapticFeedback
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                channelButtons
-                    .padding(.vertical, 8)
-            }
-            .nativeChannelSwipeExclusion()
-            .onAppear {
-                scrollToSelection(using: proxy, animated: false)
-            }
-            .onChange(of: selection) { _ in
-                scrollToSelection(using: proxy, animated: !reduceMotion)
-            }
-        }
-        .frame(height: expandedHeight * (1 - collapseProgress))
-        .opacity(1 - collapseProgress)
-        .offset(y: -6 * collapseProgress)
-        .clipped()
-        .accessibilityHidden(collapseProgress >= 0.6)
-        .accessibilityIdentifier("home_channel_selector")
-    }
-
-    private var channelIDs: [Channel.ID] {
-        channels.map(\.id)
-    }
-
-    private var channelButtons: some View {
-        HStack(spacing: 8) {
-            ForEach(Array(channels.enumerated()), id: \.element.id) { index, channel in
-                let isSelected = channel.id == selection
-                Button {
-                    guard !isSelected else { return }
-                    if reduceMotion {
-                        selection = channel.id
-                    } else {
-                        withAnimation(NativeChannelSwitcherTuning.selectorAnimation) {
-                            selection = channel.id
-                        }
-                    }
-                    hapticFeedback(.selection)
-                } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: systemImage(channel))
-                            .imageScale(.medium)
-
-                        if isSelected {
-                            Text(title(channel))
-                                .font(.subheadline.weight(.semibold))
-                        }
-                    }
-                }
-                .buttonStyle(NativeChannelPillButtonStyle(isSelected: isSelected))
-                .padding(
-                    .leading,
-                    index == channels.startIndex
-                        ? NativeHomeHeaderLayoutPolicy.horizontalContentInset
-                        : 0
-                )
-                .padding(
-                    .trailing,
-                    index == channels.index(before: channels.endIndex)
-                        ? NativeHomeHeaderLayoutPolicy.horizontalContentInset
-                        : 0
-                )
-                .id(channel.id)
-                .accessibilityLabel(title(channel))
-                .accessibilityValue(isSelected ? "已选择" : "")
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-                .accessibilityIdentifier("home_channel_\(String(describing: channel.id))")
-            }
-        }
-    }
-
-    private func scrollToSelection(using proxy: ScrollViewProxy, animated: Bool) {
-        let anchor = NativeChannelSelectorScrollAlignment.alignment(
-            for: selection,
-            in: channelIDs
-        ).anchor
-        DispatchQueue.main.async {
-            if animated {
-                withAnimation(NativeChannelSwitcherTuning.selectorAnimation) {
-                    proxy.scrollTo(selection, anchor: anchor)
-                }
-            } else {
-                proxy.scrollTo(selection, anchor: anchor)
-            }
-        }
-    }
-}
-
-private struct NativeChannelPillButtonStyle: ButtonStyle {
-    let isSelected: Bool
-
-    @ViewBuilder
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(isSelected ? Color(uiColor: .systemBackground) : Color.primary)
-            .padding(.horizontal, isSelected ? 16 : 0)
-            .frame(minWidth: isSelected ? 124 : 78, minHeight: 44)
-            .background(
-                isSelected ? Color.primary.opacity(0.9) : Color.secondary.opacity(0.1),
-                in: Capsule()
-            )
-            .contentShape(Capsule())
-            .scaleEffect(configuration.isPressed ? 0.96 : 1)
-            .opacity(configuration.isPressed ? 0.82 : 1)
     }
 }
 

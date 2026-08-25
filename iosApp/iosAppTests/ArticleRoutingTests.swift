@@ -59,7 +59,7 @@ final class ArticleRoutingTests: XCTestCase {
         ))
     }
 
-    func testPushedMemberSearchRequestsFocusWithoutChangingOtherSearchRoutes() {
+    func testPushedEmptySearchRequestsFocusWithoutChangingSubmittedRoutes() {
         let memberSearch = SearchRouteDTO(
             restrictedMemberHashID: "member-hash",
             restrictedMemberName: "作者"
@@ -75,7 +75,7 @@ final class ArticleRoutingTests: XCTestCase {
         )
         XCTAssertEqual(
             NativeSearchFocusRequestPolicy.pushedRouteRequest(SearchRouteDTO()),
-            .inactive
+            NativeSearchFocusRequest(token: 1, isActive: true)
         )
     }
 

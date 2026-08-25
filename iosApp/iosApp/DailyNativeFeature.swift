@@ -378,41 +378,46 @@ struct DailyNativeView: View {
     @ObservedObject private var store: DailyNativeStore
     @Environment(\.nativeChannelIsActive) private var isActiveChannel
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
-    @Binding private var collapseProgress: CGFloat
     @State private var navigationTask: Task<Void, Never>?
     @State private var supplementalLoadTask: Task<Void, Never>?
     @State private var resolutionFailure: DailyStoryResolutionFailure?
+    @State private var observedScrollToTopRequest: UInt
+    @State private var lastHiddenSearchEntryTarget: NativeHomeContentScrollTarget?
     let scrollToTopRequest: UInt
+    private let onOpenSearch: (() -> Void)?
     let onOpen: (DailyStoryDestination) -> Void
 
     init(
         store: DailyNativeStore,
-        collapseProgress: Binding<CGFloat> = .constant(0),
         scrollToTopRequest: UInt,
+        onOpenSearch: (() -> Void)? = nil,
         onOpen: @escaping (DailyStoryDestination) -> Void
     ) {
         _store = ObservedObject(wrappedValue: store)
-        _collapseProgress = collapseProgress
+        _observedScrollToTopRequest = State(initialValue: scrollToTopRequest)
         self.scrollToTopRequest = scrollToTopRequest
+        self.onOpenSearch = onOpenSearch
         self.onOpen = onOpen
     }
 
     var body: some View {
         ScrollViewReader { proxy in
             List {
-                NativeRootLargeTitle(
-                    "首页",
-                    coordinateSpaceName: "daily-root-scroll",
-                    displaysTitle: false,
-                    isActive: isActiveChannel,
-                    isRefreshing: store.isRefreshing,
-                    collapseProgress: $collapseProgress
-                )
+                Color.clear
+                    .frame(height: 0)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .accessibilityHidden(true)
                     .id(NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .daily))
+
+                if let onOpenSearch {
+                    NativeHomeGlobalSearchEntry(action: onOpenSearch)
+                }
 
                 if store.sections.isEmpty, store.isLoading {
                     HStack { Spacer(); ProgressView("正在加载日报"); Spacer() }
                         .listRowSeparator(.hidden)
+                        .id(NativeHomeContentScrollTarget.dailyStatus)
                 }
                 ForEach(store.sections) { section in
                     Section(formatted(section.date)) {
@@ -449,6 +454,7 @@ struct DailyNativeView: View {
                                 }
                             }
                             .buttonStyle(.plain)
+                            .id(NativeHomeContentScrollTarget.daily(story.id))
                             .listRowInsets(EdgeInsets(top: 6, leading: 18, bottom: 6, trailing: 18))
                         }
                     }
@@ -458,6 +464,7 @@ struct DailyNativeView: View {
                         supplementalLoadTask?.cancel()
                         supplementalLoadTask = Task { await store.loadLatest() }
                     }
+                    .id(NativeHomeContentScrollTarget.dailyStatus)
                 } else if !store.sections.isEmpty {
                     let taskID = NativeChannelTaskIdentity(
                         isActive: isActiveChannel,
@@ -465,6 +472,7 @@ struct DailyNativeView: View {
                     )
                     HStack { Spacer(); ProgressView(); Spacer() }
                         .listRowSeparator(.hidden)
+                        .id(NativeHomeContentScrollTarget.dailyStatus)
                         .task(id: taskID) {
                             guard taskID.isActive,
                                   taskID.value == store.nextPageLoadID
@@ -472,17 +480,13 @@ struct DailyNativeView: View {
                             await store.loadMore()
                         }
                 } else if !store.isLoading {
-                    Text("暂无日报内容").foregroundStyle(.secondary)
+                    Text("暂无日报内容")
+                        .foregroundStyle(.secondary)
+                        .id(NativeHomeContentScrollTarget.dailyStatus)
                 }
             }
             .listStyle(.plain)
             .nativeHomeFeedListLayout()
-            .coordinateSpace(name: "daily-root-scroll")
-            .nativeHomeFeedScrollTracking(
-                collapseProgress: $collapseProgress,
-                isActive: isActiveChannel
-            )
-            .navigationTitle("")
             .refreshable {
                 guard isActiveChannel else { return }
                 let previousSuccessfulRefresh = store.refreshMetadata.lastSuccessfulRefreshAt
@@ -496,9 +500,20 @@ struct DailyNativeView: View {
                 }
             }
             .onAppear {
-                if scrollToTopRequest > 0 { scrollToTop(proxy, animated: false) }
+                observedScrollToTopRequest = scrollToTopRequest
+                hideInitialSearchEntryIfNeeded(proxy)
             }
-            .onChange(of: scrollToTopRequest) { _ in scrollToTop(proxy, animated: true) }
+            .onChange(of: scrollToTopRequest) { newRequest in
+                let shouldScroll = NativeScrollToTopRequestPolicy.shouldHandleChange(
+                    previousRequest: observedScrollToTopRequest,
+                    newRequest: newRequest
+                )
+                observedScrollToTopRequest = newRequest
+                if shouldScroll { scrollToTop(proxy, animated: true) }
+            }
+            .onChange(of: firstContentScrollTarget) { _ in
+                hideInitialSearchEntryIfNeeded(proxy)
+            }
             .task(id: isActiveChannel) {
                 guard isActiveChannel else { return }
                 await store.loadInitialIfNeeded()
@@ -507,6 +522,8 @@ struct DailyNativeView: View {
                 if !isActive {
                     navigationTask?.cancel()
                     supplementalLoadTask?.cancel()
+                } else {
+                    hideInitialSearchEntryIfNeeded(proxy)
                 }
             }
             .onDisappear {
@@ -540,15 +557,29 @@ struct DailyNativeView: View {
         return "\(date.prefix(4)) 年 \(date.dropFirst(4).prefix(2)) 月 \(date.suffix(2)) 日"
     }
 
+    private var firstContentScrollTarget: NativeHomeContentScrollTarget? {
+        store.sections
+            .lazy
+            .compactMap(\.stories.first)
+            .first
+            .map { .daily($0.id) } ?? .dailyStatus
+    }
+
     private func scrollToTop(_ proxy: ScrollViewProxy, animated: Bool) {
         DispatchQueue.main.async {
             if animated {
                 withAnimation {
-                    proxy.scrollTo(
-                        NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .daily),
-                        anchor: .top
-                    )
+                    if let firstContentScrollTarget {
+                        proxy.scrollTo(firstContentScrollTarget, anchor: .top)
+                    } else {
+                        proxy.scrollTo(
+                            NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .daily),
+                            anchor: .top
+                        )
+                    }
                 }
+            } else if let firstContentScrollTarget {
+                proxy.scrollTo(firstContentScrollTarget, anchor: .top)
             } else {
                 proxy.scrollTo(
                     NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .daily),
@@ -556,6 +587,15 @@ struct DailyNativeView: View {
                 )
             }
         }
+    }
+
+    private func hideInitialSearchEntryIfNeeded(_ proxy: ScrollViewProxy) {
+        NativeHomeSearchEntryScrollController.hideIfNeeded(
+            in: proxy,
+            target: firstContentScrollTarget,
+            isActive: isActiveChannel,
+            lastHiddenTarget: $lastHiddenSearchEntryTarget
+        )
     }
 }
 

@@ -316,41 +316,18 @@ struct NativeAccountView: View {
     let actions: NativeAccountActions
 
     @State private var confirmsSignOut = false
-    @State private var titleCollapseProgress: CGFloat = 0
 
     var body: some View {
         List {
-            NativeRootLargeTitle(
-                "账号",
-                coordinateSpaceName: "account-root-scroll",
-                collapseProgress: $titleCollapseProgress
-            )
             accountSection
+            failureSection
+            destinationsSection
             accountManagementSection
-            if let identity = store.identity {
-                librarySection(identity: identity)
-            }
-            settingsSection
             aboutSection
         }
         .listStyle(.insetGrouped)
-        .coordinateSpace(name: "account-root-scroll")
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if NativeRootCompactTitle.shouldRender(collapseProgress: titleCollapseProgress) {
-                if #available(iOS 26.0, *) {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        NativeRootCompactTitle("账号", collapseProgress: titleCollapseProgress)
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                } else {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        NativeRootCompactTitle("账号", collapseProgress: titleCollapseProgress)
-                    }
-                }
-            }
-        }
+        .navigationTitle("我的")
+        .navigationBarTitleDisplayMode(.large)
         .refreshable {
             if store.isSignedIn { await store.refresh() }
         }
@@ -360,6 +337,7 @@ struct NativeAccountView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             store.reloadFromKeychain()
         }
+        .accessibilityIdentifier("native_account_center")
         .alert("退出登录", isPresented: $confirmsSignOut) {
             Button("取消", role: .cancel) {}
             Button("退出", role: .destructive, action: store.signOut)
@@ -369,52 +347,120 @@ struct NativeAccountView: View {
     }
 
     @ViewBuilder
+    private var accountSection: some View {
+        Section {
+            switch store.state {
+            case .loading:
+                NativeAccountHeroCard(identity: nil, isLoading: true, isRefreshing: false) {}
+            case let .signedIn(identity), let .failed(_, identity?):
+                NativeAccountHeroCard(identity: identity, isLoading: false, isRefreshing: store.isRefreshing) {
+                    actions.openProfile(identity)
+                }
+            case .signedOut, .failed(_, nil):
+                NativeAccountHeroCard(identity: nil, isLoading: false, isRefreshing: false) {
+                    actions.openLogin()
+                }
+            }
+        }
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
+
+    @ViewBuilder
+    private var failureSection: some View {
+        if case let .failed(message, _) = store.state {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("重新读取", action: store.reloadFromKeychain)
+                        .font(.footnote.weight(.semibold))
+                }
+            }
+        }
+    }
+
+    private var destinationsSection: some View {
+        Section("内容与工具") {
+            if let identity = store.identity {
+                if let token = identity.collectionToken {
+                    NativeAccountDestinationRow(
+                        title: "收藏夹",
+                        subtitle: "保存的回答与文章",
+                        systemImage: "bookmark.fill",
+                        tint: .blue,
+                        route: .collections(userToken: token)
+                    )
+                }
+
+                NativeAccountDestinationRow(
+                    title: "浏览历史",
+                    subtitle: "找回最近看过的内容",
+                    systemImage: "clock.arrow.circlepath",
+                    tint: .orange,
+                    route: .history
+                )
+
+                NativeAccountDestinationRow(
+                    title: "通知",
+                    subtitle: "互动与账号消息",
+                    systemImage: "bell.fill",
+                    tint: .purple,
+                    route: .notifications
+                )
+            }
+
+            NativeAccountDestinationRow(
+                title: "设置",
+                subtitle: "外观、阅读与账号偏好",
+                systemImage: "gearshape.fill",
+                tint: .gray,
+                route: .settings
+            )
+        }
+    }
+
+    @ViewBuilder
     private var accountManagementSection: some View {
         if store.isSignedIn || !store.accounts.isEmpty {
             Section {
-                ForEach(store.accounts) { account in
+                ForEach(managedAccounts) { account in
                     Button {
                         store.switchAccount(to: account.id)
                     } label: {
                         HStack(spacing: 12) {
                             NativeSavedAccountAvatar(account: account, diameter: 40)
+
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(account.name)
                                     .foregroundStyle(.primary)
-                                if let token = account.urlToken, !token.isEmpty {
-                                    Text("@\(token)")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                } else {
-                                    Text("已验证账号")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
+                                Text(accountSubtitle(account))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
+
                             Spacer()
-                            if store.currentAccountID == account.id {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(.tint)
-                                    .accessibilityLabel("当前账号")
-                            } else if store.switchingToAccountID == account.id {
+
+                            if store.switchingToAccountID == account.id {
                                 ProgressView()
+                            } else {
+                                Image(systemName: "arrow.left.arrow.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
                             }
                         }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(
-                        store.currentAccountID == account.id ||
-                        store.switchingToAccountID != nil ||
-                        store.deletingAccountID != nil
-                    )
+                    .disabled(store.switchingToAccountID != nil || store.deletingAccountID != nil)
+                    .accessibilityLabel("切换到账号\(account.name)")
                     .swipeActions {
-                        if store.currentAccountID != account.id {
-                            Button(role: .destructive) {
-                                store.deleteAccount(account.id)
-                            } label: {
-                                Label("删除", systemImage: "trash")
-                            }
+                        Button(role: .destructive) {
+                            store.deleteAccount(account.id)
+                        } label: {
+                            Label("删除", systemImage: "trash")
                         }
                     }
                 }
@@ -423,84 +469,35 @@ struct NativeAccountView: View {
                     Label("添加账号", systemImage: "person.crop.circle.badge.plus")
                 }
                 .disabled(store.switchingToAccountID != nil || store.deletingAccountID != nil)
-            } header: {
-                Text("账号管理")
-            } footer: {
-                Text("账号登录状态仅保存在本机 Keychain 中。")
-            }
-        }
-    }
 
-    @ViewBuilder
-    private var accountSection: some View {
-        Section {
-            if let identity = store.identity {
-                Button {
-                    actions.openProfile(identity)
-                } label: {
-                    HStack(spacing: 14) {
-                        NativeAccountAvatar(identity: identity, diameter: 58)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(identity.name).font(.headline).foregroundStyle(.primary)
-                            Text("查看个人主页").font(.subheadline).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                if store.isSignedIn {
+                    Button(action: actions.openQrAuthorization) {
+                        Label("扫码授权网页账号", systemImage: "qrcode.viewfinder")
                     }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
 
-                Button {
-                    actions.openQrAuthorization()
-                } label: {
-                    Label("扫描二维码授权登录", systemImage: "qrcode.viewfinder")
+                    Button(role: .destructive) {
+                        confirmsSignOut = true
+                    } label: {
+                        Label("退出登录", systemImage: "rectangle.portrait.and.arrow.right")
+                    }
+                    .disabled(store.isSigningOut)
                 }
-
-                Button(role: .destructive) {
-                    confirmsSignOut = true
-                } label: {
-                    Label("退出登录", systemImage: "rectangle.portrait.and.arrow.right")
-                }
-                .disabled(store.isSigningOut)
-            } else {
-                Button(action: actions.openLogin) {
-                    Label("登录知乎", systemImage: "person.crop.circle.badge.plus")
-                }
-            }
-
-            if case let .failed(message, _) = store.state {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(message).font(.footnote).foregroundStyle(.secondary)
-                    Button("重新读取", action: store.reloadFromKeychain)
-                        .font(.footnote.weight(.semibold))
-                }
+            } header: {
+                Text("账号与安全")
+            } footer: {
+                Text("账号登录状态仅保存在本机 Keychain 中；切换账号不会覆盖其他已保存账号。")
             }
         }
     }
 
-    private func librarySection(identity: NativeAccountIdentity) -> some View {
-        Section("我的内容") {
-            if let token = identity.collectionToken {
-                NavigationLink(value: NativeShellRoute.collections(userToken: token)) {
-                    Label("收藏夹", systemImage: "bookmark")
-                }
-            }
-            NavigationLink(value: NativeShellRoute.history) {
-                Label("浏览历史", systemImage: "clock.arrow.circlepath")
-            }
-            NavigationLink(value: NativeShellRoute.notifications) {
-                Label("通知", systemImage: "bell")
-            }
-        }
+    private var managedAccounts: [NativeSavedAccountSummary] {
+        guard store.isSignedIn else { return store.accounts }
+        return store.accounts.filter { $0.id != store.currentAccountID }
     }
 
-    private var settingsSection: some View {
-        Section {
-            NavigationLink(value: NativeShellRoute.settings) {
-                Label("设置", systemImage: "gearshape")
-            }
-        }
+    private func accountSubtitle(_ account: NativeSavedAccountSummary) -> String {
+        guard let token = account.urlToken, !token.isEmpty else { return "已验证账号" }
+        return "@\(token)"
     }
 
     private var aboutSection: some View {
@@ -513,6 +510,126 @@ struct NativeAccountView: View {
             Text("关于")
         } footer: {
             Text("本软件仅供学习交流使用，应用内内容由知乎网站提供。")
+        }
+    }
+}
+
+@available(iOS 16.0, *)
+private struct NativeAccountHeroCard: View {
+    let identity: NativeAccountIdentity?
+    let isLoading: Bool
+    let isRefreshing: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 16) {
+                avatar
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(title)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                Spacer(minLength: 8)
+
+                if isRefreshing {
+                    ProgressView()
+                } else if !isLoading {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, minHeight: 104, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemGroupedBackground))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(Color.primary.opacity(0.06), lineWidth: 0.5)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(isLoading)
+        .accessibilityIdentifier("native_account_profile_card")
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint(identity == nil ? "打开知乎登录" : "查看个人主页")
+    }
+
+    @ViewBuilder
+    private var avatar: some View {
+        if isLoading {
+            ProgressView()
+                .frame(width: 64, height: 64)
+                .background(Color.secondary.opacity(0.1), in: Circle())
+        } else if let identity {
+            NativeAccountAvatar(identity: identity, diameter: 64)
+        } else {
+            Image(systemName: "person.crop.circle.badge.plus")
+                .font(.system(size: 36, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.blue)
+                .frame(width: 64, height: 64)
+                .background(Color.blue.opacity(0.1), in: Circle())
+        }
+    }
+
+    private var title: String {
+        if isLoading { return "正在读取账号" }
+        return identity?.name ?? "登录知乎"
+    }
+
+    private var subtitle: String {
+        if isLoading { return "请稍候" }
+        guard let identity else { return "登录后查看收藏、历史与通知" }
+        guard let token = identity.urlToken, !token.isEmpty else { return "查看个人主页" }
+        return "@\(token)"
+    }
+
+    private var accessibilityLabel: String {
+        if isLoading { return "正在读取账号" }
+        return identity.map { "\($0.name)，查看个人主页" } ?? "登录知乎"
+    }
+}
+
+@available(iOS 16.0, *)
+private struct NativeAccountDestinationRow: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let tint: Color
+    let route: NativeShellRoute
+
+    var body: some View {
+        NavigationLink(value: route) {
+            HStack(spacing: 14) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 17, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(tint)
+                    .frame(width: 38, height: 38)
+                    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.vertical, 3)
         }
     }
 }

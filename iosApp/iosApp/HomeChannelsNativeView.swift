@@ -43,7 +43,6 @@ struct HomeChannelsNativeView: View {
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
     @State private var lastSelectedChannelID: HomeChannel.ID
     @State private var scrollToTopRequests: [HomeChannel: UInt] = [:]
-    @State private var collapseProgressByChannel: [HomeChannel: CGFloat] = [:]
     @State private var idleRefreshTask: Task<Void, Never>?
     @State private var doubleTapRefreshTask: Task<Void, Never>?
     @State private var doubleTapRefreshGeneration: UInt = 0
@@ -53,9 +52,12 @@ struct HomeChannelsNativeView: View {
     let isOperationallyVisible: Bool
     let doubleTapRefreshRequest: UInt
     let notificationUnreadCount: Int
+    let accountAvatarURL: URL?
     let onOpenFeed: (FeedItemRoute) -> Void
     let onOpenPerson: (PersonRoutePayload) -> Void
     let onOpenDaily: (DailyStoryDestination) -> Void
+    let onOpenAccount: () -> Void
+    let onOpenSearch: () -> Void
     let onOpenCreation: () -> Void
     let onOpenNotifications: () -> Void
 
@@ -68,9 +70,12 @@ struct HomeChannelsNativeView: View {
         doubleTapRefreshRequest: UInt,
         isOperationallyVisible: Bool,
         notificationUnreadCount: Int,
+        accountAvatarURL: URL?,
         onOpenFeed: @escaping (FeedItemRoute) -> Void,
         onOpenPerson: @escaping (PersonRoutePayload) -> Void,
         onOpenDaily: @escaping (DailyStoryDestination) -> Void,
+        onOpenAccount: @escaping () -> Void,
+        onOpenSearch: @escaping () -> Void,
         onOpenCreation: @escaping () -> Void,
         onOpenNotifications: @escaping () -> Void
     ) {
@@ -83,9 +88,12 @@ struct HomeChannelsNativeView: View {
         self.doubleTapRefreshRequest = doubleTapRefreshRequest
         self.isOperationallyVisible = isOperationallyVisible
         self.notificationUnreadCount = notificationUnreadCount
+        self.accountAvatarURL = accountAvatarURL
         self.onOpenFeed = onOpenFeed
         self.onOpenPerson = onOpenPerson
         self.onOpenDaily = onOpenDaily
+        self.onOpenAccount = onOpenAccount
+        self.onOpenSearch = onOpenSearch
         self.onOpenCreation = onOpenCreation
         self.onOpenNotifications = onOpenNotifications
     }
@@ -95,29 +103,49 @@ struct HomeChannelsNativeView: View {
         NativeChannelSwitcher(
             channels: HomeChannel.allCases,
             selection: $selectedChannelID,
-            isEnabled: isOperationallyVisible,
-            title: \.title,
-            systemImage: \.systemImage,
-            status: {
-                refreshPresentations.presentation(for: $0).statusText(
-                    now: refreshStatusNow
-                )
-            },
-            collapseProgress: selectedCollapseProgress
+            isEnabled: isOperationallyVisible
         ) { channel in
             channelContent(channel)
         }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if isOperationallyVisible {
-                homeTopBar(
-                    now: refreshStatusNow,
-                    refreshPresentations: refreshPresentations
-                )
+        .navigationTitle(selectedChannel.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarTitleMenu {
+            ForEach(HomeChannel.allCases) { channel in
+                Button {
+                    selectChannel(channel)
+                } label: {
+                    Label(
+                        channel.title,
+                        systemImage: channel == selectedChannel
+                            ? "checkmark"
+                            : channel.systemImage
+                    )
+                }
+                .disabled(channel == selectedChannel)
+            }
+
+            Divider()
+
+            Text(
+                refreshPresentations
+                    .presentation(for: selectedChannel)
+                    .statusText(now: refreshStatusNow)
+            )
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button(action: onOpenAccount) {
+                    accountToolbarLabel
+                }
+                .accessibilityLabel("账号")
+                .accessibilityIdentifier("home_account_entry")
+            }
+
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                homeToolbarButton(.creation)
+                homeToolbarButton(.notifications)
             }
         }
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar(isOperationallyVisible ? .hidden : .visible, for: .navigationBar)
         .onAppear {
             lastSelectedChannelID = selectedChannelID
             synchronizeOperationalVisibility()
@@ -154,81 +182,66 @@ struct HomeChannelsNativeView: View {
         .accessibilityIdentifier("home_channels_native")
     }
 
+    private var accountToolbarLabel: some View {
+        AsyncImage(url: accountAvatarURL) { phase in
+            if case let .success(image) = phase {
+                image
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "person.crop.circle")
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 28, height: 28)
+        .clipShape(Circle())
+        .contentShape(Circle())
+    }
+
     @ViewBuilder
     private func channelContent(_ channel: HomeChannel) -> some View {
         switch channel {
         case .recommendation:
             HomeNativeView(
                 store: recommendationStore,
-                collapseProgress: collapseProgressBinding(for: channel),
                 scrollToTopRequest: scrollRequest(for: channel),
+                onOpenSearch: onOpenSearch,
                 onOpen: onOpenFeed
             )
         case .following:
             FollowNativeView(
                 store: followingStore,
-                collapseProgress: collapseProgressBinding(for: channel),
                 scrollToTopRequest: scrollRequest(for: channel),
+                onOpenSearch: onOpenSearch,
                 onOpen: onOpenFeed,
                 onOpenPerson: onOpenPerson
             )
         case .hot:
             HotListNativeView(
                 store: hotStore,
-                collapseProgress: collapseProgressBinding(for: channel),
                 scrollToTopRequest: scrollRequest(for: channel),
+                onOpenSearch: onOpenSearch,
                 onOpen: onOpenFeed
             )
         case .daily:
             DailyNativeView(
                 store: dailyStore,
-                collapseProgress: collapseProgressBinding(for: channel),
                 scrollToTopRequest: scrollRequest(for: channel),
+                onOpenSearch: onOpenSearch,
                 onOpen: onOpenDaily
             )
         }
     }
 
-    private func homeTopBar(
-        now: Date,
-        refreshPresentations: HomeChannelRefreshPresentationMap
-    ) -> some View {
-        ZStack {
-            NativeRootCompactTitle(
-                selectedChannel.title,
-                subtitle: refreshPresentations
-                    .presentation(for: selectedChannel)
-                    .statusText(now: now),
-                collapseProgress: compactHeaderProgress
-            )
-
-            HStack(spacing: 10) {
-                Spacer(minLength: 0)
-                ForEach(HomeTopBarControl.visibleControls) { control in
-                    homeTopBarButton(control)
-                }
-            }
-            .padding(.horizontal, 14)
-        }
-        .frame(height: 52)
-        .background(Color(uiColor: .systemBackground))
-        .zIndex(10)
-        .accessibilityIdentifier("home_top_bar")
-#if DEBUG
-        .accessibilityValue("collapse_progress_\(Int(selectedCollapseProgress * 100))")
-#endif
-    }
-
     @ViewBuilder
-    private func homeTopBarButton(_ control: HomeTopBarControl) -> some View {
+    private func homeToolbarButton(_ control: HomeTopBarControl) -> some View {
         switch control {
         case .creation:
             Button(action: onOpenCreation) {
                 Image(systemName: "square.and.pencil")
-                    .frame(width: 44, height: 44)
-                    .contentShape(Circle())
             }
-            .background(Color.secondary.opacity(0.1), in: Circle())
             .accessibilityLabel("创作")
             .accessibilityIdentifier("home_creation_entry")
 
@@ -238,43 +251,31 @@ struct HomeChannelsNativeView: View {
             )
             Button(action: onOpenNotifications) {
                 Image(systemName: "bell")
-                    .frame(width: 44, height: 44)
-                    .contentShape(Circle())
                     .overlay(alignment: .topTrailing) {
                         if presentation.showsDot {
                             Circle()
                                 .fill(.red)
-                                .frame(width: 9, height: 9)
-                                .overlay(Circle().stroke(Color(uiColor: .systemBackground), lineWidth: 2))
-                                .offset(x: -5, y: 5)
+                                .frame(width: 7, height: 7)
+                                .overlay(Circle().stroke(Color(uiColor: .systemBackground), lineWidth: 1.5))
+                                .offset(x: 3, y: -2)
                                 .accessibilityHidden(true)
                         }
                     }
             }
-            .background(Color.secondary.opacity(0.1), in: Circle())
             .accessibilityLabel(presentation.accessibilityLabel)
             .accessibilityValue(presentation.accessibilityValue)
             .accessibilityIdentifier("home_notifications_entry")
         }
     }
 
+    private func selectChannel(_ channel: HomeChannel) {
+        guard selectedChannelID != channel.id else { return }
+        selectedChannelID = channel.id
+        hapticFeedback(.selection)
+    }
+
     private var selectedChannel: HomeChannel {
         HomeChannel(rawValue: selectedChannelID) ?? .recommendation
-    }
-
-    private var selectedCollapseProgress: CGFloat {
-        collapseProgressByChannel[selectedChannel, default: 0]
-    }
-
-    private var compactHeaderProgress: CGFloat {
-        min(max(selectedCollapseProgress, 0), 1)
-    }
-
-    private func collapseProgressBinding(for channel: HomeChannel) -> Binding<CGFloat> {
-        Binding(
-            get: { collapseProgressByChannel[channel, default: 0] },
-            set: { collapseProgressByChannel[channel] = min(max($0, 0), 1) }
-        )
     }
 
     private var isEffectivelyVisible: Bool {

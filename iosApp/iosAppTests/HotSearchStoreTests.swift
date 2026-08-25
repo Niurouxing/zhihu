@@ -119,6 +119,45 @@ final class HotSearchStoreTests: XCTestCase {
         XCTAssertEqual(persistence.load(), store.history)
     }
 
+    func testOpeningEmptyGlobalSearchDoesNotWriteHistory() async {
+        let persistence = SearchHistorySpy(initial: ["已有搜索"])
+        let repository = SearchRepositoryStub(
+            page: .success(FeedPageDTO(items: [], nextURL: nil, isEnd: true))
+        )
+        let store = SearchStore(
+            route: SearchRouteDTO(),
+            repository: repository,
+            historyPersistence: persistence,
+            defaults: .standard
+        )
+
+        await store.loadInitialIfNeeded()
+
+        let criteria = await repository.lastCriteria()
+        XCTAssertEqual(store.history, ["已有搜索"])
+        XCTAssertEqual(persistence.saveCount, 0)
+        XCTAssertNil(criteria)
+    }
+
+    func testDirectSearchRouteUsesExistingInterfaceWithoutWritingHistory() async {
+        let persistence = SearchHistorySpy(initial: ["已有搜索"])
+        let repository = SearchRepositoryStub(
+            page: .success(FeedPageDTO(items: [], nextURL: nil, isEnd: true))
+        )
+        let store = SearchStore(
+            route: SearchRouteDTO(query: "知乎接口"),
+            repository: repository,
+            historyPersistence: persistence,
+            defaults: .standard
+        )
+
+        await store.loadInitialIfNeeded()
+
+        let criteria = await repository.lastCriteria()
+        XCTAssertEqual(criteria?.query, "知乎接口")
+        XCTAssertEqual(persistence.saveCount, 0)
+    }
+
     func testMemberSearchNeverReadsOrWritesGlobalHistoryAndCarriesRestriction() async {
         let persistence = SearchHistorySpy(initial: ["全局历史"])
         let repository = SearchRepositoryStub(page: .success(FeedPageDTO(items: [], nextURL: nil, isEnd: true)))

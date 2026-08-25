@@ -111,7 +111,7 @@ enum NativeSearchFocusRequestPolicy {
     }
 
     static func pushedRouteRequest(_ route: SearchRouteDTO) -> NativeSearchFocusRequest {
-        guard route.isMemberRestricted, route.query.isEmpty else {
+        guard route.query.isEmpty else {
             return .inactive
         }
         return NativeSearchFocusRequest(token: 1, isActive: true)
@@ -279,16 +279,12 @@ struct NativeAppShell: View {
     @StateObject private var hotStore: HotFeedStore
     @StateObject private var dailyStore: DailyNativeStore
     @StateObject private var clipboardLinkMonitor = NativeClipboardZhihuLinkMonitor()
-    @State private var selectedTab: NativeAppTab
     @State private var selectedHomeChannelID: HomeChannel.ID
     @State private var mediaPresentation: NativeMediaPresentation?
     @State private var shareURL: URL?
     @State private var pendingShareChoiceURL: URL?
     @State private var showsCopiedLinkConfirmation = false
-    @State private var homeTabDoubleTapGate = NativeHomeTabDoubleTapGate()
     @State private var homeDoubleTapRefreshRequest: UInt = 0
-    @State private var searchRootRoute = SearchRouteDTO()
-    @State private var searchFocusRequestToken: UInt = 0
     @State private var clipboardInspectionArmed = false
 
     init(hostModel: HostModel, isAppUnlocked: Bool) {
@@ -315,23 +311,11 @@ struct NativeAppShell: View {
         _followingStore = StateObject(wrappedValue: FollowNativeStore(repository: hostModel.followRepository))
         _hotStore = StateObject(wrappedValue: HotFeedStore(repository: hostModel.hotRepository))
         _dailyStore = StateObject(wrappedValue: DailyNativeStore(repository: hostModel.dailyRepository))
-        _selectedTab = State(initialValue: hostModel.preferences.startTab)
         _selectedHomeChannelID = State(initialValue: HomeChannel.recommendation.id)
     }
 
     var body: some View {
-        tabBarBehavior(
-            appTabView
-        )
-        .background(
-            NativeTabTapObserver(
-                isEnabled: true,
-                tabs: NativeAppTab.fixedBottomBarTabs,
-                selectedTab: selectedTab,
-                onTap: handleTabTap
-            )
-            .frame(width: 0, height: 0)
-        )
+        rootNavigationStack
         .preferredColorScheme(preferences.themeMode.colorScheme)
         .sheet(item: Binding(
             get: { shareURL.map(NativeSharePresentation.init) },
@@ -377,14 +361,7 @@ struct NativeAppShell: View {
         .fullScreenCover(item: $mediaPresentation) { presentation in
             NativeMediaGallery(urls: presentation.urls, initialIndex: presentation.initialIndex)
         }
-        .onChange(of: selectedTab) { _ in
-            homeTabDoubleTapGate.cancel()
-        }
-        .onChange(of: navigation.isAtRoot(in: .home)) { isAtHomeRoot in
-            if !isAtHomeRoot { homeTabDoubleTapGate.cancel() }
-        }
         .onChange(of: isAppUnlocked) { isUnlocked in
-            if !isUnlocked { homeTabDoubleTapGate.cancel() }
             if isUnlocked, scenePhase == .active {
                 inspectClipboardAfterActivationIfNeeded()
             }
@@ -448,67 +425,8 @@ struct NativeAppShell: View {
         .environmentObject(hostModel.questionAuthorBlocklist)
     }
 
-    @ViewBuilder
-    private var appTabView: some View {
-        if #available(iOS 26.0, *) {
-            TabView(selection: tabSelection) {
-                Tab("首页", systemImage: NativeAppTab.home.systemImage, value: NativeAppTab.home) {
-                    tabNavigationStack(for: .home)
-                }
-                Tab("收藏", systemImage: NativeAppTab.collections.systemImage, value: NativeAppTab.collections) {
-                    tabNavigationStack(for: .collections)
-                }
-                Tab("账号", systemImage: NativeAppTab.account.systemImage, value: NativeAppTab.account) {
-                    tabNavigationStack(for: .account)
-                }
-                Tab(
-                    "搜索",
-                    systemImage: NativeAppTab.search.systemImage,
-                    value: NativeAppTab.search,
-                    role: .search
-                ) {
-                    tabNavigationStack(for: .search)
-                }
-            }
-        } else {
-            TabView(selection: tabSelection) {
-                ForEach(NativeAppTab.fixedBottomBarTabs) { tab in
-                    tabNavigationStack(for: tab)
-                        .tabItem { Label(tab.title, systemImage: tab.systemImage) }
-                        .tag(tab)
-                }
-            }
-        }
-    }
-
-    private var tabSelection: Binding<NativeAppTab> {
-        Binding(
-            get: { selectedTab },
-            set: { nextTab in
-                let previousTab = selectedTab
-                selectedTab = nextTab
-                if NativeSearchFocusRequestPolicy.shouldRequestForTabSelection(
-                    previous: previousTab,
-                    next: nextTab,
-                    isSearchRoot: navigation.isAtRoot(in: .search)
-                ) {
-                    requestSearchFocus()
-                }
-            }
-        )
-    }
-
-    private func tabNavigationStack(for tab: NativeAppTab) -> some View {
-        NavigationStack(path: navigation.binding(for: tab)) {
-            rootContent(for: tab)
-                .navigationDestination(for: NativeShellRoute.self) { destination($0, in: tab) }
-        }
-    }
-
-    @ViewBuilder
-    private func rootContent(for tab: NativeAppTab) -> some View {
-        switch tab {
-        case .home:
+    private var rootNavigationStack: some View {
+        NavigationStack(path: navigation.binding(for: .home)) {
             HomeChannelsNativeView(
                 selectedChannelID: $selectedHomeChannelID,
                 recommendationStore: recommendationStore,
@@ -517,48 +435,20 @@ struct NativeAppShell: View {
                 dailyStore: dailyStore,
                 doubleTapRefreshRequest: homeDoubleTapRefreshRequest,
                 isOperationallyVisible: isAppUnlocked
-                    && selectedTab == .home
                     && navigation.isAtRoot(in: .home),
                 notificationUnreadCount: notifications.unreadCount,
+                accountAvatarURL: account.identity?.avatarURL,
                 onOpenFeed: openFeed,
                 onOpenPerson: { navigate(.person($0)) },
                 onOpenDaily: { handleDailyDestination($0, in: .home) },
+                onOpenAccount: { navigate(.account) },
+                onOpenSearch: openHomeSearch,
                 onOpenCreation: { navigate(.writePin) },
                 onOpenNotifications: { navigate(.notifications) }
             )
-        case .follow, .hot, .daily:
-            EmptyView()
-        case .history:
-            if account.isSignedIn {
-                NativeHistoryView(repository: hostModel.libraryRepository, onOpenContent: openContent)
-            } else {
-                NativeSignedOutLibraryView(title: "登录后查看浏览历史", openLogin: hostModel.openLogin)
-            }
-        case .collections:
-            if let token = account.identity?.collectionToken {
-                NativeCollectionsView(
-                    userToken: token,
-                    repository: hostModel.libraryRepository,
-                    onOpenContent: openContent
-                )
-            } else {
-                NativeSignedOutLibraryView(title: "登录后查看收藏夹", openLogin: hostModel.openLogin)
-            }
-        case .account:
-            NativeAccountView(store: account, actions: accountActions)
-        case .search:
-            SearchNativeView(
-                route: searchRootRoute,
-                repository: hostModel.searchRepository,
-                focusRequest: NativeSearchFocusRequest(
-                    token: searchFocusRequestToken,
-                    isActive: isAppUnlocked
-                        && selectedTab == .search
-                        && navigation.isAtRoot(in: .search)
-                ),
-                onOpen: openFeed
-            )
-            .id(searchRootRoute)
+                .navigationDestination(for: NativeShellRoute.self) {
+                    destination($0, in: .home)
+                }
         }
     }
 
@@ -686,7 +576,6 @@ struct NativeAppShell: View {
                 SystemAndUpdateView(openExternalLink: hostModel.openSystemExternalLink)
             }
         }
-        .toolbar(.hidden, for: .tabBar)
     }
 
     private var accountActions: NativeAccountActions {
@@ -706,35 +595,7 @@ struct NativeAppShell: View {
     }
 
     private func navigate(_ route: NativeShellRoute, in tab: NativeAppTab? = nil) {
-        navigation.navigate(to: route, in: tab ?? selectedTab)
-    }
-
-    private func handleTabTap(_ event: NativeTabTapEvent) {
-        if NativeSearchFocusRequestPolicy.shouldRequestForTabReselection(
-            tab: event.tab,
-            isSearchRoot: navigation.isAtRoot(in: .search)
-        ) {
-            requestSearchFocus()
-        }
-
-        guard preferences.topLevelReselectEnabled else {
-            homeTabDoubleTapGate.cancel()
-            return
-        }
-        let shouldRefreshHome = homeTabDoubleTapGate.register(
-            event,
-            isHomeSelected: selectedTab == .home,
-            isHomeRoot: navigation.isAtRoot(in: .home),
-            isAppUnlocked: isAppUnlocked
-        )
-        guard shouldRefreshHome else { return }
-        homeDoubleTapRefreshRequest &+= 1
-    }
-
-    private func requestSearchFocus() {
-        searchFocusRequestToken = NativeSearchFocusRequestPolicy.nextToken(
-            after: searchFocusRequestToken
-        )
+        navigation.navigate(to: route, in: tab ?? .home)
     }
 
     private func inspectClipboardAfterActivationIfNeeded() {
@@ -744,7 +605,11 @@ struct NativeAppShell: View {
     }
 
     private func openFeed(_ route: FeedItemRoute) {
-        openFeed(route, in: selectedTab)
+        openFeed(route, in: .home)
+    }
+
+    private func openHomeSearch() {
+        navigate(.search(.init()))
     }
 
     private func openFeed(_ route: FeedItemRoute, in tab: NativeAppTab) {
@@ -861,27 +726,10 @@ struct NativeAppShell: View {
     private func handleSystemNavigation(_ envelope: SystemNavigationRequestEnvelope) {
         switch envelope.request {
         case let .search(query):
-            let target = NativeSearchTabNavigationTarget(query: query)
-            navigation.reset(in: target.tab)
-            searchRootRoute = target.route
-            selectedTab = target.tab
-            requestSearchFocus()
+            navigate(.search(.init(query: query ?? "")))
         case .hot:
-            switch NativeHotSystemNavigationPolicy.target(
-                selectedTabs: NativeAppTab.fixedBottomBarTabs,
-                currentTab: selectedTab,
-                startTab: preferences.startTab
-            ) {
-            case .homeChannel:
-                navigation.reset(in: .home)
-                selectedHomeChannelID = HomeChannel.hot.id
-                selectedTab = .home
-            case let .hotList(tab):
-                selectedTab = tab
-                navigate(.hotList, in: tab)
-            case nil:
-                break
-            }
+            navigation.reset(in: .home)
+            selectedHomeChannelID = HomeChannel.hot.id
         case .collections:
             guard let token = account.identity?.collectionToken else {
                 hostModel.openLogin()
@@ -891,12 +739,6 @@ struct NativeAppShell: View {
         }
     }
 
-    @ViewBuilder
-    private func tabBarBehavior<Content: View>(_ content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.tabBarMinimizeBehavior(.onScrollDown)
-        } else { content }
-    }
 }
 
 private struct NativeTabTapObserver: UIViewRepresentable {

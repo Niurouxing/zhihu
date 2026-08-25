@@ -22,6 +22,10 @@
 		0A1B2C3D4E5F60010000000D /* SystemAndUpdateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60010000001E /* SystemAndUpdateView.swift */; };
 		0A1B2C3D4E5F60010000000E /* PersonRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60010000001F /* PersonRoute.swift */; };
 		0A1B2C3D4E5F60010000000F /* PersonHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000021 /* PersonHostView.swift */; };
+		0A1B2C3D4E5F600100000101 /* KeychainAccountStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000111 /* KeychainAccountStoreTests.swift */; };
+		0A1B2C3D4E5F600100000102 /* NativeLoginLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000112 /* NativeLoginLogicTests.swift */; };
+		0A1B2C3D4E5F600100000103 /* ArticleRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000113 /* ArticleRoutingTests.swift */; };
+		0A1B2C3D4E5F600100000104 /* PersonRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000114 /* PersonRoutingTests.swift */; };
 		0A1B2C3D4E5F600100000301 /* PersonModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000211 /* PersonModels.swift */; };
 		0A1B2C3D4E5F600100000302 /* PersonRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000212 /* PersonRepository.swift */; };
 		0A1B2C3D4E5F600100000303 /* PersonRequestSigner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000213 /* PersonRequestSigner.swift */; };
@@ -31,10 +35,6 @@
 		0A1B2C3D4E5F600100000307 /* PersonRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000217 /* PersonRows.swift */; };
 		0A1B2C3D4E5F600100000308 /* PersonNativeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000218 /* PersonNativeView.swift */; };
 		0A1B2C3D4E5F600100000309 /* PersonWebDestinationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000219 /* PersonWebDestinationView.swift */; };
-		0A1B2C3D4E5F600100000101 /* KeychainAccountStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000111 /* KeychainAccountStoreTests.swift */; };
-		0A1B2C3D4E5F600100000102 /* NativeLoginLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000112 /* NativeLoginLogicTests.swift */; };
-		0A1B2C3D4E5F600100000103 /* ArticleRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000113 /* ArticleRoutingTests.swift */; };
-		0A1B2C3D4E5F600100000104 /* PersonRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000114 /* PersonRoutingTests.swift */; };
 		0A1B2C3D4E5F600100000310 /* PersonStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000220 /* PersonStoreTests.swift */; };
 		0A1B2C3D4E5F600100000311 /* PersonRequestSignerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000221 /* PersonRequestSignerTests.swift */; };
 		0A1B2C3D4E5F600100000312 /* PersonRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F600100000222 /* PersonRepositoryTests.swift */; };
@@ -55,10 +55,6 @@
 		0B20000000000000000000F /* HotListNativeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B10000000000000000000F /* HotListNativeView.swift */; };
 		0B200000000000000000010 /* HotSearchRepositories.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000010 /* HotSearchRepositories.swift */; };
 		0B200000000000000000011 /* HotSearchStores.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000011 /* HotSearchStores.swift */; };
-		0C200000000000000000001 /* NativeChannelSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C100000000000000000001 /* NativeChannelSwitcher.swift */; };
-		0C200000000000000000002 /* HomeChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C100000000000000000002 /* HomeChannel.swift */; };
-		0C200000000000000000003 /* HomeChannelsNativeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C100000000000000000003 /* HomeChannelsNativeView.swift */; };
-		0D200000000000000000001 /* NativeHapticFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D100000000000000000001 /* NativeHapticFeedback.swift */; };
 		0B200000000000000000012 /* NativeAccountFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000012 /* NativeAccountFeature.swift */; };
 		0B200000000000000000013 /* NativeAnswerPager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000013 /* NativeAnswerPager.swift */; };
 		0B200000000000000000014 /* NativeAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000014 /* NativeAppIntents.swift */; };
@@ -104,6 +100,10 @@
 		0B400000000000000000011 /* NativeSystemIntegrationSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000011 /* NativeSystemIntegrationSettingsTests.swift */; };
 		0B400000000000000000012 /* NativeTranslationAvailabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000012 /* NativeTranslationAvailabilityTests.swift */; };
 		0B400000000000000000013 /* QuestionAnswerFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B300000000000000000013 /* QuestionAnswerFeatureTests.swift */; };
+		0C200000000000000000001 /* NativeChannelSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C100000000000000000001 /* NativeChannelSwitcher.swift */; };
+		0C200000000000000000002 /* HomeChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C100000000000000000002 /* HomeChannel.swift */; };
+		0C200000000000000000003 /* HomeChannelsNativeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C100000000000000000003 /* HomeChannelsNativeView.swift */; };
+		0D200000000000000000001 /* NativeHapticFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D100000000000000000001 /* NativeHapticFeedback.swift */; };
 		0E200000000000000000001 /* KaTeXResources in Resources */ = {isa = PBXBuildFile; fileRef = 0E100000000000000000001 /* KaTeXResources */; };
 		0E200000000000000000002 /* QAKaTeXRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E100000000000000000002 /* QAKaTeXRenderer.swift */; };
 		0E400000000000000000001 /* KaTeXResourceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E300000000000000000001 /* KaTeXResourceTests.swift */; };
@@ -139,6 +139,11 @@
 		0A1B2C3D4E5F60010000001E /* SystemAndUpdateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemAndUpdateView.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F60010000001F /* PersonRoute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonRoute.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F600100000021 /* PersonHostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonHostView.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000110 /* iosAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = iosAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		0A1B2C3D4E5F600100000111 /* KeychainAccountStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainAccountStoreTests.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000112 /* NativeLoginLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLoginLogicTests.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000113 /* ArticleRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArticleRoutingTests.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F600100000114 /* PersonRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonRoutingTests.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F600100000211 /* PersonModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonModels.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F600100000212 /* PersonRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonRepository.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F600100000213 /* PersonRequestSigner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonRequestSigner.swift; sourceTree = "<group>"; };
@@ -148,11 +153,6 @@
 		0A1B2C3D4E5F600100000217 /* PersonRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonRows.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F600100000218 /* PersonNativeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonNativeView.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F600100000219 /* PersonWebDestinationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonWebDestinationView.swift; sourceTree = "<group>"; };
-		0A1B2C3D4E5F600100000110 /* iosAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = iosAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		0A1B2C3D4E5F600100000111 /* KeychainAccountStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainAccountStoreTests.swift; sourceTree = "<group>"; };
-		0A1B2C3D4E5F600100000112 /* NativeLoginLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLoginLogicTests.swift; sourceTree = "<group>"; };
-		0A1B2C3D4E5F600100000113 /* ArticleRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArticleRoutingTests.swift; sourceTree = "<group>"; };
-		0A1B2C3D4E5F600100000114 /* PersonRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonRoutingTests.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F600100000220 /* PersonStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonStoreTests.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F600100000221 /* PersonRequestSignerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonRequestSignerTests.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F600100000222 /* PersonRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonRepositoryTests.swift; sourceTree = "<group>"; };
@@ -173,10 +173,6 @@
 		0B10000000000000000000F /* HotListNativeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotListNativeView.swift; sourceTree = "<group>"; };
 		0B100000000000000000010 /* HotSearchRepositories.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotSearchRepositories.swift; sourceTree = "<group>"; };
 		0B100000000000000000011 /* HotSearchStores.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotSearchStores.swift; sourceTree = "<group>"; };
-		0C100000000000000000001 /* NativeChannelSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChannelSwitcher.swift; sourceTree = "<group>"; };
-		0C100000000000000000002 /* HomeChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeChannel.swift; sourceTree = "<group>"; };
-		0C100000000000000000003 /* HomeChannelsNativeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeChannelsNativeView.swift; sourceTree = "<group>"; };
-		0D100000000000000000001 /* NativeHapticFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHapticFeedback.swift; sourceTree = "<group>"; };
 		0B100000000000000000012 /* NativeAccountFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAccountFeature.swift; sourceTree = "<group>"; };
 		0B100000000000000000013 /* NativeAnswerPager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAnswerPager.swift; sourceTree = "<group>"; };
 		0B100000000000000000014 /* NativeAppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAppIntents.swift; sourceTree = "<group>"; };
@@ -222,6 +218,10 @@
 		0B300000000000000000011 /* NativeSystemIntegrationSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeSystemIntegrationSettingsTests.swift; sourceTree = "<group>"; };
 		0B300000000000000000012 /* NativeTranslationAvailabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranslationAvailabilityTests.swift; sourceTree = "<group>"; };
 		0B300000000000000000013 /* QuestionAnswerFeatureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuestionAnswerFeatureTests.swift; sourceTree = "<group>"; };
+		0C100000000000000000001 /* NativeChannelSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChannelSwitcher.swift; sourceTree = "<group>"; };
+		0C100000000000000000002 /* HomeChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeChannel.swift; sourceTree = "<group>"; };
+		0C100000000000000000003 /* HomeChannelsNativeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeChannelsNativeView.swift; sourceTree = "<group>"; };
+		0D100000000000000000001 /* NativeHapticFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHapticFeedback.swift; sourceTree = "<group>"; };
 		0E100000000000000000001 /* KaTeXResources */ = {isa = PBXFileReference; lastKnownFileType = folder; path = KaTeXResources; sourceTree = "<group>"; };
 		0E100000000000000000002 /* QAKaTeXRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QAKaTeXRenderer.swift; sourceTree = "<group>"; };
 		0E300000000000000000001 /* KaTeXResourceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KaTeXResourceTests.swift; sourceTree = "<group>"; };
@@ -725,7 +725,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 5;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 2F9ZBG6MK4;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = iosApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -734,7 +734,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 0.3.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.github.kangyun1994.zhplus.swift;
+				PRODUCT_BUNDLE_IDENTIFIER = com.niurx.zhihuplus.personal;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -752,7 +752,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 5;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 2F9ZBG6MK4;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = iosApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -761,7 +761,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 0.3.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.github.kangyun1994.zhplus.swift;
+				PRODUCT_BUNDLE_IDENTIFIER = com.niurx.zhihuplus.personal;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;

@@ -79,6 +79,88 @@ struct NativeHomeHeaderLayoutPolicy {
     }
 }
 
+enum NativeHomeContentScrollTarget: Hashable {
+    case recommendation(FeedItemID)
+    case recommendationStatus
+    case followingRecentUsers
+    case following(FeedItemID)
+    case followingStatus
+    case hot(FeedItemID)
+    case hotStatus
+    case daily(Int64)
+    case dailyStatus
+
+    var representsLoadedContent: Bool {
+        switch self {
+        case .recommendationStatus, .followingStatus, .hotStatus, .dailyStatus:
+            false
+        default:
+            true
+        }
+    }
+}
+
+@MainActor
+enum NativeHomeSearchEntryScrollController {
+    static func hideIfNeeded(
+        in proxy: ScrollViewProxy,
+        target: NativeHomeContentScrollTarget?,
+        isActive: Bool,
+        lastHiddenTarget: Binding<NativeHomeContentScrollTarget?>
+    ) {
+        guard isActive,
+              let target
+        else { return }
+
+        if let previousTarget = lastHiddenTarget.wrappedValue {
+            guard previousTarget != target,
+                  !previousTarget.representsLoadedContent
+            else { return }
+        }
+
+        lastHiddenTarget.wrappedValue = target
+        DispatchQueue.main.async {
+            proxy.scrollTo(target, anchor: .top)
+            // A List can publish the target one layout pass before its final row geometry.
+            // Repeating on the next pass keeps the search entry reliably above the viewport.
+            DispatchQueue.main.async {
+                proxy.scrollTo(target, anchor: .top)
+            }
+        }
+    }
+}
+
+struct NativeHomeGlobalSearchEntry: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: "magnifyingglass")
+                    .font(.body.weight(.medium))
+                Text("搜索知乎")
+                    .font(.body)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(
+                Color(uiColor: .tertiarySystemFill),
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 8, leading: 18, bottom: 8, trailing: 18))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+        .accessibilityLabel("搜索知乎")
+        .accessibilityHint("打开全站搜索")
+        .accessibilityIdentifier("home_global_search_entry")
+    }
+}
+
 struct NativeRootHeaderVisibility {
     static let compactThreshold: CGFloat = 0.5
     static let crossfadeLowerBound: CGFloat = 0.35
@@ -132,6 +214,7 @@ extension View {
             isActive: isActive
         ))
     }
+
 }
 
 private struct NativeRootTitleOffsetKey: PreferenceKey {
@@ -303,39 +386,43 @@ struct HomeNativeView: View {
     @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
     @Environment(\.nativeChannelIsActive) private var isActiveChannel
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
-    @Binding private var collapseProgress: CGFloat
     @State private var observedScrollToTopRequest: UInt
+    @State private var lastHiddenSearchEntryTarget: NativeHomeContentScrollTarget?
     let scrollToTopRequest: UInt
+    private let onOpenSearch: (() -> Void)?
     let onOpen: (FeedItemRoute) -> Void
 
     init(
         store: HomeFeedNativeStore,
-        collapseProgress: Binding<CGFloat> = .constant(0),
         scrollToTopRequest: UInt,
+        onOpenSearch: (() -> Void)? = nil,
         onOpen: @escaping (FeedItemRoute) -> Void
     ) {
         _store = ObservedObject(wrappedValue: store)
-        _collapseProgress = collapseProgress
         _observedScrollToTopRequest = State(initialValue: scrollToTopRequest)
         self.scrollToTopRequest = scrollToTopRequest
+        self.onOpenSearch = onOpenSearch
         self.onOpen = onOpen
     }
 
     var body: some View {
         ScrollViewReader { proxy in
             List {
-                NativeRootLargeTitle(
-                    "首页",
-                    displaysTitle: false,
-                    isActive: isActiveChannel,
-                    isRefreshing: store.isRefreshing,
-                    collapseProgress: $collapseProgress
-                )
+                Color.clear
+                    .frame(height: 0)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .accessibilityHidden(true)
                     .id(NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .recommendation))
+
+                if let onOpenSearch {
+                    NativeHomeGlobalSearchEntry(action: onOpenSearch)
+                }
 
                 if store.items.isEmpty, store.isLoading {
                     HStack { Spacer(); ProgressView("正在加载推荐"); Spacer() }
                         .listRowSeparator(.hidden)
+                        .id(NativeHomeContentScrollTarget.recommendationStatus)
                 }
 
                 ForEach(visibleItems) { item in
@@ -343,11 +430,13 @@ struct HomeNativeView: View {
                         store.opened(item)
                         onOpen(route)
                     }
+                    .id(NativeHomeContentScrollTarget.recommendation(item.id))
                     .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
                 }
 
                 if let message = store.errorMessage {
                     FeedRetryRow(message: message) { Task { await store.retry() } }
+                        .id(NativeHomeContentScrollTarget.recommendationStatus)
                 } else if store.hasNextPage {
                     let taskID = NativeChannelTaskIdentity(
                         isActive: isActiveChannel,
@@ -355,6 +444,7 @@ struct HomeNativeView: View {
                     )
                     NativeFeedPaginationLoadingRow(title: "正在加载更多推荐")
                         .listRowSeparator(.hidden)
+                        .id(NativeHomeContentScrollTarget.recommendationStatus)
                         .task(id: taskID) {
                             guard taskID.isActive,
                                   taskID.value == store.nextPageLoadID
@@ -364,17 +454,11 @@ struct HomeNativeView: View {
                 } else if visibleItems.isEmpty, !store.isLoading {
                     Label("暂无推荐", systemImage: "sparkles")
                         .foregroundStyle(.secondary)
+                        .id(NativeHomeContentScrollTarget.recommendationStatus)
                 }
             }
             .listStyle(.plain)
             .nativeHomeFeedListLayout()
-            .coordinateSpace(name: "home-root-scroll")
-            .nativeHomeFeedScrollTracking(
-                collapseProgress: $collapseProgress,
-                isActive: isActiveChannel
-            )
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
             .refreshable {
                 guard isActiveChannel else { return }
                 let outcome = await store.refresh(intent: .pull)
@@ -387,6 +471,15 @@ struct HomeNativeView: View {
                 // from a pushed answer must not replay it and destroy List's retained
                 // scroll position. New requests are handled by onChange below.
                 observedScrollToTopRequest = scrollToTopRequest
+                hideInitialSearchEntryIfNeeded(proxy)
+            }
+            .onChange(of: firstContentScrollTarget) { _ in
+                hideInitialSearchEntryIfNeeded(proxy)
+            }
+            .onChange(of: isActiveChannel) { isActive in
+                if isActive {
+                    hideInitialSearchEntryIfNeeded(proxy)
+                }
             }
             .onChange(of: scrollToTopRequest) { newRequest in
                 let shouldScroll = NativeScrollToTopRequestPolicy.shouldHandleChange(
@@ -417,15 +510,25 @@ struct HomeNativeView: View {
         )
     }
 
+    private var firstContentScrollTarget: NativeHomeContentScrollTarget? {
+        visibleItems.first.map { .recommendation($0.id) } ?? .recommendationStatus
+    }
+
     private func scrollToTop(_ proxy: ScrollViewProxy, animated: Bool) {
         DispatchQueue.main.async {
             if animated {
                 withAnimation {
-                    proxy.scrollTo(
-                        NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .recommendation),
-                        anchor: .top
-                    )
+                    if let firstContentScrollTarget {
+                        proxy.scrollTo(firstContentScrollTarget, anchor: .top)
+                    } else {
+                        proxy.scrollTo(
+                            NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .recommendation),
+                            anchor: .top
+                        )
+                    }
                 }
+            } else if let firstContentScrollTarget {
+                proxy.scrollTo(firstContentScrollTarget, anchor: .top)
             } else {
                 proxy.scrollTo(
                     NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .recommendation),
@@ -434,6 +537,15 @@ struct HomeNativeView: View {
             }
         }
     }
+
+    private func hideInitialSearchEntryIfNeeded(_ proxy: ScrollViewProxy) {
+        NativeHomeSearchEntryScrollController.hideIfNeeded(
+            in: proxy,
+            target: firstContentScrollTarget,
+            isActive: isActiveChannel,
+            lastHiddenTarget: $lastHiddenSearchEntryTarget
+        )
+    }
 }
 
 struct FollowNativeView: View {
@@ -441,21 +553,24 @@ struct FollowNativeView: View {
     @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
     @Environment(\.nativeChannelIsActive) private var isActiveChannel
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
-    @Binding private var collapseProgress: CGFloat
+    @State private var observedScrollToTopRequest: UInt
+    @State private var lastHiddenSearchEntryTarget: NativeHomeContentScrollTarget?
     let scrollToTopRequest: UInt
+    private let onOpenSearch: (() -> Void)?
     let onOpen: (FeedItemRoute) -> Void
     let onOpenPerson: (PersonRoutePayload) -> Void
 
     init(
         store: FollowNativeStore,
-        collapseProgress: Binding<CGFloat> = .constant(0),
         scrollToTopRequest: UInt,
+        onOpenSearch: (() -> Void)? = nil,
         onOpen: @escaping (FeedItemRoute) -> Void,
         onOpenPerson: @escaping (PersonRoutePayload) -> Void
     ) {
         _store = ObservedObject(wrappedValue: store)
-        _collapseProgress = collapseProgress
+        _observedScrollToTopRequest = State(initialValue: scrollToTopRequest)
         self.scrollToTopRequest = scrollToTopRequest
+        self.onOpenSearch = onOpenSearch
         self.onOpen = onOpen
         self.onOpenPerson = onOpenPerson
     }
@@ -463,25 +578,28 @@ struct FollowNativeView: View {
     var body: some View {
         ScrollViewReader { proxy in
             List {
-                NativeRootLargeTitle(
-                    "首页",
-                    coordinateSpaceName: followCoordinateSpaceName,
-                    displaysTitle: false,
-                    isActive: isActiveChannel,
-                    isRefreshing: store.isMomentsRefreshing,
-                    collapseProgress: $collapseProgress
-                )
+                Color.clear
+                    .frame(height: 0)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .accessibilityHidden(true)
                     .id(NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .following))
+
+                if let onOpenSearch {
+                    NativeHomeGlobalSearchEntry(action: onOpenSearch)
+                }
 
                 recentUsers
 
                 if store.moments.items.isEmpty, store.moments.isLoading {
                     HStack { Spacer(); ProgressView("正在加载关注内容"); Spacer() }
                         .listRowSeparator(.hidden)
+                        .id(NativeHomeContentScrollTarget.followingStatus)
                 }
 
                 ForEach(visibleItems) { item in
                     FeedItemRow(item: item, showsThumbnail: true, onOpen: onOpen)
+                        .id(NativeHomeContentScrollTarget.following(item.id))
                         .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
                 }
 
@@ -489,6 +607,7 @@ struct FollowNativeView: View {
                     FeedRetryRow(message: message) {
                         Task { await store.retry(section: .moments) }
                     }
+                    .id(NativeHomeContentScrollTarget.followingStatus)
                 } else if store.moments.hasNextPage {
                     let taskID = NativeChannelTaskIdentity(
                         isActive: isActiveChannel,
@@ -496,6 +615,7 @@ struct FollowNativeView: View {
                     )
                     NativeFeedPaginationLoadingRow(title: "正在加载更多关注内容")
                         .listRowSeparator(.hidden)
+                        .id(NativeHomeContentScrollTarget.followingStatus)
                         .task(id: taskID) {
                             guard taskID.isActive,
                                   taskID.value == store.moments.nextPageLoadID
@@ -505,15 +625,11 @@ struct FollowNativeView: View {
                 } else if visibleItems.isEmpty, !store.moments.isLoading {
                     Label("暂无关注内容", systemImage: "person.2")
                         .foregroundStyle(.secondary)
+                        .id(NativeHomeContentScrollTarget.followingStatus)
                 }
             }
             .listStyle(.plain)
             .nativeHomeFeedListLayout()
-            .coordinateSpace(name: followCoordinateSpaceName)
-            .nativeHomeFeedScrollTracking(
-                collapseProgress: $collapseProgress,
-                isActive: isActiveChannel
-            )
             .refreshable {
                 guard isActiveChannel else { return }
                 let previousSuccessfulRefresh = store.refreshMetadata.lastSuccessfulRefreshAt
@@ -527,11 +643,26 @@ struct FollowNativeView: View {
                 }
             }
             .onAppear {
-                if scrollToTopRequest > 0 { scrollToTop(proxy, animated: false) }
+                observedScrollToTopRequest = scrollToTopRequest
+                hideInitialSearchEntryIfNeeded(proxy)
             }
-            .onChange(of: scrollToTopRequest) { _ in scrollToTop(proxy, animated: true) }
+            .onChange(of: scrollToTopRequest) { newRequest in
+                let shouldScroll = NativeScrollToTopRequestPolicy.shouldHandleChange(
+                    previousRequest: observedScrollToTopRequest,
+                    newRequest: newRequest
+                )
+                observedScrollToTopRequest = newRequest
+                if shouldScroll { scrollToTop(proxy, animated: true) }
+            }
+            .onChange(of: firstContentScrollTarget) { _ in
+                hideInitialSearchEntryIfNeeded(proxy)
+            }
+            .onChange(of: isActiveChannel) { isActive in
+                if isActive {
+                    hideInitialSearchEntryIfNeeded(proxy)
+                }
+            }
         }
-        .navigationTitle("")
         .task(id: NativeChannelTaskIdentity(
             isActive: isActiveChannel,
             value: FollowSection.moments.rawValue
@@ -549,7 +680,12 @@ struct FollowNativeView: View {
         )
     }
 
-    private let followCoordinateSpaceName = "follow-moments-root-scroll"
+    private var firstContentScrollTarget: NativeHomeContentScrollTarget? {
+        if !store.recentUsers.isEmpty || store.recentUsersErrorMessage != nil {
+            return .followingRecentUsers
+        }
+        return visibleItems.first.map { .following($0.id) } ?? .followingStatus
+    }
 
     @ViewBuilder
     private var recentUsers: some View {
@@ -591,10 +727,12 @@ struct FollowNativeView: View {
                 }
                 .nativeChannelSwipeExclusion()
             }
+            .id(NativeHomeContentScrollTarget.followingRecentUsers)
         } else if let error = store.recentUsersErrorMessage {
             Section("最近动态") {
                 FeedRetryRow(message: error) { Task { await store.reloadRecentUsers() } }
             }
+            .id(NativeHomeContentScrollTarget.followingRecentUsers)
         }
     }
 
@@ -602,11 +740,17 @@ struct FollowNativeView: View {
         DispatchQueue.main.async {
             if animated {
                 withAnimation {
-                    proxy.scrollTo(
-                        NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .following),
-                        anchor: .top
-                    )
+                    if let firstContentScrollTarget {
+                        proxy.scrollTo(firstContentScrollTarget, anchor: .top)
+                    } else {
+                        proxy.scrollTo(
+                            NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .following),
+                            anchor: .top
+                        )
+                    }
                 }
+            } else if let firstContentScrollTarget {
+                proxy.scrollTo(firstContentScrollTarget, anchor: .top)
             } else {
                 proxy.scrollTo(
                     NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .following),
@@ -614,6 +758,15 @@ struct FollowNativeView: View {
                 )
             }
         }
+    }
+
+    private func hideInitialSearchEntryIfNeeded(_ proxy: ScrollViewProxy) {
+        NativeHomeSearchEntryScrollController.hideIfNeeded(
+            in: proxy,
+            target: firstContentScrollTarget,
+            isActive: isActiveChannel,
+            lastHiddenTarget: $lastHiddenSearchEntryTarget
+        )
     }
 }
 

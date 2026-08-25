@@ -3,12 +3,26 @@ import SwiftUI
 struct FeedItemRow: View {
     let item: FeedItemDTO
     let showsThumbnail: Bool
+    let rank: Int?
     let onOpen: (FeedItemRoute) -> Void
     @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
     @Environment(\.nativeContentPresentation) private var presentation
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .subheadline) private var summaryPointSize: CGFloat = 15
     @ScaledMetric(relativeTo: .body) private var wideThumbnailHeight: CGFloat = 96
+
+    init(
+        item: FeedItemDTO,
+        showsThumbnail: Bool,
+        rank: Int? = nil,
+        onOpen: @escaping (FeedItemRoute) -> Void
+    ) {
+        self.item = item
+        self.showsThumbnail = showsThumbnail
+        self.rank = rank
+        self.onOpen = onOpen
+    }
 
     var body: some View {
         rowButton
@@ -16,19 +30,30 @@ struct FeedItemRow: View {
                 author: item.questionAuthor,
                 block: blockQuestionAuthor
             )
-            .accessibilityLabel("\(item.title)，\(item.details)")
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .accessibilityLabel(accessibilityDescription)
     }
 
     private var rowButton: some View {
         Button {
             onOpen(item.route)
         } label: {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .top, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 11) {
+                HStack(alignment: .top, spacing: 12) {
+                    if let rank {
+                        Text("\(rank)")
+                            .font(.headline.monospacedDigit())
+                            .foregroundStyle(rank <= 3 ? Color.accentColor : Color.secondary)
+                            .frame(minWidth: 22, alignment: .trailing)
+                            .accessibilityHidden(true)
+                    }
+
+                    VStack(alignment: .leading, spacing: 7) {
                         Text(item.title)
-                            .font(.headline)
+                            .font(.headline.weight(.semibold))
                             .foregroundStyle(.primary)
+                            .lineSpacing(1)
                             .lineLimit(2)
 
                         if let summary = item.summary, !summary.isEmpty {
@@ -43,13 +68,13 @@ struct FeedItemRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     if showsThumbnail, presentation.showsFeedThumbnails, item.media.isEmpty,
-                       thumbnailPlacement == .trailing,
+                       showsTrailingThumbnail,
                        let thumbnailURL = item.thumbnailURL {
                         FeedSingleThumbnail(
                             url: thumbnailURL,
                             cropAnchor: thumbnailPlacement.cropAnchor
                         )
-                            .frame(width: 84, height: 60)
+                            .frame(width: 84, height: 62)
                             .clipped()
                     }
                 }
@@ -57,7 +82,7 @@ struct FeedItemRow: View {
                 if showsThumbnail,
                    presentation.showsFeedThumbnails,
                    item.media.isEmpty,
-                   thumbnailPlacement == .wideInline,
+                   showsInlineThumbnail,
                    let thumbnailURL = item.thumbnailURL {
                     FeedSingleThumbnail(
                         url: thumbnailURL,
@@ -74,10 +99,47 @@ struct FeedItemRow: View {
 
                 FeedItemMetadataRow(item: item)
             }
-            .contentShape(Rectangle())
-            .padding(.vertical, presentation.feedDensity.rowVerticalPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, cardVerticalPadding)
+            .background {
+                RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemBackground))
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(FeedCardButtonStyle())
+    }
+
+    private var cardVerticalPadding: CGFloat {
+        max(5, presentation.feedDensity.rowVerticalPadding)
+    }
+
+    private var accessibilityDescription: String {
+        var components: [String] = []
+        if let rank { components.append("第 \(rank) 名") }
+        components.append(item.title)
+        if let summary = item.summary, !summary.isEmpty {
+            components.append(summary)
+        }
+        if let author = item.author {
+            components.append(author.displayName)
+        }
+        let metrics = FeedItemMetadataFormatter.metricsText(
+            kind: item.kind,
+            details: item.details
+        )
+        if !metrics.isEmpty { components.append(metrics) }
+        return components.joined(separator: "，")
+    }
+
+    private var showsTrailingThumbnail: Bool {
+        thumbnailPlacement == .trailing && !dynamicTypeSize.isAccessibilitySize
+    }
+
+    private var showsInlineThumbnail: Bool {
+        thumbnailPlacement == .wideInline
+            || (thumbnailPlacement == .trailing && dynamicTypeSize.isAccessibilitySize)
     }
 
     private var thumbnailPlacement: FeedThumbnailPlacement {
@@ -90,6 +152,14 @@ struct FeedItemRow: View {
     private func blockQuestionAuthor(_ author: FeedAuthorDTO) {
         hapticFeedback(.commit)
         questionAuthorBlocklist.block(author)
+    }
+}
+
+private struct FeedCardButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.72 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
@@ -115,7 +185,7 @@ private struct FeedSingleThumbnail: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityHidden(true)
     }
 }
@@ -202,32 +272,54 @@ struct FeedItemMetadataFormatter {
 
 private struct FeedItemMetadataRow: View {
     let item: FeedItemDTO
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        HStack(spacing: 6) {
-            if let author = item.author {
-                FeedItemAuthorLabel(author: author)
-            }
-
-            let metrics = FeedItemMetadataFormatter.metricsText(
-                kind: item.kind,
-                details: item.details
-            )
-            if !metrics.isEmpty {
-                if item.author != nil {
-                    metadataSeparator
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 5) {
+                    if let author = item.author {
+                        FeedItemAuthorLabel(author: author)
+                    }
+                    if !metrics.isEmpty {
+                        metricsLabel
+                    }
                 }
-                Text(metrics)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(spacing: 6) {
+                    if let author = item.author {
+                        FeedItemAuthorLabel(author: author)
+                    }
 
-            Spacer(minLength: 0)
+                    if !metrics.isEmpty {
+                        if item.author != nil {
+                            metadataSeparator
+                        }
+                        metricsLabel
+                    }
+
+                    Spacer(minLength: 0)
+                }
+            }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    private var metrics: String {
+        FeedItemMetadataFormatter.metricsText(
+            kind: item.kind,
+            details: item.details
+        )
+    }
+
+    private var metricsLabel: some View {
+        Text(metrics)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+            .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.8)
     }
 
     private var metadataSeparator: some View {
@@ -259,7 +351,7 @@ private struct FeedItemAuthorLabel: View {
             .clipShape(Circle())
 
             Text(author.displayName)
-                .font(.caption)
+                .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -291,8 +383,8 @@ private extension View {
 
 private struct FeedMediaPreview: View {
     let media: [FeedMediaDTO]
-    private let spacing: CGFloat = 5
-    private let height: CGFloat = 84
+    private let spacing: CGFloat = 6
+    private let height: CGFloat = 88
 
     private var visibleMedia: ArraySlice<FeedMediaDTO> {
         FeedMediaPreviewPolicy.visibleMedia(from: media)
@@ -367,7 +459,7 @@ private struct FeedMediaThumbnail: View {
                 }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
@@ -381,8 +473,15 @@ struct FeedRetryRow: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Button("重试", action: retry)
+                .buttonStyle(.bordered)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 8)
+        .padding(14)
+        .background {
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemBackground))
+        }
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
 }
