@@ -1,16 +1,137 @@
 import SwiftUI
 
+enum NativeFeedCardLayout {
+    static let cornerRadius: CGFloat = 16
+    static let horizontalInset: CGFloat = 16
+    static let verticalInset: CGFloat = 3
+    static let contentHorizontalPadding: CGFloat = 12
+    static let sectionSpacing: CGFloat = 11
+    static let textSpacing: CGFloat = 7
+    static let mediaSpacing: CGFloat = 6
+    static let mediaCarouselHeight: CGFloat = 148
+}
+
+extension View {
+    /// Apply at the feed container boundary. Ordinary view padding keeps the
+    /// layout deterministic in a LazyVStack; zero List row insets preserve the
+    /// same geometry where a card is reused by a system List (such as search).
+    func nativeFeedCardItemLayout() -> some View {
+        padding(.horizontal, NativeFeedCardLayout.horizontalInset)
+            .padding(.vertical, NativeFeedCardLayout.verticalInset)
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+    }
+}
+
+enum FeedCardLayoutStyle: Equatable, Sendable {
+    case standard
+    case ranked(Int)
+}
+
+struct FeedCardImagePresentation: Equatable, Sendable {
+    let url: URL
+    let pixelWidth: Int?
+    let pixelHeight: Int?
+    let isAnimated: Bool
+}
+
+enum FeedCardMediaPresentation: Equatable, Sendable {
+    case none
+    case single(FeedCardImagePresentation)
+    case gallery([FeedMediaDTO])
+
+    var isVisible: Bool {
+        if case .none = self { return false }
+        return true
+    }
+}
+
+struct FeedCardMetadataPresentation: Equatable, Sendable {
+    let author: FeedAuthorDTO?
+    let metrics: String
+
+    var isVisible: Bool {
+        author != nil || !metrics.isEmpty
+    }
+}
+
+/// A stable, testable description of one card. API DTO quirks and optional
+/// branches are resolved here before SwiftUI participates in layout.
+struct FeedCardPresentation: Equatable, Sendable {
+    let style: FeedCardLayoutStyle
+    let title: String
+    let summary: String?
+    let media: FeedCardMediaPresentation
+    let metadata: FeedCardMetadataPresentation
+
+    init(
+        item: FeedItemDTO,
+        rank: Int?,
+        showsMedia: Bool
+    ) {
+        style = rank.map(FeedCardLayoutStyle.ranked) ?? .standard
+        title = FeedTextPresentationPolicy.compact(item.title) ?? item.title
+        summary = FeedTextPresentationPolicy.compact(item.summary)
+        media = Self.mediaPresentation(item: item, showsMedia: showsMedia)
+        metadata = FeedCardMetadataPresentation(
+            author: item.author,
+            metrics: FeedItemMetadataFormatter.metricsText(
+                kind: item.kind,
+                details: item.details
+            )
+        )
+    }
+
+    var accessibilityDescription: String {
+        var components: [String] = []
+        if case let .ranked(rank) = style {
+            components.append("第 \(rank) 名")
+        }
+        components.append(title)
+        if let summary { components.append(summary) }
+        if let author = metadata.author { components.append(author.displayName) }
+        if !metadata.metrics.isEmpty { components.append(metadata.metrics) }
+        return components.joined(separator: "，")
+    }
+
+    private static func mediaPresentation(
+        item: FeedItemDTO,
+        showsMedia: Bool
+    ) -> FeedCardMediaPresentation {
+        guard showsMedia else { return .none }
+
+        if item.media.count == 1, let media = item.media.first {
+            return .single(FeedCardImagePresentation(
+                url: media.previewURL,
+                pixelWidth: media.pixelWidth,
+                pixelHeight: media.pixelHeight,
+                isAnimated: media.isAnimated
+            ))
+        }
+        if item.media.count > 1 {
+            return .gallery(item.media)
+        }
+        if let url = item.thumbnailURL {
+            return .single(FeedCardImagePresentation(
+                url: url,
+                pixelWidth: item.thumbnailPixelWidth,
+                pixelHeight: item.thumbnailPixelHeight,
+                isAnimated: false
+            ))
+        }
+        return .none
+    }
+}
+
 struct FeedItemRow: View {
     let item: FeedItemDTO
     let showsThumbnail: Bool
     let rank: Int?
     let onOpen: (FeedItemRoute) -> Void
     @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
-    @Environment(\.nativeContentPresentation) private var presentation
+    @Environment(\.nativeContentPresentation) private var contentPresentation
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @ScaledMetric(relativeTo: .subheadline) private var summaryPointSize: CGFloat = 15
-    @ScaledMetric(relativeTo: .body) private var wideThumbnailHeight: CGFloat = 96
 
     init(
         item: FeedItemDTO,
@@ -25,133 +146,123 @@ struct FeedItemRow: View {
     }
 
     var body: some View {
-        rowButton
-            .questionAuthorContextMenu(
-                author: item.questionAuthor,
-                block: blockQuestionAuthor
-            )
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
-            .accessibilityLabel(accessibilityDescription)
-    }
-
-    private var rowButton: some View {
         Button {
             onOpen(item.route)
         } label: {
-            VStack(alignment: .leading, spacing: 11) {
-                HStack(alignment: .top, spacing: 12) {
-                    if let rank {
-                        Text("\(rank)")
-                            .font(.headline.monospacedDigit())
-                            .foregroundStyle(rank <= 3 ? Color.accentColor : Color.secondary)
-                            .frame(minWidth: 22, alignment: .trailing)
-                            .accessibilityHidden(true)
-                    }
-
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(item.title)
-                            .font(.headline.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineSpacing(1)
-                            .lineLimit(2)
-
-                        if let summary = item.summary, !summary.isEmpty {
-                            let renderedPointSize = summaryPointSize * presentation.fontScale
-                            Text(summary)
-                                .font(.system(size: renderedPointSize))
-                                .foregroundStyle(.secondary)
-                                .lineSpacing(presentation.extraLineSpacing(for: renderedPointSize) * 0.45)
-                                .lineLimit(presentation.feedExcerptLines)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    if showsThumbnail, presentation.showsFeedThumbnails, item.media.isEmpty,
-                       showsTrailingThumbnail,
-                       let thumbnailURL = item.thumbnailURL {
-                        FeedSingleThumbnail(
-                            url: thumbnailURL,
-                            cropAnchor: thumbnailPlacement.cropAnchor
-                        )
-                            .frame(width: 84, height: 62)
-                            .clipped()
-                    }
-                }
-
-                if showsThumbnail,
-                   presentation.showsFeedThumbnails,
-                   item.media.isEmpty,
-                   showsInlineThumbnail,
-                   let thumbnailURL = item.thumbnailURL {
-                    FeedSingleThumbnail(
-                        url: thumbnailURL,
-                        cropAnchor: thumbnailPlacement.cropAnchor
-                    )
-                        .frame(maxWidth: .infinity)
-                        .frame(height: wideThumbnailHeight)
-                        .clipped()
-                }
-
-                if showsThumbnail, presentation.showsFeedThumbnails, !item.media.isEmpty {
-                    FeedMediaPreview(media: item.media)
-                }
-
-                FeedItemMetadataRow(item: item)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, cardVerticalPadding)
-            .background {
-                RoundedRectangle(cornerRadius: 17, style: .continuous)
-                    .fill(Color(uiColor: .secondarySystemBackground))
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+            NativeFeedCard(presentation: cardPresentation)
         }
         .buttonStyle(FeedCardButtonStyle())
-    }
-
-    private var cardVerticalPadding: CGFloat {
-        max(5, presentation.feedDensity.rowVerticalPadding)
-    }
-
-    private var accessibilityDescription: String {
-        var components: [String] = []
-        if let rank { components.append("第 \(rank) 名") }
-        components.append(item.title)
-        if let summary = item.summary, !summary.isEmpty {
-            components.append(summary)
-        }
-        if let author = item.author {
-            components.append(author.displayName)
-        }
-        let metrics = FeedItemMetadataFormatter.metricsText(
-            kind: item.kind,
-            details: item.details
+        .questionAuthorContextMenu(
+            author: item.questionAuthor,
+            block: blockQuestionAuthor
         )
-        if !metrics.isEmpty { components.append(metrics) }
-        return components.joined(separator: "，")
+        .accessibilityLabel(cardPresentation.accessibilityDescription)
     }
 
-    private var showsTrailingThumbnail: Bool {
-        thumbnailPlacement == .trailing && !dynamicTypeSize.isAccessibilitySize
-    }
-
-    private var showsInlineThumbnail: Bool {
-        thumbnailPlacement == .wideInline
-            || (thumbnailPlacement == .trailing && dynamicTypeSize.isAccessibilitySize)
-    }
-
-    private var thumbnailPlacement: FeedThumbnailPlacement {
-        FeedThumbnailPresentationPolicy.placement(
-            pixelWidth: item.thumbnailPixelWidth,
-            pixelHeight: item.thumbnailPixelHeight
+    private var cardPresentation: FeedCardPresentation {
+        FeedCardPresentation(
+            item: item,
+            rank: rank,
+            showsMedia: showsThumbnail && contentPresentation.showsFeedThumbnails
         )
     }
 
     private func blockQuestionAuthor(_ author: FeedAuthorDTO) {
         hapticFeedback(.commit)
         questionAuthorBlocklist.block(author)
+    }
+}
+
+struct NativeFeedCard: View {
+    let presentation: FeedCardPresentation
+    @Environment(\.nativeContentPresentation) private var contentPresentation
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            FeedCardHeader(presentation: presentation)
+            if presentation.media.isVisible {
+                FeedCardMediaSection(media: presentation.media)
+            }
+            if presentation.metadata.isVisible {
+                FeedCardMetadataRow(metadata: presentation.metadata)
+                    .padding(.top, NativeFeedCardLayout.sectionSpacing)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, NativeFeedCardLayout.contentHorizontalPadding)
+        .padding(.vertical, cardVerticalPadding)
+        .background {
+            RoundedRectangle(
+                cornerRadius: NativeFeedCardLayout.cornerRadius,
+                style: .continuous
+            )
+            .fill(Color(uiColor: .secondarySystemBackground))
+        }
+        .contentShape(RoundedRectangle(
+            cornerRadius: NativeFeedCardLayout.cornerRadius,
+            style: .continuous
+        ))
+    }
+
+    private var cardVerticalPadding: CGFloat {
+        max(5, contentPresentation.feedDensity.rowVerticalPadding)
+    }
+}
+
+private struct FeedCardHeader: View {
+    let presentation: FeedCardPresentation
+
+    @ViewBuilder
+    var body: some View {
+        switch presentation.style {
+        case .standard:
+            FeedCardTextBlock(
+                title: presentation.title,
+                summary: presentation.summary
+            )
+        case let .ranked(rank):
+            HStack(alignment: .top, spacing: NativeFeedCardLayout.contentHorizontalPadding) {
+                Text("\(rank)")
+                    .font(.headline.monospacedDigit())
+                    .foregroundStyle(rank <= 3 ? Color.accentColor : Color.secondary)
+                    .frame(minWidth: 22, alignment: .trailing)
+                    .accessibilityHidden(true)
+
+                FeedCardTextBlock(
+                    title: presentation.title,
+                    summary: presentation.summary
+                )
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+private struct FeedCardTextBlock: View {
+    let title: String
+    let summary: String?
+    @Environment(\.nativeContentPresentation) private var contentPresentation
+    @ScaledMetric(relativeTo: .subheadline) private var summaryPointSize: CGFloat = 15
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: NativeFeedCardLayout.textSpacing) {
+            Text(title)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineSpacing(1)
+                .lineLimit(2)
+
+            if let summary {
+                let renderedPointSize = summaryPointSize * contentPresentation.fontScale
+                Text(summary)
+                    .font(.system(size: renderedPointSize))
+                    .foregroundStyle(.primary)
+                    .lineSpacing(contentPresentation.extraLineSpacing(for: renderedPointSize) * 0.45)
+                    .lineLimit(contentPresentation.feedExcerptLines)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -163,39 +274,112 @@ private struct FeedCardButtonStyle: ButtonStyle {
     }
 }
 
-private struct FeedSingleThumbnail: View {
-    let url: URL
-    let cropAnchor: FeedThumbnailCropAnchor
+private struct FeedCardMediaSection: View {
+    let media: FeedCardMediaPresentation
 
+    @ViewBuilder
     var body: some View {
-        AsyncImage(url: url) { phase in
-            switch phase {
-            case let .success(image):
-                image
-                    .resizable()
-                    .scaledToFill()
-                    .frame(
-                        maxWidth: .infinity,
-                        maxHeight: .infinity,
-                        alignment: cropAnchor.alignment
-                    )
-            default:
-                Color.secondary.opacity(0.12)
-            }
+        switch media {
+        case .none:
+            EmptyView()
+        case let .single(image):
+            FeedCardSingleImagePreview(image: image)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("内容包含 1 张图片")
+        case let .gallery(items):
+            FeedCardMediaCarousel(media: items)
+                .padding(.top, NativeFeedCardLayout.sectionSpacing)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .accessibilityHidden(true)
     }
 }
 
-private extension FeedThumbnailCropAnchor {
-    var alignment: Alignment {
-        switch self {
-        case .center: return .center
-        case .top: return .top
+private struct FeedCardSingleImagePreview: View {
+    let image: FeedCardImagePresentation
+
+    var body: some View {
+        AsyncImage(url: image.url) { phase in
+            switch phase {
+            case let .success(loadedImage):
+                preview(loadedImage)
+                .padding(.top, NativeFeedCardLayout.sectionSpacing)
+            case .empty:
+                // Some Zhihu image hosts can leave AsyncImage waiting for a
+                // long time instead of returning a timely failure. Reserving
+                // the final aspect-ratio box here creates a persistent blank
+                // gap between the excerpt and metadata, so loading previews
+                // deliberately take no part in card layout.
+                EmptyView()
+            case .failure:
+                EmptyView()
+            @unknown default:
+                EmptyView()
+            }
         }
+        .accessibilityHidden(true)
+    }
+
+    private var layout: FeedSingleImageLayout {
+        FeedSingleImagePresentationPolicy.layout(
+            pixelWidth: image.pixelWidth,
+            pixelHeight: image.pixelHeight
+        )
+    }
+
+    @ViewBuilder
+    private func preview(_ loadedImage: Image) -> some View {
+        switch layout {
+        case .fit:
+            decoratedPreview {
+                loadedImage
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        case let .crop(containerAspectRatio):
+            croppedPreview(
+                loadedImage,
+                containerAspectRatio: CGFloat(containerAspectRatio)
+            )
+        }
+    }
+
+    private func croppedPreview(
+        _ loadedImage: Image,
+        containerAspectRatio: CGFloat
+    ) -> some View {
+        decoratedPreview {
+            Color.secondary.opacity(0.06)
+                .aspectRatio(containerAspectRatio, contentMode: .fit)
+                .overlay {
+                    loadedImage
+                        .resizable()
+                        .scaledToFill()
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity,
+                            alignment: .topLeading
+                        )
+                        .clipped()
+                }
+        }
+    }
+
+    private func decoratedPreview<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .overlay(alignment: .topLeading) {
+                if image.isAnimated {
+                    Text("GIF")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(.black.opacity(0.62), in: Capsule())
+                        .padding(7)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
@@ -270,30 +454,30 @@ struct FeedItemMetadataFormatter {
     }
 }
 
-private struct FeedItemMetadataRow: View {
-    let item: FeedItemDTO
+private struct FeedCardMetadataRow: View {
+    let metadata: FeedCardMetadataPresentation
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         Group {
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 5) {
-                    if let author = item.author {
-                        FeedItemAuthorLabel(author: author)
+                    if let author = metadata.author {
+                        FeedCardAuthorLabel(author: author)
                     }
-                    if !metrics.isEmpty {
+                    if !metadata.metrics.isEmpty {
                         metricsLabel
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 HStack(spacing: 6) {
-                    if let author = item.author {
-                        FeedItemAuthorLabel(author: author)
+                    if let author = metadata.author {
+                        FeedCardAuthorLabel(author: author)
                     }
 
-                    if !metrics.isEmpty {
-                        if item.author != nil {
+                    if !metadata.metrics.isEmpty {
+                        if metadata.author != nil {
                             metadataSeparator
                         }
                         metricsLabel
@@ -306,15 +490,8 @@ private struct FeedItemMetadataRow: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var metrics: String {
-        FeedItemMetadataFormatter.metricsText(
-            kind: item.kind,
-            details: item.details
-        )
-    }
-
     private var metricsLabel: some View {
-        Text(metrics)
+        Text(metadata.metrics)
             .font(.caption)
             .foregroundStyle(.secondary)
             .monospacedDigit()
@@ -329,7 +506,7 @@ private struct FeedItemMetadataRow: View {
     }
 }
 
-private struct FeedItemAuthorLabel: View {
+private struct FeedCardAuthorLabel: View {
     let author: FeedAuthorDTO
 
     var body: some View {
@@ -381,51 +558,43 @@ private extension View {
     }
 }
 
-private struct FeedMediaPreview: View {
+private struct FeedCardMediaCarousel: View {
     let media: [FeedMediaDTO]
-    private let spacing: CGFloat = 6
-    private let height: CGFloat = 88
-
-    private var visibleMedia: ArraySlice<FeedMediaDTO> {
-        FeedMediaPreviewPolicy.visibleMedia(from: media)
-    }
+    private let spacing = NativeFeedCardLayout.mediaSpacing
 
     var body: some View {
         GeometryReader { geometry in
-            let itemWidth = width(
-                availableWidth: geometry.size.width,
-                itemCount: visibleMedia.count
-            )
-            HStack(spacing: spacing) {
-                ForEach(visibleMedia) { item in
-                    FeedMediaThumbnail(
-                        media: item,
-                        overflowCount: item.id == visibleMedia.last?.id
-                            ? max(0, media.count - visibleMedia.count)
-                            : 0
-                    )
-                    .frame(width: itemWidth, height: height)
+            let itemWidth = CGFloat(FeedMediaCarouselPresentationPolicy.itemWidth(
+                availableWidth: Double(geometry.size.width),
+                spacing: Double(spacing),
+                totalItems: media.count
+            ))
+
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: spacing) {
+                    ForEach(media) { item in
+                        FeedCardMediaThumbnail(media: item)
+                            .frame(
+                                width: itemWidth,
+                                height: NativeFeedCardLayout.mediaCarouselHeight
+                            )
+                    }
+                    .scrollTargetLayout()
                 }
+                .frame(minWidth: geometry.size.width, alignment: .leading)
             }
-            .frame(width: geometry.size.width, height: height, alignment: .leading)
-            .clipped()
+            .scrollIndicators(.hidden)
+            .scrollTargetBehavior(.viewAligned)
         }
-        .frame(height: height)
+        .frame(height: NativeFeedCardLayout.mediaCarouselHeight)
         .clipped()
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("想法包含 \(media.count) 张图片")
-    }
-
-    private func width(availableWidth: CGFloat, itemCount: Int) -> CGFloat {
-        guard itemCount > 0 else { return 0 }
-        let totalSpacing = spacing * CGFloat(itemCount - 1)
-        return max(0, (availableWidth - totalSpacing) / CGFloat(itemCount))
+        .accessibilityLabel("内容包含 \(media.count) 张图片")
     }
 }
 
-private struct FeedMediaThumbnail: View {
+private struct FeedCardMediaThumbnail: View {
     let media: FeedMediaDTO
-    let overflowCount: Int
 
     var body: some View {
         AsyncImage(url: media.previewURL) { phase in
@@ -449,16 +618,6 @@ private struct FeedMediaThumbnail: View {
                     .padding(5)
             }
         }
-        .overlay {
-            if overflowCount > 0 {
-                ZStack {
-                    Color.black.opacity(0.52)
-                    Text("+\(overflowCount)")
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                }
-            }
-        }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
@@ -478,10 +637,107 @@ struct FeedRetryRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
         .background {
-            RoundedRectangle(cornerRadius: 17, style: .continuous)
+            RoundedRectangle(
+                cornerRadius: NativeFeedCardLayout.cornerRadius,
+                style: .continuous
+            )
                 .fill(Color(uiColor: .secondarySystemBackground))
         }
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
     }
 }
+
+#if DEBUG
+private enum FeedCardPreviewFixtures {
+    static let author = FeedAuthorDTO(
+        memberID: "preview-author",
+        urlToken: nil,
+        displayName: "知乎用户",
+        avatarURL: nil,
+        headline: ""
+    )
+
+    static let standard = item(
+        id: "standard",
+        title: "普通信息流卡片应完全由内容决定高度",
+        summary: "作者信息紧跟摘要，不应出现不可解释的空白区域。"
+    )
+
+    static let ranked = item(
+        id: "ranked",
+        title: "热榜排名使用独立的横向结构",
+        summary: "普通信息流不会再经过这个布局容器。"
+    )
+
+    static let gallery = item(
+        id: "gallery",
+        title: "多图内容使用可横向浏览的媒体轨道",
+        summary: "首屏同时展示两张与部分第三张，继续滑动可以浏览全部图片。",
+        media: [
+            media(id: "one", width: 700, height: 1_200),
+            media(id: "two", width: 1_200, height: 700),
+            media(id: "three", width: 900, height: 900),
+            media(id: "four", width: 600, height: 1_400),
+            media(id: "five", width: 1_600, height: 700),
+        ]
+    )
+
+    private static func item(
+        id: String,
+        title: String,
+        summary: String,
+        media: [FeedMediaDTO] = []
+    ) -> FeedItemDTO {
+        FeedItemDTO(
+            id: FeedItemID(kind: .answer, contentID: id),
+            kind: .answer,
+            title: title,
+            summary: summary,
+            details: "回答 · 12345 赞同 · 678 评论",
+            sourceLabel: nil,
+            author: author,
+            thumbnailURL: nil,
+            media: media,
+            route: .answer(answerID: 1, questionID: 2, questionTitle: title)
+        )
+    }
+
+    private static func media(id: String, width: Int, height: Int) -> FeedMediaDTO {
+        FeedMediaDTO(
+            id: id,
+            kind: .image,
+            sourceURL: URL(string: "https://picsum.photos/seed/zhihu-\(id)/\(width)/\(height)")!,
+            thumbnailURL: nil,
+            pixelWidth: width,
+            pixelHeight: height
+        )
+    }
+}
+
+#Preview("Feed card variants") {
+    ScrollView {
+        LazyVStack(spacing: 0) {
+            NativeFeedCard(presentation: FeedCardPresentation(
+                item: FeedCardPreviewFixtures.standard,
+                rank: nil,
+                showsMedia: true
+            ))
+            .nativeFeedCardItemLayout()
+
+            NativeFeedCard(presentation: FeedCardPresentation(
+                item: FeedCardPreviewFixtures.ranked,
+                rank: 2,
+                showsMedia: false
+            ))
+            .nativeFeedCardItemLayout()
+
+            NativeFeedCard(presentation: FeedCardPresentation(
+                item: FeedCardPreviewFixtures.gallery,
+                rank: nil,
+                showsMedia: true
+            ))
+            .nativeFeedCardItemLayout()
+        }
+    }
+    .background(Color(uiColor: .systemBackground))
+}
+#endif

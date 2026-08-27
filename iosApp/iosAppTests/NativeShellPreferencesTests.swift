@@ -713,13 +713,319 @@ final class NativeShellPreferencesTests: XCTestCase {
         ), 0)
     }
 
-    func testEveryHomeChannelHasAUniqueMatchingFullHeaderScrollAnchor() {
-        let anchors = HomeChannel.allCases.map {
-            NativeHomeHeaderLayoutPolicy.scrollAnchor(for: $0)
-        }
+    func testEveryHomeChannelHasUniqueRevealedAndCollapsedTopAnchors() {
+        let revealedAnchors = HomeChannel.allCases.map(NativeHomeListScrollAnchor.revealedTop)
+        let collapsedAnchors = HomeChannel.allCases.map(NativeHomeListScrollAnchor.collapsedTop)
 
-        XCTAssertEqual(anchors, HomeChannel.allCases)
-        XCTAssertEqual(Set(anchors).count, 4)
+        XCTAssertEqual(revealedAnchors, [
+            .revealedTop(.recommendation),
+            .revealedTop(.following),
+            .revealedTop(.hot),
+            .revealedTop(.daily),
+        ])
+        XCTAssertEqual(collapsedAnchors, [
+            .collapsedTop(.recommendation),
+            .collapsedTop(.following),
+            .collapsedTop(.hot),
+            .collapsedTop(.daily),
+        ])
+        XCTAssertEqual(Set(revealedAnchors + collapsedAnchors).count, 8)
+        XCTAssertEqual(
+            NativeHomeTopChromeLayout.revealedOffset,
+            0
+        )
+        XCTAssertEqual(
+            NativeHomeTopChromeLayout.collapsedOffset,
+            NativeHomeTopChromeLayout.refreshRevealHeight
+        )
+        XCTAssertEqual(
+            NativeHomeTopChromeLayout.hiddenLeadingContentHeight,
+            NativeHomeTopChromeLayout.refreshRevealHeight
+                + NativeHomeTopChromeLayout.searchDrawerHeight
+        )
+        XCTAssertGreaterThan(
+            NativeHomeTopChromeLayout.searchDrawerHeight,
+            NativeHomeTopChromeLayout.searchFieldHeight
+                + NativeHomeTopChromeLayout.searchBottomInset
+        )
+        XCTAssertEqual(
+            NativeHomeTopChromeLayout.refreshPullDistance(normalizedOffset: -20),
+            20
+        )
+        XCTAssertEqual(
+            NativeHomeTopChromeLayout.refreshPullDistance(normalizedOffset: 20),
+            0
+        )
+    }
+
+    func testMinimumScrollExtentGuaranteesTheCollapsedDrawerOffset() {
+        XCTAssertEqual(
+            NativeHomeMinimumScrollRangePolicy.extentHeight(
+                currentExtentHeight: 800,
+                maximumNormalizedOffset: 740,
+                requiredMaximumOffset: 56
+            ),
+            116
+        )
+        XCTAssertEqual(
+            NativeHomeMinimumScrollRangePolicy.extentHeight(
+                currentExtentHeight: 200,
+                maximumNormalizedOffset: 56,
+                requiredMaximumOffset: 56
+            ),
+            200
+        )
+        XCTAssertEqual(
+            NativeHomeMinimumScrollRangePolicy.extentHeight(
+                currentExtentHeight: 20,
+                maximumNormalizedOffset: 200,
+                requiredMaximumOffset: 56
+            ),
+            NativeHomeMinimumScrollRangePolicy.minimumExtentHeight
+        )
+        XCTAssertEqual(
+            NativeHomeMinimumScrollRangePolicy.extentHeight(
+                currentExtentHeight: 1,
+                maximumNormalizedOffset: -600,
+                requiredMaximumOffset: 56
+            ),
+            657
+        )
+    }
+
+    func testSearchDrawerSnapsOpenAfterAShallowPullAndClosedBelowThreshold() {
+        XCTAssertEqual(
+            NativeHomeSearchDrawerSnapPolicy.target(
+                normalizedOffset: 37,
+                isRefreshing: false
+            ),
+            .revealed
+        )
+        XCTAssertEqual(
+            NativeHomeSearchDrawerSnapPolicy.target(
+                normalizedOffset: 39,
+                isRefreshing: false
+            ),
+            .collapsed
+        )
+        XCTAssertEqual(
+            NativeHomeSearchDrawerSnapPolicy.target(
+                normalizedOffset: 0,
+                isRefreshing: false
+            ),
+            .revealed
+        )
+        XCTAssertEqual(
+            NativeHomeSearchDrawerSnapPolicy.target(
+                normalizedOffset: 56,
+                isRefreshing: false
+            ),
+            .collapsed
+        )
+        XCTAssertNil(NativeHomeSearchDrawerSnapPolicy.target(
+            normalizedOffset: -20,
+            isRefreshing: true
+        ))
+        XCTAssertNil(NativeHomeSearchDrawerSnapPolicy.target(
+            normalizedOffset: -20,
+            isRefreshing: false
+        ))
+        XCTAssertNil(NativeHomeSearchDrawerSnapPolicy.target(
+            normalizedOffset: 112,
+            isRefreshing: false
+        ))
+        XCTAssertNil(NativeHomeSearchDrawerSnapPolicy.target(
+            normalizedOffset: .nan,
+            isRefreshing: false
+        ))
+
+        XCTAssertTrue(NativeHomeSearchDrawerVisibilityPolicy.isRevealed(
+            normalizedOffset: 0
+        ))
+        XCTAssertTrue(NativeHomeSearchDrawerVisibilityPolicy.isRevealed(
+            normalizedOffset: 37
+        ))
+        XCTAssertTrue(NativeHomeSearchDrawerVisibilityPolicy.isRevealed(
+            normalizedOffset: -20
+        ))
+        XCTAssertFalse(NativeHomeSearchDrawerVisibilityPolicy.isRevealed(
+            normalizedOffset: 56
+        ))
+        XCTAssertFalse(NativeHomeSearchDrawerVisibilityPolicy.isRevealed(
+            normalizedOffset: 112
+        ))
+        XCTAssertFalse(NativeHomeSearchDrawerVisibilityPolicy.isRevealed(
+            normalizedOffset: .nan
+        ))
+    }
+
+    func testInitialPullDrawerAlignmentRequiresARealSettledOffsetAndIsBounded() {
+        XCTAssertFalse(NativeHomeInitialTopAlignmentPolicy.isAligned(
+            normalizedOffset: .nan
+        ))
+        XCTAssertFalse(NativeHomeInitialTopAlignmentPolicy.isAligned(
+            normalizedOffset: 0
+        ))
+        XCTAssertTrue(NativeHomeInitialTopAlignmentPolicy.isAligned(
+            normalizedOffset: NativeHomeTopChromeLayout.collapsedOffset
+        ))
+        XCTAssertTrue(NativeHomeInitialTopAlignmentPolicy.isAligned(
+            normalizedOffset: NativeHomeTopChromeLayout.collapsedOffset + 0.5
+        ))
+        XCTAssertFalse(NativeHomeInitialTopAlignmentPolicy.isAligned(
+            normalizedOffset: NativeHomeTopChromeLayout.collapsedOffset + 1
+        ))
+
+        XCTAssertTrue(NativeHomeInitialTopAlignmentPolicy.canAttempt(after: 0))
+        XCTAssertTrue(NativeHomeInitialTopAlignmentPolicy.canAttempt(
+            after: NativeHomeInitialTopAlignmentPolicy.maximumAttempts - 1
+        ))
+        XCTAssertFalse(NativeHomeInitialTopAlignmentPolicy.canAttempt(
+            after: NativeHomeInitialTopAlignmentPolicy.maximumAttempts
+        ))
+    }
+
+    func testPullDrawerSettlementSeparatesUserIntentFromLayoutChanges() {
+        XCTAssertEqual(
+            NativeHomeSearchDrawerSettlementPolicy.decision(
+                previousTarget: .collapsed,
+                normalizedOffset: 20,
+                reason: .interactionEnded,
+                isRefreshing: false
+            ),
+            NativeHomeSearchDrawerSettlementDecision(
+                settledTarget: .revealed,
+                scrollTarget: .revealed
+            )
+        )
+        XCTAssertEqual(
+            NativeHomeSearchDrawerSettlementPolicy.decision(
+                previousTarget: .collapsed,
+                normalizedOffset: -10,
+                reason: .interactionEnded,
+                isRefreshing: false
+            ),
+            NativeHomeSearchDrawerSettlementDecision(
+                settledTarget: .revealed,
+                scrollTarget: nil
+            )
+        )
+        XCTAssertEqual(
+            NativeHomeSearchDrawerSettlementPolicy.decision(
+                previousTarget: .collapsed,
+                normalizedOffset: 0,
+                reason: .layoutChanged,
+                isRefreshing: false
+            ),
+            NativeHomeSearchDrawerSettlementDecision(
+                settledTarget: .collapsed,
+                scrollTarget: .collapsed
+            )
+        )
+        XCTAssertEqual(
+            NativeHomeSearchDrawerSettlementPolicy.decision(
+                previousTarget: .revealed,
+                normalizedOffset: 140,
+                reason: .interactionEnded,
+                isRefreshing: false
+            ),
+            NativeHomeSearchDrawerSettlementDecision(
+                settledTarget: .collapsed,
+                scrollTarget: nil
+            )
+        )
+        XCTAssertEqual(
+            NativeHomeSearchDrawerSettlementPolicy.decision(
+                previousTarget: .revealed,
+                normalizedOffset: 0,
+                reason: .layoutChanged,
+                isRefreshing: true
+            ),
+            NativeHomeSearchDrawerSettlementDecision(
+                settledTarget: .revealed,
+                scrollTarget: nil
+            )
+        )
+    }
+
+    func testTopBarScrollIntentUsesAsymmetricDirectionThresholds() {
+        var tracker = NativeHomeTopBarScrollIntentTracker()
+        tracker.updateInteraction(isInteracting: true, offset: 100)
+
+        XCTAssertNil(tracker.updateOffset(110, isActive: true))
+        XCTAssertNil(tracker.updateOffset(117.9, isActive: true))
+        XCTAssertEqual(tracker.updateOffset(118.5, isActive: true), .hide)
+
+        XCTAssertNil(tracker.updateOffset(115.1, isActive: true))
+        XCTAssertEqual(tracker.updateOffset(114, isActive: true), .show)
+    }
+
+    func testTopBarScrollIntentResetsDistanceWhenDirectionReverses() {
+        var tracker = NativeHomeTopBarScrollIntentTracker()
+        tracker.updateInteraction(isInteracting: true, offset: 100)
+
+        XCTAssertNil(tracker.updateOffset(112, isActive: true))
+        XCTAssertNil(tracker.updateOffset(110, isActive: true))
+        XCTAssertNil(tracker.updateOffset(108.5, isActive: true))
+        XCTAssertEqual(tracker.updateOffset(108, isActive: true), .show)
+    }
+
+    func testTopBarScrollIntentIgnoresInactiveAndProgrammaticMovement() {
+        var tracker = NativeHomeTopBarScrollIntentTracker()
+        tracker.updateInteraction(isInteracting: false, offset: 20)
+
+        XCTAssertNil(tracker.updateOffset(200, isActive: true))
+        XCTAssertNil(tracker.updateOffset(220, isActive: false))
+        XCTAssertNil(tracker.updateOffset(.infinity, isActive: true))
+    }
+
+    func testTopBarScrollIntentAlwaysShowsAtTop() {
+        var tracker = NativeHomeTopBarScrollIntentTracker()
+        tracker.updateInteraction(isInteracting: false, offset: 80)
+
+        XCTAssertEqual(tracker.updateOffset(1, isActive: true), .show)
+        XCTAssertEqual(tracker.updateOffset(-20, isActive: true), .show)
+    }
+
+    func testTopBarScrollIntentWaitsUntilPullDrawerIsFullyOutOfView() {
+        var tracker = NativeHomeTopBarScrollIntentTracker()
+        tracker.updateInteraction(isInteracting: true, offset: 0)
+
+        XCTAssertEqual(tracker.updateOffset(0.4, isActive: true), .show)
+        XCTAssertNil(tracker.updateOffset(80, isActive: true))
+        XCTAssertNil(
+            tracker.updateOffset(
+                NativeHomeTopChromeLayout.hiddenLeadingContentHeight - 0.1,
+                isActive: true
+            )
+        )
+        XCTAssertEqual(
+            tracker.updateOffset(
+                NativeHomeTopChromeLayout.hiddenLeadingContentHeight + 0.5,
+                isActive: true
+            ),
+            .hide
+        )
+    }
+
+    func testTopBarScrollIntentAccumulatesSubToleranceMovement() {
+        var tracker = NativeHomeTopBarScrollIntentTracker()
+        tracker.updateInteraction(isInteracting: true, offset: 100)
+
+        XCTAssertNil(tracker.updateOffset(99.7, isActive: true))
+        XCTAssertNil(tracker.updateOffset(99.4, isActive: true))
+        XCTAssertNil(tracker.updateOffset(99.1, isActive: true))
+        XCTAssertNil(tracker.updateOffset(98.8, isActive: true))
+        XCTAssertNil(tracker.updateOffset(98.5, isActive: true))
+        XCTAssertNil(tracker.updateOffset(98.2, isActive: true))
+        XCTAssertNil(tracker.updateOffset(97.9, isActive: true))
+        XCTAssertNil(tracker.updateOffset(97.6, isActive: true))
+        XCTAssertNil(tracker.updateOffset(97.3, isActive: true))
+        XCTAssertNil(tracker.updateOffset(97, isActive: true))
+        XCTAssertNil(tracker.updateOffset(96.7, isActive: true))
+        XCTAssertNil(tracker.updateOffset(96.4, isActive: true))
+        XCTAssertNil(tracker.updateOffset(96.1, isActive: true))
+        XCTAssertEqual(tracker.updateOffset(95.8, isActive: true), .show)
     }
 
     func testChannelSelectorPinsEdgeChannelsBeforeCenteringMiddleChannels() {

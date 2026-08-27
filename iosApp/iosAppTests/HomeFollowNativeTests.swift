@@ -58,6 +58,38 @@ final class FeedChannelRefreshMetadataTests: XCTestCase {
     }
 }
 
+final class NativeFeedPaginationPrefetchPolicyTests: XCTestCase {
+    func testPrefetchStartsFiveItemsBeforeEnd() {
+        XCTAssertFalse(NativeFeedPaginationPrefetchPolicy.isNearEnd(
+            itemIndex: 4,
+            itemCount: 10
+        ))
+        XCTAssertTrue(NativeFeedPaginationPrefetchPolicy.isNearEnd(
+            itemIndex: 5,
+            itemCount: 10
+        ))
+        XCTAssertTrue(NativeFeedPaginationPrefetchPolicy.isNearEnd(
+            itemIndex: 9,
+            itemCount: 10
+        ))
+    }
+
+    func testShortFeedPrefetchesFromItsFirstItem() {
+        XCTAssertTrue(NativeFeedPaginationPrefetchPolicy.isNearEnd(
+            itemIndex: 0,
+            itemCount: 3
+        ))
+        XCTAssertFalse(NativeFeedPaginationPrefetchPolicy.isNearEnd(
+            itemIndex: 3,
+            itemCount: 3
+        ))
+        XCTAssertFalse(NativeFeedPaginationPrefetchPolicy.isNearEnd(
+            itemIndex: 0,
+            itemCount: 0
+        ))
+    }
+}
+
 final class HomeFollowMapperTests: XCTestCase {
     func testFeedMapperKeepsAuthorSourceThumbnailAndTypedAnswerRoute() throws {
         let data = Data(
@@ -568,6 +600,33 @@ final class HomeFollowStoreTests: XCTestCase {
         XCTAssertEqual(store.items, [refreshed])
         XCTAssertFalse(store.isLoading)
         XCTAssertFalse(store.isRefreshing)
+    }
+
+    func testHomeConcurrentPrefetchTriggersOnlyRequestOneNextPage() async {
+        let initial = feedItem(1)
+        let paginated = feedItem(2)
+        let nextURL = URL(string: "https://www.zhihu.com/api/v3/next")!
+        let repository = HomePaginationRefreshRepositoryStub(
+            initial: FeedPageDTO(items: [initial], nextURL: nextURL, isEnd: false),
+            paginated: FeedPageDTO(items: [paginated], nextURL: nil, isEnd: true),
+            refreshed: FeedPageDTO(items: [], nextURL: nil, isEnd: true)
+        )
+        let store = HomeFeedNativeStore(repository: repository)
+        await store.loadInitialIfNeeded()
+
+        let firstTrigger = Task { await store.loadMore() }
+        await repository.waitUntilPaginationStarts()
+        let secondTrigger = Task { await store.loadMore() }
+        await secondTrigger.value
+
+        let requestedURLs = await repository.requestedURLs()
+        XCTAssertEqual(requestedURLs, [nil, nextURL])
+
+        await repository.resumePagination()
+        await firstTrigger.value
+
+        XCTAssertEqual(store.items, [initial, paginated])
+        XCTAssertFalse(store.isLoading)
     }
 
     func testHomeRefreshPublishesFirstBatchFeedbackThenKeepsOverflow() async {

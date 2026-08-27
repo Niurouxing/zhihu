@@ -4,7 +4,7 @@ This directory contains the native SwiftUI iOS app. Its Xcode target no longer b
 
 ## Requirements
 
-- iOS 16.0 or later at runtime. iOS 26 or later is recommended for the full system Liquid Glass appearance.
+- iOS 18.0 or later at runtime. iOS 26 or later is recommended for the full system Liquid Glass appearance.
 - macOS with Xcode 26 or later and the iOS 26 SDK installed. The project uses Swift 5 language mode.
 - Full Xcode installation, not only Command Line Tools.
 - A selected developer directory:

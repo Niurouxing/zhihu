@@ -33,6 +33,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
                 .contentShape(Rectangle())
                 .background {
                     NativeHorizontalChannelSwipeObserver(
+                        isEnabled: isEnabled,
                         containerWidth: geometry.size.width,
                         excludedFrames: swipeExclusionFrames,
                         onChanged: updateChannelSwipe,
@@ -51,6 +52,9 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
         }
         .onChange(of: reduceMotion) { shouldReduceMotion in
             if shouldReduceMotion { dragTranslation = 0 }
+        }
+        .onChange(of: isEnabled) { enabled in
+            if !enabled { dragTranslation = 0 }
         }
         .onDisappear { dragTranslation = 0 }
     }
@@ -110,6 +114,10 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
         _ predictedEndTranslation: CGSize,
         _ containerWidth: CGFloat
     ) {
+        guard isEnabled else {
+            dragTranslation = 0
+            return
+        }
         guard let currentIndex = channels.firstIndex(where: { $0.id == selection }) else {
             return
         }
@@ -179,6 +187,7 @@ struct NativeChannelPageTransitionPolicy {
 /// before beginning unless the initial velocity is predominantly horizontal, leaving vertical
 /// pans entirely to the native scroll view.
 private struct NativeHorizontalChannelSwipeObserver: UIViewRepresentable {
+    let isEnabled: Bool
     let containerWidth: CGFloat
     let excludedFrames: [CGRect]
     let onChanged: (CGSize, CGFloat) -> Void
@@ -207,6 +216,7 @@ private struct NativeHorizontalChannelSwipeObserver: UIViewRepresentable {
     }
 
     private func update(_ view: NativeHorizontalChannelSwipeInstallerView) {
+        view.isSwipeEnabled = isEnabled
         view.containerWidth = containerWidth
         view.excludedFrames = excludedFrames
         view.onChanged = onChanged
@@ -218,6 +228,14 @@ private struct NativeHorizontalChannelSwipeObserver: UIViewRepresentable {
 
 private final class NativeHorizontalChannelSwipeInstallerView: UIView,
     UIGestureRecognizerDelegate {
+    var isSwipeEnabled = true {
+        didSet {
+            guard oldValue != isSwipeEnabled else { return }
+            // Disabling an active recognizer delivers one native `.cancelled` callback.
+            // Let that callback reset the interactive offset instead of cancelling twice.
+            panGestureRecognizer.isEnabled = isSwipeEnabled
+        }
+    }
     var containerWidth: CGFloat = 0
     var excludedFrames: [CGRect] = []
     var onChanged: ((CGSize, CGFloat) -> Void)?
@@ -277,7 +295,8 @@ private final class NativeHorizontalChannelSwipeInstallerView: UIView,
     }
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
+        guard isSwipeEnabled,
+              let pan = gestureRecognizer as? UIPanGestureRecognizer,
               let hostView = gestureHostView
         else { return false }
 
@@ -310,6 +329,7 @@ private final class NativeHorizontalChannelSwipeInstallerView: UIView,
         guard let hostView = gestureHostView else { return }
         let translation = recognizer.translation(in: hostView)
         if recognizer.state == .changed {
+            guard isSwipeEnabled else { return }
             onChanged?(CGSize(width: translation.x, height: translation.y), containerWidth)
             return
         }
@@ -317,6 +337,10 @@ private final class NativeHorizontalChannelSwipeInstallerView: UIView,
             if recognizer.state == .cancelled || recognizer.state == .failed {
                 onCancelled?()
             }
+            return
+        }
+        guard isSwipeEnabled else {
+            onCancelled?()
             return
         }
         let velocity = recognizer.velocity(in: hostView)

@@ -211,6 +211,7 @@ struct SearchNativeView: View {
                     FeedRetryRow(message: error) {
                         Task { await store.refreshSuggestions() }
                     }
+                    .nativeFeedCardItemLayout()
                 }
             } header: {
                 HStack {
@@ -251,12 +252,14 @@ struct SearchNativeView: View {
 
         ForEach(visibleItems) { item in
             FeedItemRow(item: item, showsThumbnail: true, onOpen: onOpen)
+                .nativeFeedCardItemLayout()
         }
 
         if let error = store.resultErrorMessage {
             FeedRetryRow(message: error) {
                 Task { await store.retryResults() }
             }
+            .nativeFeedCardItemLayout()
         } else if store.canLoadNextPage {
             HStack {
                 Spacer()

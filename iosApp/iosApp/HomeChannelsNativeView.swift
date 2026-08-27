@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct HomeChannelRefreshPresentation: Equatable {
     let metadata: FeedChannelRefreshMetadata
@@ -41,6 +42,7 @@ struct HomeChannelsNativeView: View {
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var lastSelectedChannelID: HomeChannel.ID
     @State private var scrollToTopRequests: [HomeChannel: UInt] = [:]
     @State private var idleRefreshTask: Task<Void, Never>?
@@ -48,6 +50,7 @@ struct HomeChannelsNativeView: View {
     @State private var doubleTapRefreshGeneration: UInt = 0
     @State private var wasOperationallyVisible = false
     @State private var refreshStatusNow = Date()
+    @State private var isTopBarVisible = true
 
     let isOperationallyVisible: Bool
     let doubleTapRefreshRequest: UInt
@@ -99,17 +102,108 @@ struct HomeChannelsNativeView: View {
     }
 
     var body: some View {
-        let refreshPresentations = currentRefreshPresentations
-        NativeChannelSwitcher(
-            channels: HomeChannel.allCases,
-            selection: $selectedChannelID,
-            isEnabled: isOperationallyVisible
-        ) { channel in
-            channelContent(channel)
+        ZStack(alignment: .top) {
+            NativeChannelSwitcher(
+                channels: HomeChannel.allCases,
+                selection: $selectedChannelID,
+                isEnabled: isEffectivelyVisible
+            ) { channel in
+                channelContent(channel)
+            }
+
+            homeTopBar
+                .offset(y: isTopBarVisible ? 0 : -NativeHomeTopChromeLayout.height)
+                .opacity(isTopBarVisible ? 1 : 0)
+                .allowsHitTesting(isTopBarVisible)
+                .zIndex(10)
+        }
+        .environment(\.nativeHomeTopBarScrollIntentAction) { intent in
+            handleTopBarScrollIntent(intent)
         }
         .navigationTitle(selectedChannel.title)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarTitleMenu {
+        .toolbar(.hidden, for: .navigationBar)
+        .onAppear {
+            lastSelectedChannelID = selectedChannelID
+            setTopBarVisible(true, animated: false)
+            synchronizeOperationalVisibility()
+        }
+        .onDisappear {
+            transitionOperationalVisibility(to: false)
+            cancelDoubleTapRefresh()
+        }
+        .onChange(of: selectedChannelID) { newChannelID in
+            guard newChannelID != lastSelectedChannelID else { return }
+            cancelDoubleTapRefresh()
+            if wasOperationallyVisible,
+               let previous = HomeChannel(rawValue: lastSelectedChannelID) {
+                recordLastViewed(for: previous)
+            }
+            lastSelectedChannelID = newChannelID
+            setTopBarVisible(true, animated: true)
+            if wasOperationallyVisible {
+                scheduleIdleRefreshIfNeeded(for: selectedChannel)
+            }
+        }
+        .onChange(of: isOperationallyVisible) { _ in
+            synchronizeOperationalVisibility()
+            if isOperationallyVisible {
+                setTopBarVisible(true, animated: false)
+            }
+        }
+        .onChange(of: doubleTapRefreshRequest) { request in
+            guard request > 0 else { return }
+            scheduleDoubleTapRefresh()
+        }
+        .onChange(of: scenePhase) { _ in
+            synchronizeOperationalVisibility()
+        }
+        .task {
+            await runRefreshStatusClock()
+        }
+        .accessibilityIdentifier("home_channels_native")
+    }
+
+    private var homeTopBar: some View {
+        ZStack {
+            Color(uiColor: .systemBackground)
+
+            HStack(spacing: 12) {
+                Button(action: onOpenAccount) {
+                    accountToolbarLabel
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
+                .frame(width: 44, height: 44)
+                .background(.ultraThinMaterial, in: Circle())
+                .contentShape(Circle())
+                .accessibilityLabel("账号")
+                .accessibilityIdentifier("home_account_entry")
+
+                Spacer(minLength: 52)
+
+                HStack(spacing: 2) {
+                    homeToolbarButton(.creation)
+                        .frame(width: 42, height: 42)
+                    homeToolbarButton(.notifications)
+                        .frame(width: 42, height: 42)
+                }
+                .padding(.horizontal, 3)
+                .background(.ultraThinMaterial, in: Capsule())
+            }
+            .padding(.horizontal, 12)
+
+            channelMenu
+        }
+        .frame(height: NativeHomeTopChromeLayout.height)
+        .overlay(alignment: .bottom) {
+            Divider().opacity(0.28)
+        }
+        .accessibilityIdentifier("home_top_chrome")
+    }
+
+    private var channelMenu: some View {
+        Menu {
             ForEach(HomeChannel.allCases) { channel in
                 Button {
                     selectChannel(channel)
@@ -127,59 +221,27 @@ struct HomeChannelsNativeView: View {
             Divider()
 
             Text(
-                refreshPresentations
+                currentRefreshPresentations
                     .presentation(for: selectedChannel)
                     .statusText(now: refreshStatusNow)
             )
-        }
-        .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button(action: onOpenAccount) {
-                    accountToolbarLabel
-                }
-                .accessibilityLabel("账号")
-                .accessibilityIdentifier("home_account_entry")
+        } label: {
+            HStack(spacing: 6) {
+                Text(selectedChannel.title)
+                    .font(.headline)
+                Image(systemName: "chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
-
-            ToolbarItemGroup(placement: .navigationBarTrailing) {
-                homeToolbarButton(.creation)
-                homeToolbarButton(.notifications)
-            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 40)
+            .contentShape(Rectangle())
         }
-        .onAppear {
-            lastSelectedChannelID = selectedChannelID
-            synchronizeOperationalVisibility()
-        }
-        .onDisappear {
-            transitionOperationalVisibility(to: false)
-            cancelDoubleTapRefresh()
-        }
-        .onChange(of: selectedChannelID) { newChannelID in
-            guard newChannelID != lastSelectedChannelID else { return }
-            cancelDoubleTapRefresh()
-            if wasOperationallyVisible,
-               let previous = HomeChannel(rawValue: lastSelectedChannelID) {
-                recordLastViewed(for: previous)
-            }
-            lastSelectedChannelID = newChannelID
-            if wasOperationallyVisible {
-                scheduleIdleRefreshIfNeeded(for: selectedChannel)
-            }
-        }
-        .onChange(of: isOperationallyVisible) { _ in
-            synchronizeOperationalVisibility()
-        }
-        .onChange(of: doubleTapRefreshRequest) { request in
-            guard request > 0 else { return }
-            scheduleDoubleTapRefresh()
-        }
-        .onChange(of: scenePhase) { _ in
-            synchronizeOperationalVisibility()
-        }
-        .task {
-            await runRefreshStatusClock()
-        }
-        .accessibilityIdentifier("home_channels_native")
+        .buttonStyle(.plain)
+        .accessibilityLabel("首页频道，当前为\(selectedChannel.title)")
+        .accessibilityHint("向下轻拉可显示搜索")
+        .accessibilityAction(named: Text("搜索知乎"), onOpenSearch)
+        .accessibilityIdentifier("home_channel_menu")
     }
 
     private var accountToolbarLabel: some View {
@@ -276,6 +338,22 @@ struct HomeChannelsNativeView: View {
 
     private var selectedChannel: HomeChannel {
         HomeChannel(rawValue: selectedChannelID) ?? .recommendation
+    }
+
+    private func handleTopBarScrollIntent(_ intent: NativeHomeTopBarScrollIntent) {
+        guard isEffectivelyVisible else { return }
+        setTopBarVisible(intent == .show, animated: true)
+    }
+
+    private func setTopBarVisible(_ isVisible: Bool, animated: Bool) {
+        guard isTopBarVisible != isVisible else { return }
+        if animated, !reduceMotion {
+            withAnimation(.easeOut(duration: 0.17)) {
+                isTopBarVisible = isVisible
+            }
+        } else {
+            isTopBarVisible = isVisible
+        }
     }
 
     private var isEffectivelyVisible: Bool {
@@ -396,6 +474,7 @@ struct HomeChannelsNativeView: View {
             recordLastViewed(for: selectedChannel)
         }
         if isVisible {
+            setTopBarVisible(true, animated: false)
             scheduleIdleRefreshIfNeeded(for: selectedChannel)
         }
     }

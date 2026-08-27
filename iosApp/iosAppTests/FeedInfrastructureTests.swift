@@ -72,45 +72,203 @@ final class FeedInfrastructureTests: XCTestCase {
         XCTAssertEqual(item.thumbnailPixelWidth, 1280)
         XCTAssertEqual(item.thumbnailPixelHeight, 6076)
         XCTAssertEqual(
-            FeedThumbnailPresentationPolicy.placement(
+            FeedSingleImagePresentationPolicy.layout(
                 pixelWidth: item.thumbnailPixelWidth,
                 pixelHeight: item.thumbnailPixelHeight
             ),
-            .wideInline
-        )
-        XCTAssertEqual(
-            FeedThumbnailPresentationPolicy.placement(
-                pixelWidth: item.thumbnailPixelWidth,
-                pixelHeight: item.thumbnailPixelHeight
-            ).cropAnchor,
-            .top
+            .crop(
+                containerAspectRatio:
+                    FeedSingleImagePresentationPolicy.minimumFullyVisibleAspectRatio
+            )
         )
     }
 
-    func testThumbnailPresentationKeepsNormalPortraitAndUnknownSizesTrailing() {
+    func testSingleImagePresentationFitsLandscapeAndBoundsTallPortraits() {
         XCTAssertEqual(
-            FeedThumbnailPresentationPolicy.placement(pixelWidth: 900, pixelHeight: 1_600),
-            .trailing
+            FeedSingleImagePresentationPolicy.layout(
+                pixelWidth: 1_600,
+                pixelHeight: 900
+            ),
+            .fit
         )
         XCTAssertEqual(
-            FeedThumbnailPresentationPolicy.placement(
+            FeedSingleImagePresentationPolicy.layout(
+                pixelWidth: 2_520,
+                pixelHeight: 900
+            ),
+            .fit
+        )
+        XCTAssertEqual(
+            FeedSingleImagePresentationPolicy.layout(
+                pixelWidth: 900,
+                pixelHeight: 1_200
+            ),
+            .fit
+        )
+        XCTAssertEqual(
+            FeedSingleImagePresentationPolicy.layout(
                 pixelWidth: 900,
                 pixelHeight: 1_600
-            ).cropAnchor,
-            .center
+            ),
+            .crop(
+                containerAspectRatio:
+                    FeedSingleImagePresentationPolicy.minimumFullyVisibleAspectRatio
+            )
         )
         XCTAssertEqual(
-            FeedThumbnailPresentationPolicy.placement(pixelWidth: 1_600, pixelHeight: 900),
-            .trailing
+            FeedSingleImagePresentationPolicy.layout(
+                pixelWidth: 1_080,
+                pixelHeight: 2_400
+            ),
+            .crop(
+                containerAspectRatio:
+                    FeedSingleImagePresentationPolicy.minimumFullyVisibleAspectRatio
+            )
         )
         XCTAssertEqual(
-            FeedThumbnailPresentationPolicy.placement(pixelWidth: nil, pixelHeight: nil),
-            .trailing
+            FeedSingleImagePresentationPolicy.layout(
+                pixelWidth: 3_000,
+                pixelHeight: 600
+            ),
+            .crop(
+                containerAspectRatio:
+                    FeedSingleImagePresentationPolicy.maximumFullyVisibleAspectRatio
+            )
         )
         XCTAssertEqual(
-            FeedThumbnailPresentationPolicy.placement(pixelWidth: 1_000, pixelHeight: 2_500),
-            .wideInline
+            FeedSingleImagePresentationPolicy.layout(
+                pixelWidth: nil,
+                pixelHeight: nil
+            ),
+            .crop(
+                containerAspectRatio:
+                    FeedSingleImagePresentationPolicy.minimumFullyVisibleAspectRatio
+            )
         )
+    }
+
+    func testMediaCarouselShowsTwoOrPartOfThirdAndKeepsEveryItemBrowsable() {
+        XCTAssertEqual(
+            FeedMediaCarouselPresentationPolicy.simultaneousVisibleItemCount(totalItems: 2),
+            2
+        )
+        XCTAssertEqual(
+            FeedMediaCarouselPresentationPolicy.simultaneousVisibleItemCount(totalItems: 3),
+            2.4
+        )
+        XCTAssertEqual(
+            FeedMediaCarouselPresentationPolicy.simultaneousVisibleItemCount(totalItems: 12),
+            2.4
+        )
+        XCTAssertEqual(
+            FeedMediaCarouselPresentationPolicy.itemWidth(
+                availableWidth: 360,
+                spacing: 6,
+                totalItems: 4
+            ),
+            145,
+            accuracy: 0.0001
+        )
+    }
+
+    func testFeedTextPresentationRemovesBlankLinesAndRepeatedWhitespace() {
+        XCTAssertEqual(
+            FeedTextPresentationPolicy.compact("  第一行\n\n 第二行\t结尾  "),
+            "第一行 第二行 结尾"
+        )
+        XCTAssertNil(FeedTextPresentationPolicy.compact(" \n\t "))
+        XCTAssertNil(FeedTextPresentationPolicy.compact(nil))
+    }
+
+    func testFeedCardPresentationSeparatesStandardAndRankedLayoutsBeforeRendering() {
+        let item = feedCardItem(
+            title: "  标题\n 第二行  ",
+            summary: " 摘要一\n\n摘要二 ",
+            details: "回答 · 23000 赞同 · 1528 评论",
+            author: FeedAuthorDTO(
+                memberID: "author",
+                urlToken: "author",
+                displayName: "作者",
+                avatarURL: nil,
+                headline: ""
+            )
+        )
+
+        let standard = FeedCardPresentation(item: item, rank: nil, showsMedia: true)
+        let ranked = FeedCardPresentation(item: item, rank: 2, showsMedia: false)
+
+        XCTAssertEqual(standard.style, .standard)
+        XCTAssertEqual(ranked.style, .ranked(2))
+        XCTAssertEqual(standard.title, "标题 第二行")
+        XCTAssertEqual(standard.summary, "摘要一 摘要二")
+        XCTAssertEqual(standard.metadata.metrics, "2.3 万赞同 · 1,528 评论")
+        XCTAssertTrue(standard.metadata.isVisible)
+        XCTAssertTrue(ranked.accessibilityDescription.hasPrefix("第 2 名，标题 第二行"))
+    }
+
+    func testFeedCardPresentationMakesMediaVariantsExplicit() throws {
+        let thumbnail = try XCTUnwrap(URL(string: "https://pic.zhimg.com/cover.jpg"))
+        let source = try XCTUnwrap(URL(string: "https://pic.zhimg.com/source.jpg"))
+        let preview = try XCTUnwrap(URL(string: "https://pic.zhimg.com/preview.jpg"))
+        let first = FeedMediaDTO(
+            id: "first",
+            kind: .image,
+            sourceURL: source,
+            thumbnailURL: preview,
+            pixelWidth: 1_200,
+            pixelHeight: 800
+        )
+        let second = FeedMediaDTO(
+            id: "second",
+            kind: .animatedImage,
+            sourceURL: source,
+            thumbnailURL: nil,
+            pixelWidth: 800,
+            pixelHeight: 1_200
+        )
+
+        let thumbnailItem = feedCardItem(thumbnailURL: thumbnail)
+        let singleMediaItem = feedCardItem(thumbnailURL: thumbnail, media: [first])
+        let galleryItem = feedCardItem(thumbnailURL: thumbnail, media: [first, second])
+
+        XCTAssertEqual(
+            FeedCardPresentation(item: thumbnailItem, rank: nil, showsMedia: false).media,
+            .none
+        )
+        XCTAssertEqual(
+            FeedCardPresentation(item: thumbnailItem, rank: nil, showsMedia: true).media,
+            .single(FeedCardImagePresentation(
+                url: thumbnail,
+                pixelWidth: nil,
+                pixelHeight: nil,
+                isAnimated: false
+            ))
+        )
+        XCTAssertEqual(
+            FeedCardPresentation(item: singleMediaItem, rank: nil, showsMedia: true).media,
+            .single(FeedCardImagePresentation(
+                url: preview,
+                pixelWidth: 1_200,
+                pixelHeight: 800,
+                isAnimated: false
+            ))
+        )
+        XCTAssertEqual(
+            FeedCardPresentation(item: galleryItem, rank: nil, showsMedia: true).media,
+            .gallery([first, second])
+        )
+    }
+
+    func testFeedCardPresentationOmitsEmptyMetadataSection() {
+        let presentation = FeedCardPresentation(
+            item: feedCardItem(details: "回答", author: nil),
+            rank: nil,
+            showsMedia: true
+        )
+
+        XCTAssertFalse(presentation.media.isVisible)
+        XCTAssertFalse(presentation.metadata.isVisible)
+        XCTAssertEqual(presentation.accessibilityDescription, "标题")
     }
 
     func testFeedMetadataOmitsContentTypeAndCompactsCounts() {
@@ -243,7 +401,12 @@ final class FeedInfrastructureTests: XCTestCase {
         XCTAssertEqual(item.media.first?.previewURL, URL(string: "https://pic.zhimg.com/animated-preview.jpg"))
         XCTAssertEqual(item.media.first?.pixelWidth, 1200)
         XCTAssertEqual(item.media.first?.pixelHeight, 800)
-        XCTAssertEqual(FeedMediaPreviewPolicy.visibleMedia(from: item.media).count, 3)
+        XCTAssertEqual(
+            FeedMediaCarouselPresentationPolicy.simultaneousVisibleItemCount(
+                totalItems: item.media.count
+            ),
+            2.4
+        )
         XCTAssertEqual(item.route, .pin(pinID: 574))
     }
 
@@ -537,6 +700,32 @@ final class FeedInfrastructureTests: XCTestCase {
             questionAuthor: questionAuthor,
             thumbnailURL: nil,
             route: .question(questionID: id, title: "问题 \(id)")
+        )
+    }
+
+    private func feedCardItem(
+        title: String = "标题",
+        summary: String? = nil,
+        details: String = "回答",
+        author: FeedAuthorDTO? = nil,
+        thumbnailURL: URL? = nil,
+        media: [FeedMediaDTO] = []
+    ) -> FeedItemDTO {
+        FeedItemDTO(
+            id: FeedItemID(kind: .answer, contentID: "feed-card-fixture"),
+            kind: .answer,
+            title: title,
+            summary: summary,
+            details: details,
+            sourceLabel: nil,
+            author: author,
+            thumbnailURL: thumbnailURL,
+            media: media,
+            route: .answer(
+                answerID: 1,
+                questionID: 2,
+                questionTitle: title
+            )
         )
     }
 

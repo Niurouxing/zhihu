@@ -114,49 +114,75 @@ struct FeedMediaDTO: Codable, Identifiable, Hashable, Sendable {
     var isAnimated: Bool { kind == .animatedImage }
 }
 
-enum FeedMediaPreviewPolicy {
-    /// Feed rows intentionally decode at most three thumbnails. Remaining media
-    /// is represented by a count badge so image-heavy pins cannot dominate
-    /// scrolling height or start an unbounded number of image requests.
-    static let maximumVisibleItems = 3
+enum FeedMediaCarouselPresentationPolicy {
+    /// Two images are shown in full. Longer galleries expose part of a third
+    /// tile so horizontal browsing is discoverable without adding chrome.
+    static let partiallyVisibleItemCount = 2.4
 
-    static func visibleMedia(from media: [FeedMediaDTO]) -> ArraySlice<FeedMediaDTO> {
-        media.prefix(maximumVisibleItems)
+    static func simultaneousVisibleItemCount(totalItems: Int) -> Double {
+        guard totalItems > 0 else { return 0 }
+        return totalItems <= 2 ? Double(totalItems) : partiallyVisibleItemCount
+    }
+
+    static func itemWidth(
+        availableWidth: Double,
+        spacing: Double,
+        totalItems: Int
+    ) -> Double {
+        let visibleItems = simultaneousVisibleItemCount(totalItems: totalItems)
+        guard availableWidth > 0, visibleItems > 0 else { return 0 }
+
+        let visibleSpacingCount = max(0, ceil(visibleItems) - 1)
+        let availableTileWidth = max(0, availableWidth - spacing * visibleSpacingCount)
+        return availableTileWidth / visibleItems
     }
 }
 
-enum FeedThumbnailPlacement: Equatable, Sendable {
-    case trailing
-    case wideInline
+enum FeedSingleImageLayout: Equatable, Sendable {
+    case fit
+    case crop(containerAspectRatio: Double)
 
-    var cropAnchor: FeedThumbnailCropAnchor {
-        switch self {
-        case .trailing: return .center
-        case .wideInline: return .top
-        }
+    var cropsContent: Bool {
+        if case .crop = self { return true }
+        return false
     }
 }
 
-enum FeedThumbnailCropAnchor: Equatable, Sendable {
-    case center
-    case top
-}
+enum FeedSingleImagePresentationPolicy {
+    /// Landscape images can expand horizontally without making a card too
+    /// tall, so they are shown in full up to 3:1. Portrait images are bounded
+    /// at 3:4: taller phone screenshots remain useful previews instead of
+    /// expanding one feed item to nearly the height of the entire screen.
+    static let minimumFullyVisibleAspectRatio = 3.0 / 4.0
+    static let maximumFullyVisibleAspectRatio = 3.0
 
-enum FeedThumbnailPresentationPolicy {
-    /// Portrait photos such as 9:16 remain compact trailing thumbnails. Only
-    /// unusually tall screenshots move below the text so they do not narrow
-    /// every line in an otherwise tall feed row.
-    private static let wideInlineMaximumAspectRatio = 0.45
-
-    static func placement(pixelWidth: Int?, pixelHeight: Int?) -> FeedThumbnailPlacement {
+    static func layout(pixelWidth: Int?, pixelHeight: Int?) -> FeedSingleImageLayout {
         guard let pixelWidth,
               let pixelHeight,
               pixelWidth > 0,
               pixelHeight > 0
-        else { return .trailing }
+        else {
+            return .crop(containerAspectRatio: minimumFullyVisibleAspectRatio)
+        }
 
         let aspectRatio = Double(pixelWidth) / Double(pixelHeight)
-        return aspectRatio <= wideInlineMaximumAspectRatio ? .wideInline : .trailing
+        if aspectRatio < minimumFullyVisibleAspectRatio {
+            return .crop(containerAspectRatio: minimumFullyVisibleAspectRatio)
+        }
+        if aspectRatio > maximumFullyVisibleAspectRatio {
+            return .crop(containerAspectRatio: maximumFullyVisibleAspectRatio)
+        }
+        return .fit
+    }
+}
+
+enum FeedTextPresentationPolicy {
+    static func compact(_ text: String?) -> String? {
+        guard let text else { return nil }
+        let compacted = text
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        return compacted.isEmpty ? nil : compacted
     }
 }
 
