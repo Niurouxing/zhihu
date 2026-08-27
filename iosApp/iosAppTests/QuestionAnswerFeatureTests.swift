@@ -929,6 +929,56 @@ final class QuestionAnswerFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testVisibleFeedAnswerPreloadsAndSeedsPagerBeforeItsFirstFrame() async throws {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerResult = .success(QAFixtures.answerDTO)
+        let preloader = NativeFeedAnswerPreloader(
+            repository: repository,
+            maximumCachedAnswers: 2,
+            maximumConcurrentPreloads: 1,
+            maximumPendingPreloads: 1
+        )
+        let item = FeedItemDTO(
+            id: FeedItemID(kind: .answer, contentID: "42"),
+            kind: .answer,
+            title: "原生问题",
+            summary: "信息流摘要",
+            details: "1 赞同 · 0 评论",
+            sourceLabel: nil,
+            author: FeedAuthorDTO(
+                memberID: "member",
+                urlToken: "author",
+                displayName: "作者",
+                avatarURL: nil,
+                headline: "简介"
+            ),
+            thumbnailURL: nil,
+            route: .answer(answerID: 42, questionID: 7, questionTitle: "原生问题")
+        )
+
+        preloader.register(item)
+        let route = try XCTUnwrap(item.route.answerRoute)
+        let prefetched = await preloader.answer(for: route)
+
+        XCTAssertEqual(prefetched, QAFixtures.answerDTO)
+        XCTAssertEqual(preloader.cachedPreview(for: route)?.summary, "信息流摘要")
+        XCTAssertEqual(repository.answerFetchCount, 1)
+        preloader.cacheUpdatedAnswer(try XCTUnwrap(prefetched))
+
+        let pager = AnswerPagerStore(
+            route: route,
+            repository: repository,
+            answerPreloader: preloader,
+            openedHistory: StubOpenedHistory()
+        )
+
+        XCTAssertEqual(pager.current.content, QAFixtures.answerDTO)
+        XCTAssertEqual(pager.current.loadState, .loaded)
+        await pager.prepare()
+        XCTAssertEqual(repository.answerFetchCount, 1)
+    }
+
+    @MainActor
     func testPagerContinuesAcrossPagesUntilItFindsAnUnopenedAnswer() async {
         let repository = StubQuestionAnswerRepository()
         repository.answerResult = .success(QAFixtures.answerDTO)
@@ -1249,6 +1299,7 @@ private final class StubQuestionAnswerRepository: QuestionAnswerRepository, @unc
     var questionResult: Result<QuestionDTO, Error> = .failure(QAStubError.failed)
     var answerPageResults: [Result<QuestionAnswerPageDTO, Error>] = []
     var answerResult: Result<AnswerDTO, Error> = .failure(QAStubError.failed)
+    private(set) var answerFetchCount = 0
 
     func fetchQuestion(_ route: QuestionRouteDTO) async throws -> QuestionDTO { try questionResult.get() }
     func fetchQuestionAnswers(questionID: Int64, sort: QuestionAnswerSort, after nextURL: URL?) async throws -> QuestionAnswerPageDTO {
@@ -1256,7 +1307,10 @@ private final class StubQuestionAnswerRepository: QuestionAnswerRepository, @unc
         return try answerPageResults.removeFirst().get()
     }
     func setQuestionFollowing(_ following: Bool, questionID: Int64) async throws {}
-    func fetchAnswer(_ route: AnswerRouteDTO) async throws -> AnswerDTO { try answerResult.get() }
+    func fetchAnswer(_ route: AnswerRouteDTO) async throws -> AnswerDTO {
+        answerFetchCount += 1
+        return try answerResult.get()
+    }
     func setVote(_ state: QAVoteState, route: AnswerRouteDTO) async throws -> QAVoteMutationResult {
         QAVoteMutationResult(state: state, voteUpCount: 1)
     }

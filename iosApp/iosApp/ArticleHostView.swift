@@ -10,6 +10,7 @@ struct ArticleHostView: View {
     init(
         route: AnswerRouteDTO,
         repository: QuestionAnswerRepository,
+        answerPreloader: NativeFeedAnswerPreloader? = nil,
         openedHistory: AnswerOpenedHistory,
         diagnostics: PerformanceDiagnosticsClient = .disabled,
         onNavigate: @escaping (QANavigationIntent) -> Void
@@ -18,6 +19,7 @@ struct ArticleHostView: View {
             wrappedValue: AnswerPagerStore(
                 route: route,
                 repository: repository,
+                answerPreloader: answerPreloader,
                 openedHistory: openedHistory,
                 diagnostics: diagnostics
             )

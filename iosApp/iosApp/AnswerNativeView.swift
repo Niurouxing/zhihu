@@ -19,8 +19,12 @@ struct AnswerNativeView: View {
                         Task { await store.retry() }
                     }
                 case .idle, .loading, .loaded:
-                    ProgressView("正在加载正文")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if let preview = store.initialPreview {
+                        loadingPreview(preview)
+                    } else {
+                        ProgressView("正在加载正文")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
             }
         }
@@ -36,6 +40,57 @@ struct AnswerNativeView: View {
                 message: Text(message.text),
                 dismissButton: .default(Text("知道了")) { store.dismissMessage() }
             )
+        }
+    }
+
+    private func loadingPreview(_ preview: NativeFeedAnswerPreview) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Text(preview.title)
+                    .font(store.initialRoute.kind == .answer ? .title3.bold() : .title2.bold())
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let author = preview.author {
+                    HStack(spacing: 11) {
+                        AsyncImage(url: author.avatarURL) { image in
+                            image.resizable().scaledToFill()
+                        } placeholder: {
+                            Image(systemName: "person.crop.circle.fill")
+                                .resizable()
+                                .foregroundStyle(.tertiary)
+                        }
+                        .frame(width: 42, height: 42)
+                        .clipShape(Circle())
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(author.displayName).font(.headline)
+                            if !author.headline.isEmpty {
+                                Text(author.headline)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                }
+
+                if let summary = preview.summary {
+                    Text(summary)
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 4)
+                    .accessibilityLabel("正在载入完整内容")
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
         }
     }
 

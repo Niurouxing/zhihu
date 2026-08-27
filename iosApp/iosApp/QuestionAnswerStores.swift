@@ -135,6 +135,7 @@ final class QuestionStore: ObservableObject {
 final class AnswerStore: ObservableObject, Identifiable {
     let id: Int64
     let initialRoute: AnswerRouteDTO
+    let initialPreview: NativeFeedAnswerPreview?
 
     @Published private(set) var content: AnswerDTO?
     @Published private(set) var loadState: QAInitialLoadState = .idle
@@ -145,15 +146,35 @@ final class AnswerStore: ObservableObject, Identifiable {
     @Published private(set) var message: QAUserMessage?
 
     private let repository: QuestionAnswerRepository
+    private let answerPreloader: NativeFeedAnswerPreloader?
     private var revision: UInt64 = 0
+    private var didScheduleReadHistory = false
 
-    init(route: AnswerRouteDTO, repository: QuestionAnswerRepository) {
+    init(
+        route: AnswerRouteDTO,
+        repository: QuestionAnswerRepository,
+        preloadedContent: AnswerDTO? = nil,
+        initialPreview: NativeFeedAnswerPreview? = nil,
+        answerPreloader: NativeFeedAnswerPreloader? = nil
+    ) {
         initialRoute = route
         id = route.contentID
         self.repository = repository
+        self.answerPreloader = answerPreloader
+        self.initialPreview = initialPreview
+        if let preloadedContent,
+           preloadedContent.route.contentID == route.contentID,
+           preloadedContent.route.kind == route.kind {
+            content = preloadedContent
+            loadState = .loaded
+        }
     }
 
     func loadIfNeeded() async {
+        if let content, loadState == .loaded {
+            scheduleReadHistory(for: content)
+            return
+        }
         guard loadState == .idle else { return }
         await retry()
     }
@@ -163,22 +184,33 @@ final class AnswerStore: ObservableObject, Identifiable {
         let accepted = revision
         loadState = .loading
         do {
-            let loaded = try await repository.fetchAnswer(initialRoute)
+            let loaded: AnswerDTO
+            if let prefetched = await answerPreloader?.answer(for: initialRoute) {
+                loaded = prefetched
+            } else {
+                loaded = try await repository.fetchAnswer(initialRoute)
+            }
             guard revision == accepted else { return }
             content = loaded
             loadState = .loaded
-            Task {
-                await repository.recordReadHistory(
-                    contentToken: String(loaded.route.contentID),
-                    contentType: loaded.route.kind.rawValue
-                )
-            }
+            scheduleReadHistory(for: loaded)
         } catch is CancellationError {
             if revision == accepted { loadState = content == nil ? .idle : .loaded }
             return
         } catch {
             guard revision == accepted else { return }
             loadState = .failed(error.localizedDescription)
+        }
+    }
+
+    private func scheduleReadHistory(for content: AnswerDTO) {
+        guard !didScheduleReadHistory else { return }
+        didScheduleReadHistory = true
+        Task {
+            await repository.recordReadHistory(
+                contentToken: String(content.route.contentID),
+                contentType: content.route.kind.rawValue
+            )
         }
     }
 
@@ -190,6 +222,7 @@ final class AnswerStore: ObservableObject, Identifiable {
             let result = try await repository.setVote(requested, route: content.route)
             guard self.content?.route.contentID == content.route.contentID else { return }
             self.content = content.replacingVote(result.state, count: result.voteUpCount)
+            if let updated = self.content { answerPreloader?.cacheUpdatedAnswer(updated) }
         } catch is CancellationError {
             return
         } catch {
@@ -209,6 +242,7 @@ final class AnswerStore: ObservableObject, Identifiable {
             guard self.content?.route.contentID == content.route.contentID else { return }
             collections = loaded.items
             self.content = content.replacingFavorite(loaded.favoriteState, count: content.favoriteCount)
+            if let updated = self.content { answerPreloader?.cacheUpdatedAnswer(updated) }
             collectionsState = .loaded
         } catch is CancellationError {
             collectionsState = collections.isEmpty ? .idle : .loaded
@@ -245,6 +279,7 @@ final class AnswerStore: ObservableObject, Identifiable {
                 isAnyFavorite ? .favorited : .notFavorited,
                 count: content.favoriteCount + delta
             )
+            if let updated = self.content { answerPreloader?.cacheUpdatedAnswer(updated) }
             message = QAUserMessage(text: selected ? "收藏成功" : "已取消收藏")
         } catch is CancellationError {
             return
@@ -308,6 +343,7 @@ final class AnswerPagerStore: ObservableObject {
     @Published private(set) var boundaryNotice: String?
 
     private let repository: QuestionAnswerRepository
+    private let answerPreloader: NativeFeedAnswerPreloader?
     private let openedHistory: AnswerOpenedHistory
     private let diagnostics: PerformanceDiagnosticsClient
     private var routes: [AnswerRouteDTO]
@@ -328,10 +364,12 @@ final class AnswerPagerStore: ObservableObject {
     init(
         route: AnswerRouteDTO,
         repository: QuestionAnswerRepository,
+        answerPreloader: NativeFeedAnswerPreloader? = nil,
         openedHistory: AnswerOpenedHistory = UserDefaultsAnswerOpenedHistory(),
         diagnostics: PerformanceDiagnosticsClient = .disabled
     ) {
         self.repository = repository
+        self.answerPreloader = answerPreloader
         self.openedHistory = openedHistory
         self.diagnostics = diagnostics
         if let source = route.source {
@@ -357,7 +395,14 @@ final class AnswerPagerStore: ObservableObject {
             index = 0
             nextURL = nil
         }
-        let store = AnswerStore(route: routes[index], repository: repository)
+        let initialRoute = routes[index]
+        let store = AnswerStore(
+            route: initialRoute,
+            repository: repository,
+            preloadedContent: answerPreloader?.takeCachedAnswer(for: initialRoute),
+            initialPreview: answerPreloader?.cachedPreview(for: initialRoute),
+            answerPreloader: answerPreloader
+        )
         current = store
         stores[store.id] = store
         updateNeighbors()
@@ -423,7 +468,13 @@ final class AnswerPagerStore: ObservableObject {
 
     private func store(for route: AnswerRouteDTO) -> AnswerStore {
         if let stored = stores[route.contentID] { return stored }
-        let created = AnswerStore(route: route, repository: repository)
+        let created = AnswerStore(
+            route: route,
+            repository: repository,
+            preloadedContent: answerPreloader?.takeCachedAnswer(for: route),
+            initialPreview: answerPreloader?.cachedPreview(for: route),
+            answerPreloader: answerPreloader
+        )
         stores[route.contentID] = created
         return created
     }

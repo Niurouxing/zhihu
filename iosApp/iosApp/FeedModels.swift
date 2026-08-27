@@ -231,6 +231,41 @@ enum FeedItemRoute: Codable, Hashable, Sendable {
     case question(questionID: Int64, title: String)
     case pin(pinID: Int64)
     case video(NativeVideoRouteDTO)
+
+    var navigationTransitionID: FeedItemID {
+        switch self {
+        case let .answer(answerID, _, _):
+            FeedItemID(kind: .answer, contentID: String(answerID))
+        case let .article(articleID, _):
+            FeedItemID(kind: .article, contentID: String(articleID))
+        case let .question(questionID, _):
+            FeedItemID(kind: .question, contentID: String(questionID))
+        case let .pin(pinID):
+            FeedItemID(kind: .pin, contentID: String(pinID))
+        case let .video(route):
+            FeedItemID(kind: .video, contentID: String(route.contentID))
+        }
+    }
+
+    var answerRoute: AnswerRouteDTO? {
+        switch self {
+        case let .answer(answerID, questionID, questionTitle):
+            AnswerRouteDTO(
+                contentID: answerID,
+                kind: .answer,
+                questionID: questionID,
+                provisionalTitle: questionTitle
+            )
+        case let .article(articleID, title):
+            AnswerRouteDTO(
+                contentID: articleID,
+                kind: .article,
+                provisionalTitle: title
+            )
+        case .question, .pin, .video:
+            nil
+        }
+    }
 }
 
 struct FeedItemDTO: Codable, Identifiable, Hashable, Sendable {

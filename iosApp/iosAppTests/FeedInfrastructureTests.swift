@@ -36,6 +36,58 @@ final class FeedInfrastructureTests: XCTestCase {
         XCTAssertEqual(item.route, .article(articleID: 81, title: "原生搜索文章"))
     }
 
+    func testFeedRoutesAndShellDestinationsShareZoomTransitionIdentity() {
+        let answer = FeedItemRoute.answer(
+            answerID: 42,
+            questionID: 7,
+            questionTitle: "问题"
+        )
+        XCTAssertEqual(
+            answer.navigationTransitionID,
+            NativeShellRoute.answer(.init(
+                contentID: 42,
+                kind: .answer,
+                questionID: 7,
+                provisionalTitle: "问题"
+            )).feedNavigationTransitionID
+        )
+
+        let article = FeedItemRoute.article(articleID: 81, title: "文章")
+        XCTAssertEqual(
+            article.navigationTransitionID,
+            NativeShellRoute.answer(.init(
+                contentID: 81,
+                kind: .article,
+                provisionalTitle: "文章"
+            )).feedNavigationTransitionID
+        )
+
+        let question = FeedItemRoute.question(questionID: 7, title: "问题")
+        XCTAssertEqual(
+            question.navigationTransitionID,
+            NativeShellRoute.question(.init(
+                questionID: 7,
+                provisionalTitle: "问题"
+            )).feedNavigationTransitionID
+        )
+
+        let pin = FeedItemRoute.pin(pinID: 99)
+        XCTAssertEqual(
+            pin.navigationTransitionID,
+            NativeShellRoute.pin(.init(pinID: 99)).feedNavigationTransitionID
+        )
+
+        let videoRoute = NativeVideoRouteDTO(
+            contentID: 123,
+            contentType: .zvideo
+        )
+        XCTAssertEqual(
+            FeedItemRoute.video(videoRoute).navigationTransitionID,
+            NativeShellRoute.video(videoRoute).feedNavigationTransitionID
+        )
+        XCTAssertNil(NativeShellRoute.account.feedNavigationTransitionID)
+    }
+
     func testAnswerProjectionPreservesThumbnailDimensionsForTallLayout() throws {
         let data = Data(
             #"""

@@ -1,5 +1,211 @@
 import SwiftUI
 
+private struct NativeFeedNavigationNamespaceKey: EnvironmentKey {
+    static let defaultValue: Namespace.ID? = nil
+}
+
+private struct NativeFeedAnswerPreloaderKey: EnvironmentKey {
+    static let defaultValue: NativeFeedAnswerPreloader? = nil
+}
+
+extension EnvironmentValues {
+    var nativeFeedNavigationNamespace: Namespace.ID? {
+        get { self[NativeFeedNavigationNamespaceKey.self] }
+        set { self[NativeFeedNavigationNamespaceKey.self] = newValue }
+    }
+
+    var nativeFeedAnswerPreloader: NativeFeedAnswerPreloader? {
+        get { self[NativeFeedAnswerPreloaderKey.self] }
+        set { self[NativeFeedAnswerPreloaderKey.self] = newValue }
+    }
+}
+
+struct NativeFeedAnswerPreview: Equatable, Sendable {
+    let title: String
+    let summary: String?
+    let author: FeedAuthorDTO?
+
+    init(item: FeedItemDTO) {
+        title = FeedTextPresentationPolicy.compact(item.title) ?? item.title
+        summary = FeedTextPresentationPolicy.compact(item.summary)
+        author = item.author
+    }
+}
+
+/// Keeps the first frame of an answer/article destination warm without making
+/// every feed cell own networking state. Visible cells enqueue a small bounded
+/// amount of work; opening a queued item promotes that request immediately.
+@MainActor
+final class NativeFeedAnswerPreloader {
+    private let repository: QuestionAnswerRepository
+    private let maximumCachedAnswers: Int
+    private let maximumConcurrentPreloads: Int
+    private let maximumPendingPreloads: Int
+
+    private var answers: [FeedItemID: AnswerDTO] = [:]
+    private var previews: [FeedItemID: NativeFeedAnswerPreview] = [:]
+    private var cacheOrder: [FeedItemID] = []
+    private var previewOrder: [FeedItemID] = []
+    private var tasks: [FeedItemID: Task<AnswerDTO?, Never>] = [:]
+    private var pendingRoutes: [AnswerRouteDTO] = []
+    private var pendingIDs: Set<FeedItemID> = []
+    private var consumingIDs: Set<FeedItemID> = []
+    private var activePreloadCount = 0
+
+    init(
+        repository: QuestionAnswerRepository,
+        maximumCachedAnswers: Int = 16,
+        maximumConcurrentPreloads: Int = 3,
+        maximumPendingPreloads: Int = 8
+    ) {
+        self.repository = repository
+        self.maximumCachedAnswers = max(1, maximumCachedAnswers)
+        self.maximumConcurrentPreloads = max(1, maximumConcurrentPreloads)
+        self.maximumPendingPreloads = max(0, maximumPendingPreloads)
+    }
+
+    func register(_ item: FeedItemDTO) {
+        guard let route = item.route.answerRoute else { return }
+        let id = item.route.navigationTransitionID
+        previews[id] = NativeFeedAnswerPreview(item: item)
+        touch(id, in: &previewOrder)
+        trim(&previews, order: &previewOrder, limit: maximumCachedAnswers)
+        preload(route)
+    }
+
+    func cachedAnswer(for route: AnswerRouteDTO) -> AnswerDTO? {
+        let id = transitionID(for: route)
+        guard let answer = answers[id], answerMatches(answer, route: route) else { return nil }
+        touch(id, in: &cacheOrder)
+        return answer
+    }
+
+    func takeCachedAnswer(for route: AnswerRouteDTO) -> AnswerDTO? {
+        let id = transitionID(for: route)
+        guard let answer = answers[id], answerMatches(answer, route: route) else { return nil }
+        answers.removeValue(forKey: id)
+        cacheOrder.removeAll { $0 == id }
+        return answer
+    }
+
+    func cacheUpdatedAnswer(_ answer: AnswerDTO) {
+        let id = transitionID(for: answer.route)
+        answers[id] = answer
+        touch(id, in: &cacheOrder)
+        trim(&answers, order: &cacheOrder, limit: maximumCachedAnswers)
+    }
+
+    func cachedPreview(for route: AnswerRouteDTO) -> NativeFeedAnswerPreview? {
+        let id = transitionID(for: route)
+        guard let preview = previews[id] else { return nil }
+        touch(id, in: &previewOrder)
+        return preview
+    }
+
+    func answer(for route: AnswerRouteDTO) async -> AnswerDTO? {
+        if let cached = takeCachedAnswer(for: route) { return cached }
+        let id = transitionID(for: route)
+        consumingIDs.insert(id)
+        if let task = tasks[id] { return await task.value }
+
+        if pendingIDs.remove(id) != nil {
+            pendingRoutes.removeAll { transitionID(for: $0) == id }
+        }
+        return await start(route).value
+    }
+
+    private func preload(_ route: AnswerRouteDTO) {
+        let id = transitionID(for: route)
+        guard answers[id] == nil, tasks[id] == nil, !pendingIDs.contains(id) else { return }
+        if activePreloadCount < maximumConcurrentPreloads {
+            _ = start(route)
+            return
+        }
+        guard maximumPendingPreloads > 0 else { return }
+        pendingRoutes.append(route)
+        pendingIDs.insert(id)
+        while pendingRoutes.count > maximumPendingPreloads {
+            let removed = pendingRoutes.removeFirst()
+            pendingIDs.remove(transitionID(for: removed))
+        }
+    }
+
+    private func start(_ route: AnswerRouteDTO) -> Task<AnswerDTO?, Never> {
+        let id = transitionID(for: route)
+        if let existing = tasks[id] { return existing }
+        activePreloadCount += 1
+        let repository = repository
+        let task = Task { try? await repository.fetchAnswer(route) }
+        tasks[id] = task
+        Task { @MainActor [weak self] in
+            let answer = await task.value
+            self?.finish(answer, route: route)
+        }
+        return task
+    }
+
+    private func finish(_ answer: AnswerDTO?, route: AnswerRouteDTO) {
+        let id = transitionID(for: route)
+        tasks[id] = nil
+        activePreloadCount = max(0, activePreloadCount - 1)
+        let wasConsumed = consumingIDs.remove(id) != nil
+        if let answer, answerMatches(answer, route: route), !wasConsumed {
+            cacheUpdatedAnswer(answer)
+        }
+        drainPendingRoutes()
+    }
+
+    private func drainPendingRoutes() {
+        while activePreloadCount < maximumConcurrentPreloads, !pendingRoutes.isEmpty {
+            let route = pendingRoutes.removeFirst()
+            let id = transitionID(for: route)
+            pendingIDs.remove(id)
+            guard answers[id] == nil, tasks[id] == nil else { continue }
+            _ = start(route)
+        }
+    }
+
+    private func transitionID(for route: AnswerRouteDTO) -> FeedItemID {
+        FeedItemID(
+            kind: route.kind == .answer ? .answer : .article,
+            contentID: String(route.contentID)
+        )
+    }
+
+    private func answerMatches(_ answer: AnswerDTO, route: AnswerRouteDTO) -> Bool {
+        answer.route.contentID == route.contentID && answer.route.kind == route.kind
+    }
+
+    private func touch(_ id: FeedItemID, in order: inout [FeedItemID]) {
+        order.removeAll { $0 == id }
+        order.append(id)
+    }
+
+    private func trim<Value>(
+        _ values: inout [FeedItemID: Value],
+        order: inout [FeedItemID],
+        limit: Int
+    ) {
+        while order.count > limit {
+            values.removeValue(forKey: order.removeFirst())
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func nativeFeedNavigationTransitionSource(
+        id: FeedItemID,
+        namespace: Namespace.ID?
+    ) -> some View {
+        if let namespace {
+            matchedTransitionSource(id: id, in: namespace)
+        } else {
+            self
+        }
+    }
+}
+
 enum NativeFeedCardLayout {
     static let cornerRadius: CGFloat = 16
     static let horizontalInset: CGFloat = 16
@@ -132,6 +338,8 @@ struct FeedItemRow: View {
     @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
     @Environment(\.nativeContentPresentation) private var contentPresentation
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
+    @Environment(\.nativeFeedNavigationNamespace) private var navigationNamespace
+    @Environment(\.nativeFeedAnswerPreloader) private var answerPreloader
 
     init(
         item: FeedItemDTO,
@@ -150,6 +358,13 @@ struct FeedItemRow: View {
             onOpen(item.route)
         } label: {
             NativeFeedCard(presentation: cardPresentation)
+                // The transition owns the visual card only. If it owns the
+                // Button, an interrupted interactive pop can leave the whole
+                // lazy row hidden even though the row still occupies space.
+                .nativeFeedNavigationTransitionSource(
+                    id: item.route.navigationTransitionID,
+                    namespace: navigationNamespace
+                )
         }
         .buttonStyle(FeedCardButtonStyle())
         .questionAuthorContextMenu(
@@ -157,6 +372,7 @@ struct FeedItemRow: View {
             block: blockQuestionAuthor
         )
         .accessibilityLabel(cardPresentation.accessibilityDescription)
+        .onAppear { answerPreloader?.register(item) }
     }
 
     private var cardPresentation: FeedCardPresentation {

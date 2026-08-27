@@ -52,6 +52,38 @@ enum NativeShellRoute: Hashable {
         case .systemAndUpdate: return "system_and_update"
         }
     }
+
+    var feedNavigationTransitionID: FeedItemID? {
+        switch self {
+        case let .answer(route):
+            FeedItemID(
+                kind: route.kind == .answer ? .answer : .article,
+                contentID: String(route.contentID)
+            )
+        case let .question(route):
+            FeedItemID(kind: .question, contentID: String(route.questionID))
+        case let .pin(route):
+            FeedItemID(kind: .pin, contentID: String(route.pinID))
+        case let .video(route):
+            FeedItemID(kind: .video, contentID: String(route.contentID))
+        default:
+            nil
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func nativeFeedNavigationDestinationTransition(
+        sourceID: FeedItemID?,
+        namespace: Namespace.ID
+    ) -> some View {
+        if let sourceID {
+            navigationTransition(.zoom(sourceID: sourceID, in: namespace))
+        } else {
+            self
+        }
+    }
 }
 
 enum NativeHotSystemNavigationTarget: Equatable {
@@ -286,6 +318,7 @@ struct NativeAppShell: View {
     @State private var showsCopiedLinkConfirmation = false
     @State private var homeDoubleTapRefreshRequest: UInt = 0
     @State private var clipboardInspectionArmed = false
+    @Namespace private var feedNavigationNamespace
 
     init(hostModel: HostModel, isAppUnlocked: Bool) {
         self.hostModel = hostModel
@@ -418,6 +451,8 @@ struct NativeAppShell: View {
         }
         .environment(\.nativeContentPresentation, preferences.contentPresentation)
         .environment(\.nativeSearchPresentation, preferences.searchPresentation)
+        .environment(\.nativeFeedNavigationNamespace, feedNavigationNamespace)
+        .environment(\.nativeFeedAnswerPreloader, hostModel.feedAnswerPreloader)
         .environment(
             \.nativeHapticFeedback,
             .live(configuration: preferences.hapticFeedbackConfiguration)
@@ -460,6 +495,7 @@ struct NativeAppShell: View {
                 ArticleHostView(
                     route: route,
                     repository: hostModel.questionAnswerRepository,
+                    answerPreloader: hostModel.feedAnswerPreloader,
                     openedHistory: hostModel.answerOpenedHistory,
                     diagnostics: hostModel.performanceDiagnostics.client,
                     onNavigate: { handleQAIntent($0, in: tab) }
@@ -576,6 +612,10 @@ struct NativeAppShell: View {
                 SystemAndUpdateView(openExternalLink: hostModel.openSystemExternalLink)
             }
         }
+        .nativeFeedNavigationDestinationTransition(
+            sourceID: route.feedNavigationTransitionID,
+            namespace: feedNavigationNamespace
+        )
     }
 
     private var accountActions: NativeAccountActions {

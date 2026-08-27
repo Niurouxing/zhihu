@@ -94,6 +94,7 @@ final class HostModel: ObservableObject {
     let pinRepository: PinRepository
     let creationRepository: CreationRepository
     let questionAnswerRepository: QuestionAnswerRepository
+    let feedAnswerPreloader: NativeFeedAnswerPreloader
     let videoRepository: NativeVideoRepository
     let answerOpenedHistory: AnswerOpenedHistory
     let systemSettings: NativeSystemIntegrationSettings
@@ -147,7 +148,9 @@ final class HostModel: ObservableObject {
         dailyRepository = URLSessionDailyRepository(client: client)
         pinRepository = URLSessionPinRepository(client: client)
         creationRepository = URLSessionCreationRepository(client: client)
-        questionAnswerRepository = URLSessionQuestionAnswerRepository(client: client)
+        let questionAnswerRepository = URLSessionQuestionAnswerRepository(client: client)
+        self.questionAnswerRepository = questionAnswerRepository
+        feedAnswerPreloader = NativeFeedAnswerPreloader(repository: questionAnswerRepository)
         videoRepository = URLSessionNativeVideoRepository(client: client)
         answerOpenedHistory = UserDefaultsAnswerOpenedHistory(defaults: defaults)
         self.systemSettings = systemSettings
