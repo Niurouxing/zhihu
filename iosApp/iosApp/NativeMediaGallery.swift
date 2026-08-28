@@ -35,13 +35,28 @@ struct NativeMediaGallery: View {
 
                 HStack(spacing: 0) {
                     ForEach(urls.indices, id: \.self) { index in
-                        NativeZoomableRemoteImage(
-                            url: urls[index],
-                            store: imageStore,
-                            onZoomChanged: { isZoomed in
-                                if isZoomed { zoomedIndices.insert(index) } else { zoomedIndices.remove(index) }
+                        Group {
+                            if NativeMediaGalleryPresentationPolicy.shouldMount(
+                                pageIndex: index,
+                                selectedIndex: selectedIndex,
+                                pageCount: urls.count
+                            ) {
+                                NativeZoomableRemoteImage(
+                                    url: urls[index],
+                                    store: imageStore,
+                                    onZoomChanged: { isZoomed in
+                                        if isZoomed {
+                                            zoomedIndices.insert(index)
+                                        } else {
+                                            zoomedIndices.remove(index)
+                                        }
+                                    }
+                                )
+                            } else {
+                                Color.clear
+                                    .accessibilityHidden(true)
                             }
-                        )
+                        }
                         .frame(width: geometry.size.width, height: geometry.size.height)
                     }
                 }
@@ -75,6 +90,9 @@ struct NativeMediaGallery: View {
         .background(Color.black.ignoresSafeArea())
         .overlay(alignment: .top) { topControls }
         .preferredColorScheme(.dark)
+        .onAppear { retainNearbyStaticImages() }
+        .onChange(of: selectedIndex) { _, _ in retainNearbyStaticImages() }
+        .onDisappear { imageStore.cancelAll() }
         .sheet(item: $shareItems) { items in
             NativeMediaActivityView(activityItems: items.values)
         }
@@ -157,6 +175,19 @@ struct NativeMediaGallery: View {
     }
 
     private var isCurrentImageZoomed: Bool { zoomedIndices.contains(selectedIndex) }
+
+    private func retainNearbyStaticImages() {
+        let retained = urls.indices.compactMap { index -> URL? in
+            guard NativeMediaGalleryPresentationPolicy.shouldMount(
+                pageIndex: index,
+                selectedIndex: selectedIndex,
+                pageCount: urls.count
+            ) else { return nil }
+            let url = urls[index]
+            return NativeRemoteMediaPolicy.isAnimatedImage(url) ? nil : url
+        }
+        imageStore.retainOnly(Set(retained))
+    }
 
     private func backgroundOpacity(viewportHeight: CGFloat) -> Double {
         let fadeDistance = max(viewportHeight * 0.3, 1)
@@ -400,6 +431,21 @@ enum NativeRemoteMediaPolicy {
     }
 }
 
+struct NativeMediaGalleryPresentationPolicy {
+    static func shouldMount(
+        pageIndex: Int,
+        selectedIndex: Int,
+        pageCount: Int
+    ) -> Bool {
+        guard pageIndex >= 0,
+              selectedIndex >= 0,
+              pageIndex < pageCount,
+              selectedIndex < pageCount
+        else { return false }
+        return abs(pageIndex - selectedIndex) <= 1
+    }
+}
+
 struct NativeAnimatedRemoteImage: View {
     let url: URL
     let contentMode: ContentMode
@@ -473,13 +519,22 @@ private final class NativeAnimatedImageLoader: ObservableObject {
             try Task.checkCancellation()
             guard let response = response as? HTTPURLResponse,
                   (200..<300).contains(response.statusCode),
-                  data.count <= 40 * 1_024 * 1_024,
-                  let decoded = NativeAnimatedImageDecoder.decode(data)
+                  data.count <= 40 * 1_024 * 1_024
             else { throw URLError(.cannotDecodeContentData) }
+            let decodeTask = Task.detached(priority: .userInitiated) {
+                NativeAnimatedImageDecoder.decode(data)
+            }
+            let decoded = await withTaskCancellationHandler {
+                await decodeTask.value
+            } onCancel: {
+                decodeTask.cancel()
+            }
+            try Task.checkCancellation()
+            guard let decoded else { throw URLError(.cannotDecodeContentData) }
             guard loadedURL == url else { return }
             image = decoded
-        } catch is CancellationError {
         } catch {
+            if error.isNativeRequestCancellation { return }
             guard loadedURL == url else { return }
             didFail = true
         }
@@ -513,6 +568,7 @@ enum NativeAnimatedImageDecoder {
         var duration = 0.0
 
         for index in 0 ..< frameCount {
+            guard !Task.isCancelled else { return nil }
             duration += frameDuration(source: source, index: index)
             guard index % stride == 0,
                   let cgImage = CGImageSourceCreateThumbnailAtIndex(source, index, options)
@@ -592,47 +648,141 @@ struct NativeMediaPagingPolicy {
     }
 }
 
+/// Shared static-image pipeline for feed previews and the full-screen gallery.
+/// Each view owns a lightweight store while decoded images share one bounded
+/// cache, so discovering an image's real dimensions does not require a second
+/// rendering path or an unbounded collection of decoded bitmaps.
 @MainActor
-private final class NativeMediaImageStore: ObservableObject {
+final class NativeMediaImageStore: ObservableObject {
     private struct LoadOperation {
         let id = UUID()
-        let task: Task<Data, Error>
+        let task: Task<UIImage, Error>
     }
+
+    private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 8
+        cache.totalCostLimit = 96 * 1_024 * 1_024
+        return cache
+    }()
 
     @Published private var images: [URL: UIImage] = [:]
     @Published private var failedURLs: Set<URL> = []
+    private let maximumPixelSize: Int
     private var operations: [URL: LoadOperation] = [:]
+    private var retainedURLs: Set<URL>?
 
-    func image(for url: URL) -> UIImage? { images[url] }
+    init(maximumPixelSize: Int = 2_400) {
+        self.maximumPixelSize = max(320, maximumPixelSize)
+    }
+
+    func image(for url: URL) -> UIImage? {
+        images[url] ?? Self.cache.object(forKey: cacheKey(for: url))
+    }
     func didFail(_ url: URL) -> Bool { failedURLs.contains(url) }
 
     func load(_ url: URL) async {
-        guard images[url] == nil else { return }
+        guard retainedURLs?.contains(url) != false else { return }
+        if let cached = Self.cache.object(forKey: cacheKey(for: url)) {
+            images[url] = cached
+            failedURLs.remove(url)
+            return
+        }
         let operation: LoadOperation
         if let existing = operations[url] {
             operation = existing
         } else {
             failedURLs.remove(url)
+            let maximumPixelSize = maximumPixelSize
             operation = LoadOperation(task: Task {
                 let (data, response) = try await URLSession.shared.data(from: url)
                 guard let response = response as? HTTPURLResponse,
-                      (200..<300).contains(response.statusCode)
+                      (200..<300).contains(response.statusCode),
+                      data.count <= 40 * 1_024 * 1_024
                 else { throw URLError(.badServerResponse) }
-                return data
+                let decodeTask = Task.detached(priority: .userInitiated) {
+                    NativeStaticImageDecoder.decode(
+                        data,
+                        maximumPixelSize: maximumPixelSize
+                    )
+                }
+                let image = await withTaskCancellationHandler {
+                    await decodeTask.value
+                } onCancel: {
+                    decodeTask.cancel()
+                }
+                try Task.checkCancellation()
+                guard let image else { throw URLError(.cannotDecodeContentData) }
+                return image
             })
             operations[url] = operation
         }
         do {
-            let data = try await operation.task.value
-            guard let image = UIImage(data: data) else { throw URLError(.cannotDecodeContentData) }
+            let image = try await withTaskCancellationHandler {
+                try await operation.task.value
+            } onCancel: {
+                operation.task.cancel()
+            }
+            guard retainedURLs?.contains(url) != false else { return }
             images[url] = image
+            Self.cache.setObject(image, forKey: cacheKey(for: url), cost: image.cacheCost)
             failedURLs.remove(url)
-        } catch is CancellationError {
-            // A second visible page may still await the shared operation.
         } catch {
-            failedURLs.insert(url)
+            if error.isNativeRequestCancellation {
+                if operations[url]?.id == operation.id { operations.removeValue(forKey: url) }
+                return
+            }
+            if retainedURLs?.contains(url) != false { failedURLs.insert(url) }
         }
         if operations[url]?.id == operation.id { operations.removeValue(forKey: url) }
+    }
+
+    func retainOnly(_ urls: Set<URL>) {
+        retainedURLs = urls
+        let discardedURLs = operations.keys.filter { !urls.contains($0) }
+        for url in discardedURLs {
+            operations[url]?.task.cancel()
+            operations.removeValue(forKey: url)
+        }
+        images = images.filter { urls.contains($0.key) }
+        failedURLs.formIntersection(urls)
+    }
+
+    func cancelAll() {
+        operations.values.forEach { $0.task.cancel() }
+        operations.removeAll()
+    }
+
+    private func cacheKey(for url: URL) -> NSString {
+        "\(maximumPixelSize)|\(url.absoluteString)" as NSString
+    }
+}
+
+private enum NativeStaticImageDecoder {
+    static func decode(_ data: Data, maximumPixelSize: Int) -> UIImage? {
+        guard !Task.isCancelled else { return nil }
+        return autoreleasepool {
+            guard let source = CGImageSourceCreateWithData(data as CFData, [
+                kCGImageSourceShouldCache: false,
+            ] as CFDictionary) else { return nil }
+            let options = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: max(320, maximumPixelSize),
+                kCGImageSourceShouldCacheImmediately: true,
+            ] as CFDictionary
+            guard !Task.isCancelled,
+                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options)
+            else { return nil }
+            return UIImage(cgImage: image)
+        }
+    }
+}
+
+private extension UIImage {
+    var cacheCost: Int {
+        guard let cgImage else { return 1 }
+        return cgImage.bytesPerRow * cgImage.height
     }
 }
 

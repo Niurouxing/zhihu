@@ -108,6 +108,7 @@ final class KeychainAccountStore: MultipleAccountJSONStore {
             var vault = try loadVaultUnlocked().envelope
             let current = vault.currentSessionJSON
             if let updated = try transform(current) {
+                guard updated != current else { return }
                 upsert(updated, into: &vault)
                 try saveVaultUnlocked(vault)
             } else {

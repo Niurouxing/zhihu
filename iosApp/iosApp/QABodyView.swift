@@ -29,10 +29,10 @@ struct QABodyView: View {
     private var galleryURLs: [URL] { galleryImages.map(\.url) }
 
     var body: some View {
-        // Keep the complete document in one selection hierarchy. A LazyVStack
-        // recycles off-screen Text views, which truncates Select All/copy for
-        // long answers after scrolling.
-        VStack(alignment: .leading, spacing: presentation.blockSpacing()) {
+        // Remote media must be materialized near the viewport. An eager VStack
+        // starts every image and animated-image request in a long answer at once,
+        // keeping the radio and decoder active even for content far below the fold.
+        LazyVStack(alignment: .leading, spacing: presentation.blockSpacing()) {
             ForEach(blocks) { block in
                 blockView(block)
             }

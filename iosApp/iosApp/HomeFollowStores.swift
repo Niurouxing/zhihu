@@ -146,7 +146,8 @@ struct HomeRecommendationCacheContext: Equatable, Hashable, Sendable {
 }
 
 struct HomeRecommendationCacheSnapshot: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
+    static let maximumPersistedItemCount = 120
 
     let schemaVersion: Int
     let accountID: String
@@ -166,47 +167,55 @@ protocol HomeRecommendationCachePersisting {
     )
 }
 
-struct UserDefaultsHomeRecommendationCachePersistence: HomeRecommendationCachePersisting {
-    static let keyPrefix = "homeRecommendationCache"
-
-    let defaults: UserDefaults
-    let expectedSchemaVersion: Int
+/// File-backed cache for bounded feed snapshots. UserDefaults remains reserved for
+/// small preferences and refresh metadata; JSON encoding/writes run on the cache actor.
+struct FileHomeRecommendationCachePersistence: HomeRecommendationCachePersisting {
+    private let directoryURL: URL
+    private let expectedSchemaVersion: Int
 
     init(
-        defaults: UserDefaults = .standard,
+        directoryURL: URL? = nil,
         expectedSchemaVersion: Int = HomeRecommendationCacheSnapshot.currentSchemaVersion
     ) {
-        self.defaults = defaults
+        self.directoryURL = directoryURL ?? FileManager.default.urls(
+            for: .cachesDirectory,
+            in: .userDomainMask
+        ).first?.appendingPathComponent("HomeRecommendation", isDirectory: true)
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent(
+                "HomeRecommendation",
+                isDirectory: true
+            )
         self.expectedSchemaVersion = expectedSchemaVersion
     }
 
     func load(for context: HomeRecommendationCacheContext) -> HomeRecommendationCacheSnapshot? {
-        guard let data = defaults.data(forKey: Self.storageKey(for: context)),
-              let decoded = try? JSONDecoder().decode(
-                  HomeRecommendationCacheSnapshot.self,
-                  from: data
+        guard let data = try? Data(contentsOf: fileURL(for: context)),
+              let snapshot = try? JSONDecoder().decode(
+                HomeRecommendationCacheSnapshot.self,
+                from: data
               ),
-              decoded.schemaVersion == expectedSchemaVersion,
-              decoded.accountID == context.accountID,
-              decoded.source == context.source,
-              !decoded.items.isEmpty
+              snapshot.schemaVersion == expectedSchemaVersion,
+              snapshot.accountID == context.accountID,
+              snapshot.source == context.source,
+              !snapshot.items.isEmpty,
+              snapshot.items.count <= HomeRecommendationCacheSnapshot.maximumPersistedItemCount
         else { return nil }
 
         let trustedNextURL: URL?
         do {
-            trustedNextURL = try ZhihuAPIURLPolicy.validatedPagingURL(decoded.nextURL)
+            trustedNextURL = try ZhihuAPIURLPolicy.validatedPagingURL(snapshot.nextURL)
         } catch {
             return nil
         }
         return HomeRecommendationCacheSnapshot(
-            schemaVersion: decoded.schemaVersion,
-            accountID: decoded.accountID,
-            source: decoded.source,
-            items: decoded.items,
+            schemaVersion: snapshot.schemaVersion,
+            accountID: snapshot.accountID,
+            source: snapshot.source,
+            items: snapshot.items,
             nextURL: trustedNextURL,
-            isEnd: decoded.isEnd || trustedNextURL == nil,
-            refreshMetadata: decoded.refreshMetadata,
-            savedAt: decoded.savedAt
+            isEnd: snapshot.isEnd || trustedNextURL == nil,
+            refreshMetadata: snapshot.refreshMetadata,
+            savedAt: snapshot.savedAt
         )
     }
 
@@ -214,27 +223,91 @@ struct UserDefaultsHomeRecommendationCachePersistence: HomeRecommendationCachePe
         _ snapshot: HomeRecommendationCacheSnapshot,
         for context: HomeRecommendationCacheContext
     ) {
-        if let nextURL = snapshot.nextURL {
-            guard (try? ZhihuAPIURLPolicy.validatedPagingURL(nextURL)) != nil else {
-                return
-            }
-        }
         guard snapshot.schemaVersion == expectedSchemaVersion,
               snapshot.accountID == context.accountID,
               snapshot.source == context.source,
               !snapshot.items.isEmpty,
+              snapshot.items.count <= HomeRecommendationCacheSnapshot.maximumPersistedItemCount,
+              (try? ZhihuAPIURLPolicy.validatedPagingURL(snapshot.nextURL)) != nil
+                || snapshot.nextURL == nil,
               let data = try? JSONEncoder().encode(snapshot)
         else { return }
-        defaults.set(data, forKey: Self.storageKey(for: context))
+
+        do {
+            try FileManager.default.createDirectory(
+                at: directoryURL,
+                withIntermediateDirectories: true
+            )
+            try data.write(to: fileURL(for: context), options: .atomic)
+        } catch {
+            // Cache persistence is best-effort. Network loading remains the source of truth.
+        }
     }
 
-    static func storageKey(for context: HomeRecommendationCacheContext) -> String {
-        let encodedAccountID = Data(context.accountID.utf8)
+    private func fileURL(for context: HomeRecommendationCacheContext) -> URL {
+        directoryURL.appendingPathComponent(Self.fileName(for: context), isDirectory: false)
+    }
+
+    private static func fileName(for context: HomeRecommendationCacheContext) -> String {
+        let account = Data(context.accountID.utf8)
             .base64EncodedString()
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "=", with: "")
-        return "\(keyPrefix).\(context.source.rawValue).\(encodedAccountID)"
+        return "\(context.source.rawValue)-\(account).json"
+    }
+}
+
+actor HomeRecommendationCacheStore {
+    private let persistence: HomeRecommendationCachePersisting
+    private let debounceNanoseconds: UInt64
+    private var pending: [HomeRecommendationCacheContext: HomeRecommendationCacheSnapshot] = [:]
+    private var saveTask: Task<Void, Never>?
+
+    init(
+        persistence: HomeRecommendationCachePersisting,
+        debounceNanoseconds: UInt64 = 250_000_000
+    ) {
+        self.persistence = persistence
+        self.debounceNanoseconds = debounceNanoseconds
+    }
+
+    func load(
+        for context: HomeRecommendationCacheContext
+    ) -> HomeRecommendationCacheSnapshot? {
+        pending[context] ?? persistence.load(for: context)
+    }
+
+    func schedule(
+        _ snapshot: HomeRecommendationCacheSnapshot,
+        for context: HomeRecommendationCacheContext
+    ) {
+        pending[context] = snapshot
+        saveTask?.cancel()
+        saveTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await Task.sleep(nanoseconds: self.debounceNanoseconds)
+            } catch {
+                return
+            }
+            await self.commitPending()
+        }
+    }
+
+    func flush() {
+        saveTask?.cancel()
+        saveTask = nil
+        commitPending()
+    }
+
+    private func commitPending() {
+        let writes = pending
+        pending.removeAll()
+        saveTask = nil
+        for (context, snapshot) in writes {
+            persistence.save(snapshot, for: context)
+        }
     }
 }
 
@@ -251,7 +324,7 @@ final class HomeFeedNativeStore: ObservableObject {
     private let refreshTracker: FeedChannelRefreshTracker
     private let configuration: @MainActor () -> HomeRecommendationRefreshConfiguration
     private let cacheAccountID: @MainActor () -> String?
-    private let cachePersistence: HomeRecommendationCachePersisting
+    private let cacheStore: HomeRecommendationCacheStore
     private let diagnostics: PerformanceDiagnosticsClient
     private let now: () -> Date
     private var nextURL: URL?
@@ -262,6 +335,9 @@ final class HomeFeedNativeStore: ObservableObject {
     private var generation: UInt64 = 0
     private var activeRefreshTask: Task<HomeRecommendationRefreshOutcome, Never>?
     private var activeRefreshGeneration: UInt64?
+    private var cachedItemCount = 0
+    private var cachedNextURL: URL?
+    private var cachedIsEnd = false
 
     private static let maximumRefreshRequests = 6
     private static let maximumConsecutivePagesWithoutNewItems = 2
@@ -273,7 +349,7 @@ final class HomeFeedNativeStore: ObservableObject {
             .defaultValue
         },
         refreshMetadataPersistence: FeedChannelRefreshMetadataPersisting = UserDefaultsFeedChannelRefreshMetadataPersistence(),
-        cachePersistence: HomeRecommendationCachePersisting = UserDefaultsHomeRecommendationCachePersistence(),
+        cachePersistence: HomeRecommendationCachePersisting = FileHomeRecommendationCachePersistence(),
         cacheAccountID: @escaping @MainActor () -> String? = { nil },
         refreshPolicy: FeedChannelRefreshPolicy = .oneHour,
         now: @escaping () -> Date = Date.init,
@@ -281,7 +357,7 @@ final class HomeFeedNativeStore: ObservableObject {
     ) {
         self.repository = repository
         self.configuration = configuration
-        self.cachePersistence = cachePersistence
+        cacheStore = HomeRecommendationCacheStore(persistence: cachePersistence)
         self.cacheAccountID = cacheAccountID
         self.now = now
         self.diagnostics = diagnostics
@@ -293,7 +369,6 @@ final class HomeFeedNativeStore: ObservableObject {
         )
         self.refreshTracker = refreshTracker
         refreshMetadata = refreshTracker.load()
-        _ = restoreCachedSnapshotForCurrentContext()
     }
 
     var canLoadMore: Bool { hasLoaded && !isEnd && nextURL != nil && !isLoading }
@@ -302,7 +377,7 @@ final class HomeFeedNativeStore: ObservableObject {
 
     func loadInitialIfNeeded() async {
         if !hasLoaded {
-            _ = restoreCachedSnapshotForCurrentContext()
+            _ = await restoreCachedSnapshotForCurrentContext()
         }
         if hasLoaded {
             if needsRefreshAfterIdle() {
@@ -335,25 +410,29 @@ final class HomeFeedNativeStore: ObservableObject {
         let source = configuration().source
         guard loadedSource != source || isLoading else { return }
         resetForCacheContextChange()
-        if restoreCachedSnapshotForCurrentContext(), !needsRefreshAfterIdle() {
+        if await restoreCachedSnapshotForCurrentContext(), !needsRefreshAfterIdle() {
             return
         }
         _ = await refresh(intent: .sourceChanged)
     }
 
-    func accountDidChange() {
+    func accountDidChange() async {
         resetForCacheContextChange()
-        _ = restoreCachedSnapshotForCurrentContext()
+        _ = await restoreCachedSnapshotForCurrentContext()
     }
 
-    func recordLastViewed() {
+    func recordLastViewed() async {
         refreshMetadata = refreshTracker.recordingLastViewed(in: refreshMetadata)
-        persistSuccessfulSnapshot()
+        await persistSuccessfulSnapshot()
     }
 
-    func recordLastViewed(at date: Date) {
+    func recordLastViewed(at date: Date) async {
         refreshMetadata = refreshTracker.recordingLastViewed(in: refreshMetadata, at: date)
-        persistSuccessfulSnapshot()
+        await persistSuccessfulSnapshot()
+    }
+
+    func flushPendingCacheWrites() async {
+        await cacheStore.flush()
     }
 
     func needsRefreshAfterIdle() -> Bool {
@@ -374,11 +453,18 @@ final class HomeFeedNativeStore: ObservableObject {
         do {
             let page = try await repository.fetchPage(source: source, after: requestedURL)
             guard currentGeneration == generation else { return }
+            let previousItemCount = items.count
             appendUnique(page.items)
             nextURL = page.nextURL
             isEnd = page.isEnd
+            advanceCacheWindowAfterAppending(
+                previousItemCount: previousItemCount,
+                requestedURL: requestedURL,
+                nextURL: page.nextURL,
+                isEnd: page.isEnd
+            )
             failedOperation = nil
-            persistSuccessfulSnapshot()
+            await persistSuccessfulSnapshot()
             diagnostics.record(.init(
                 durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
                 category: "recommendation",
@@ -444,11 +530,17 @@ final class HomeFeedNativeStore: ObservableObject {
             items = page.items
             nextURL = page.nextURL
             isEnd = page.isEnd
+            replaceCacheWindow(
+                itemCount: page.items.count,
+                nextURL: page.nextURL,
+                isEnd: page.isEnd,
+                startsNewFeed: true
+            )
             hasLoaded = true
             loadedSource = source
             failedOperation = nil
             refreshMetadata = refreshTracker.recordingSuccessfulRefresh(in: refreshMetadata)
-            persistSuccessfulSnapshot()
+            await persistSuccessfulSnapshot()
         } catch {
             guard currentGeneration == generation else { return }
             if error.isNativeRequestCancellation {
@@ -550,6 +642,9 @@ final class HomeFeedNativeStore: ObservableObject {
 
                     if !publishedFirstBatch {
                         publishedFirstBatch = true
+                        cachedItemCount = 0
+                        cachedNextURL = nil
+                        cachedIsEnd = false
                         hasLoaded = true
                         failedOperation = nil
                         refreshMetadata = refreshTracker.recordingSuccessfulRefresh(
@@ -571,7 +666,13 @@ final class HomeFeedNativeStore: ObservableObject {
                 if publishedFirstBatch {
                     nextURL = page.nextURL
                     isEnd = page.isEnd
-                    persistSuccessfulSnapshot()
+                    replaceCacheWindow(
+                        itemCount: accumulatedItems.count,
+                        nextURL: page.nextURL,
+                        isEnd: page.isEnd,
+                        startsNewFeed: cachedItemCount == 0
+                    )
+                    await persistSuccessfulSnapshot()
                 }
 
                 if accumulatedItems.count >= refreshConfiguration.targetItemCount
@@ -643,13 +744,19 @@ final class HomeFeedNativeStore: ObservableObject {
         loadedSource = nil
         failedOperation = nil
         errorMessage = nil
+        cachedItemCount = 0
+        cachedNextURL = nil
+        cachedIsEnd = false
         refreshMetadata = refreshTracker.clearing()
     }
 
     @discardableResult
-    private func restoreCachedSnapshotForCurrentContext() -> Bool {
-        guard let context = currentCacheContext(),
-              let snapshot = cachePersistence.load(for: context)
+    private func restoreCachedSnapshotForCurrentContext() async -> Bool {
+        guard let context = currentCacheContext() else { return false }
+        let acceptedGeneration = generation
+        guard let snapshot = await cacheStore.load(for: context),
+              acceptedGeneration == generation,
+              currentCacheContext() == context
         else { return false }
         items = snapshot.items
         nextURL = snapshot.nextURL
@@ -659,27 +766,29 @@ final class HomeFeedNativeStore: ObservableObject {
         failedOperation = nil
         errorMessage = nil
         refreshMetadata = snapshot.refreshMetadata
+        cachedItemCount = snapshot.items.count
+        cachedNextURL = snapshot.nextURL
+        cachedIsEnd = snapshot.isEnd
         return true
     }
 
-    private func persistSuccessfulSnapshot() {
-        guard !items.isEmpty,
+    private func persistSuccessfulSnapshot() async {
+        guard cachedItemCount > 0,
+              cachedItemCount <= items.count,
               let context = currentCacheContext(),
               loadedSource == context.source
         else { return }
-        cachePersistence.save(
-            HomeRecommendationCacheSnapshot(
-                schemaVersion: HomeRecommendationCacheSnapshot.currentSchemaVersion,
-                accountID: context.accountID,
-                source: context.source,
-                items: items,
-                nextURL: nextURL,
-                isEnd: isEnd,
-                refreshMetadata: refreshMetadata,
-                savedAt: now()
-            ),
-            for: context
+        let snapshot = HomeRecommendationCacheSnapshot(
+            schemaVersion: HomeRecommendationCacheSnapshot.currentSchemaVersion,
+            accountID: context.accountID,
+            source: context.source,
+            items: Array(items.prefix(cachedItemCount)),
+            nextURL: cachedNextURL,
+            isEnd: cachedIsEnd,
+            refreshMetadata: refreshMetadata,
+            savedAt: now()
         )
+        await cacheStore.schedule(snapshot, for: context)
     }
 
     private func currentCacheContext() -> HomeRecommendationCacheContext? {
@@ -692,6 +801,43 @@ final class HomeFeedNativeStore: ObservableObject {
     private func appendUnique(_ incoming: [FeedItemDTO]) {
         var known = Set(items.map(\.id))
         items.append(contentsOf: incoming.filter { known.insert($0.id).inserted })
+    }
+
+    private func replaceCacheWindow(
+        itemCount: Int,
+        nextURL: URL?,
+        isEnd: Bool,
+        startsNewFeed: Bool
+    ) {
+        let limit = HomeRecommendationCacheSnapshot.maximumPersistedItemCount
+        guard itemCount <= limit else {
+            if startsNewFeed {
+                cachedItemCount = 0
+                cachedNextURL = nil
+                cachedIsEnd = false
+            }
+            return
+        }
+        cachedItemCount = itemCount
+        cachedNextURL = nextURL
+        cachedIsEnd = isEnd
+    }
+
+    private func advanceCacheWindowAfterAppending(
+        previousItemCount: Int,
+        requestedURL: URL,
+        nextURL: URL?,
+        isEnd: Bool
+    ) {
+        guard cachedItemCount == previousItemCount,
+              cachedNextURL == requestedURL
+        else { return }
+        replaceCacheWindow(
+            itemCount: items.count,
+            nextURL: nextURL,
+            isEnd: isEnd,
+            startsNewFeed: false
+        )
     }
 
     private enum FailedOperation {

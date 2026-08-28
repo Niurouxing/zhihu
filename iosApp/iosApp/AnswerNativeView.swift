@@ -1,7 +1,185 @@
 import SwiftUI
 import UIKit
 
-struct AnswerNativeView: View {
+struct NativeAnswerStream: View {
+    @ObservedObject var store: AnswerStreamStore
+    let pinAnswerDate: Bool
+    let onNavigate: (QANavigationIntent) -> Void
+    @State private var posterDocument: NativeContentPosterDocument?
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                if let first = store.answers.first,
+                   first.initialRoute.kind == .answer {
+                    AnswerQuestionHeader(store: first, onNavigate: onNavigate)
+                }
+
+                ForEach(store.answers) { answer in
+                    Color.clear
+                        .frame(height: 1)
+                        .accessibilityHidden(true)
+                        .onScrollVisibilityChange(threshold: 0.5) { isVisible in
+                            guard isVisible else { return }
+                            store.focus(answerID: answer.id)
+                            Task { await store.prepareAnswer(id: answer.id) }
+                        }
+
+                    AnswerStreamSection(
+                        store: answer,
+                        pinAnswerDate: pinAnswerDate,
+                        onNavigate: onNavigate
+                    )
+                    .id(answer.id)
+
+                    Color.clear
+                        .frame(height: 1)
+                        .accessibilityHidden(true)
+                        .onScrollVisibilityChange(threshold: 0.5) { isVisible in
+                            guard isVisible else { return }
+                            Task { await store.reachedEnd(of: answer.id) }
+                        }
+
+                    if answer.id != store.answers.last?.id {
+                        Rectangle()
+                            .fill(Color(uiColor: .separator).opacity(0.35))
+                            .frame(height: 8)
+                            .overlay(alignment: .top) { Divider() }
+                            .overlay(alignment: .bottom) { Divider() }
+                            .accessibilityHidden(true)
+                    }
+                }
+
+                paginationFooter
+            }
+        }
+        .navigationTitle(store.current.initialRoute.kind == .answer ? "回答" : "文章")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                if let content = store.current.content {
+                    Menu {
+                        Button {
+                            UIPasteboard.general.url = content.sourceURL
+                        } label: {
+                            Label("复制链接", systemImage: "doc.on.doc")
+                        }
+                        Button {
+                            posterDocument = NativeContentPosterDocument(answer: content)
+                        } label: {
+                            Label("分享内容海报", systemImage: "photo.on.rectangle.angled")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    .accessibilityLabel("更多操作")
+                }
+            }
+        }
+        .sheet(item: $posterDocument) { document in
+            NativeContentPosterShareView(document: document)
+        }
+        .task { await store.prepare() }
+        .onDisappear { store.cancelPendingReadingPrefetches() }
+        .accessibilityIdentifier("answer_stream")
+    }
+
+    @ViewBuilder
+    private var paginationFooter: some View {
+        switch store.paginationState {
+        case .idle:
+            Color.clear
+                .frame(height: 1)
+        case let .loading(showsIndicator):
+            if showsIndicator {
+                AnswerPaginationLoadingFooter()
+            } else {
+                Color.clear.frame(height: 1)
+            }
+        case .end:
+            Text("没有更多回答了")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 64)
+        case let .failed(message):
+            QAErrorState(message: message, actionTitle: "重试") {
+                Task { await store.retryPagination() }
+            }
+            .frame(maxWidth: .infinity, minHeight: 96)
+        }
+    }
+}
+
+private struct AnswerPaginationLoadingFooter: View {
+    @State private var isVisible = false
+
+    var body: some View {
+        Group {
+            if isVisible {
+                ProgressView("正在加载更多回答")
+                    .frame(maxWidth: .infinity, minHeight: 72)
+                    .foregroundStyle(.secondary)
+            } else {
+                Color.clear.frame(height: 1)
+            }
+        }
+        .task {
+            do {
+                try await Task.sleep(nanoseconds: 350_000_000)
+                isVisible = true
+            } catch {
+                return
+            }
+        }
+    }
+}
+
+private struct AnswerQuestionHeader: View {
+    @ObservedObject var store: AnswerStore
+    let onNavigate: (QANavigationIntent) -> Void
+
+    var body: some View {
+        Button {
+            guard let questionID = store.content?.questionID ?? store.initialRoute.questionID else {
+                return
+            }
+            onNavigate(.question(QuestionRouteDTO(
+                questionID: questionID,
+                provisionalTitle: title
+            )))
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(title)
+                    .font(.title3.bold())
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 16)
+            .padding(.bottom, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled((store.content?.questionID ?? store.initialRoute.questionID) == nil)
+        .background(Color(uiColor: .systemBackground))
+        .overlay(alignment: .bottom) { Divider() }
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    private var title: String {
+        store.content?.title
+            ?? store.initialPreview?.title
+            ?? store.initialRoute.provisionalTitle
+    }
+}
+
+struct AnswerStreamSection: View {
     @ObservedObject var store: AnswerStore
     let pinAnswerDate: Bool
     let onNavigate: (QANavigationIntent) -> Void
@@ -22,15 +200,14 @@ struct AnswerNativeView: View {
                     if let preview = store.initialPreview {
                         loadingPreview(preview)
                     } else {
-                        ProgressView("正在加载正文")
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        AnswerBodyLoadingPlaceholder()
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 24)
+                            .frame(maxWidth: .infinity, minHeight: 220, alignment: .top)
                     }
                 }
             }
         }
-        .navigationTitle(store.initialRoute.kind == .answer ? "回答" : "文章")
-        .navigationBarTitleDisplayMode(.inline)
-        .task { await store.loadIfNeeded() }
         .sheet(isPresented: $showsCollections) {
             QACollectionsSheet(store: store)
         }
@@ -44,12 +221,13 @@ struct AnswerNativeView: View {
     }
 
     private func loadingPreview(_ preview: NativeFeedAnswerPreview) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
+            if store.initialRoute.kind == .article {
                 Text(preview.title)
-                    .font(store.initialRoute.kind == .answer ? .title3.bold() : .title2.bold())
+                    .font(.title2.bold())
                     .foregroundStyle(.primary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
 
                 if let author = preview.author {
                     HStack(spacing: 11) {
@@ -82,37 +260,18 @@ struct AnswerNativeView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(.secondary)
-                    .frame(maxWidth: .infinity)
+                AnswerBodyLoadingPlaceholder()
                     .padding(.top, 4)
-                    .accessibilityLabel("正在载入完整内容")
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
         }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
     }
 
     private func loaded(_ content: AnswerDTO) -> some View {
         let metadata = QAMetadataPlacement(pinAnswerDate: pinAnswerDate)
-        return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18) {
-                if content.route.kind == .answer {
-                    Button {
-                        if let questionID = content.questionID {
-                            onNavigate(.question(QuestionRouteDTO(questionID: questionID, provisionalTitle: content.title)))
-                        }
-                    } label: {
-                        Text(content.title)
-                            .font(.title3.bold())
-                            .foregroundStyle(.primary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .multilineTextAlignment(.leading)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(content.questionID == nil)
-                } else {
+        return VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 18) {
+                if content.route.kind == .article {
                     Text(content.title)
                         .font(.title2.bold())
                         .fixedSize(horizontal: false, vertical: true)
@@ -183,8 +342,7 @@ struct AnswerNativeView: View {
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 14)
-        }
-        .safeAreaInset(edge: .bottom) {
+
             AnswerActionBar(
                 content: content,
                 voteInFlight: store.isVoteMutationInFlight,
@@ -254,6 +412,28 @@ struct AnswerNativeView: View {
 
     private var messageBinding: Binding<QAUserMessage?> {
         Binding(get: { store.message }, set: { _ in store.dismissMessage() })
+    }
+}
+
+/// A geometry-stable, non-animated continuation of the feed preview. It keeps
+/// the transition quiet and avoids spending CPU/GPU time on an indefinite
+/// spinner while the foreground request completes.
+private struct AnswerBodyLoadingPlaceholder: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            placeholderLine
+            placeholderLine
+            placeholderLine.frame(maxWidth: 210)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("正在载入完整内容")
+    }
+
+    private var placeholderLine: some View {
+        Capsule()
+            .fill(Color.secondary.opacity(0.10))
+            .frame(maxWidth: .infinity)
+            .frame(height: 11)
     }
 }
 

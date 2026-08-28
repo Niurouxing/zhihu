@@ -161,9 +161,7 @@ enum FeedSingleImagePresentationPolicy {
               let pixelHeight,
               pixelWidth > 0,
               pixelHeight > 0
-        else {
-            return .crop(containerAspectRatio: minimumFullyVisibleAspectRatio)
-        }
+        else { return .fit }
 
         let aspectRatio = Double(pixelWidth) / Double(pixelHeight)
         if aspectRatio < minimumFullyVisibleAspectRatio {

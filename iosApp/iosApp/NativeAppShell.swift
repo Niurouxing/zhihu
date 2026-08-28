@@ -12,7 +12,6 @@ enum NativeShellRoute: Hashable {
     case video(NativeVideoRouteDTO)
     case comments(CommentThreadRouteDTO)
     case search(SearchRouteDTO)
-    case hotList
     case writeAnswer(WriteAnswerRouteDTO)
     case writePin
     case account
@@ -37,7 +36,6 @@ enum NativeShellRoute: Hashable {
         case .video: return "video"
         case .comments: return "comments"
         case .search: return "search"
-        case .hotList: return "hot_list"
         case .writeAnswer: return "write_answer"
         case .writePin: return "write_pin"
         case .account: return "account"
@@ -53,29 +51,28 @@ enum NativeShellRoute: Hashable {
         }
     }
 
-    var feedNavigationTransitionID: FeedItemID? {
-        switch self {
-        case let .answer(route):
-            FeedItemID(
-                kind: route.kind == .answer ? .answer : .article,
-                contentID: String(route.contentID)
-            )
-        case let .question(route):
-            FeedItemID(kind: .question, contentID: String(route.questionID))
-        case let .pin(route):
-            FeedItemID(kind: .pin, contentID: String(route.pinID))
-        case let .video(route):
-            FeedItemID(kind: .video, contentID: String(route.contentID))
-        default:
-            nil
-        }
+}
+
+struct NativeNavigationEntry: Hashable, Identifiable {
+    let id: UUID
+    let route: NativeShellRoute
+    let transition: NativeFeedTransitionContext?
+
+    init(
+        id: UUID = UUID(),
+        route: NativeShellRoute,
+        transition: NativeFeedTransitionContext? = nil
+    ) {
+        self.id = id
+        self.route = route
+        self.transition = transition
     }
 }
 
 private extension View {
     @ViewBuilder
     func nativeFeedNavigationDestinationTransition(
-        sourceID: FeedItemID?,
+        sourceID: NativeFeedTransitionSourceID?,
         namespace: Namespace.ID
     ) -> some View {
         if let sourceID {
@@ -84,39 +81,6 @@ private extension View {
             self
         }
     }
-}
-
-enum NativeHotSystemNavigationTarget: Equatable {
-    case homeChannel
-    case hotList(tab: NativeAppTab)
-}
-
-enum NativeHotSystemNavigationPolicy {
-    static func target(
-        selectedTabs: [NativeAppTab],
-        currentTab: NativeAppTab,
-        startTab: NativeAppTab
-    ) -> NativeHotSystemNavigationTarget? {
-        if selectedTabs.contains(.home) { return .homeChannel }
-        if selectedTabs.contains(currentTab) { return .hotList(tab: currentTab) }
-        if selectedTabs.contains(startTab) { return .hotList(tab: startTab) }
-        return selectedTabs.first.map { .hotList(tab: $0) }
-    }
-}
-
-struct NativeSearchTabNavigationTarget: Equatable {
-    let tab: NativeAppTab
-    let route: SearchRouteDTO
-
-    init(query: String?) {
-        tab = .search
-        route = SearchRouteDTO(query: query ?? "")
-    }
-}
-
-struct NativeTabTapEvent: Equatable {
-    let tab: NativeAppTab
-    let timestamp: TimeInterval
 }
 
 struct NativeSearchFocusRequest: Equatable {
@@ -149,69 +113,6 @@ enum NativeSearchFocusRequestPolicy {
         return NativeSearchFocusRequest(token: 1, isActive: true)
     }
 
-    static func shouldRequestForTabSelection(
-        previous: NativeAppTab,
-        next: NativeAppTab,
-        isSearchRoot: Bool
-    ) -> Bool {
-        previous != .search && next == .search && isSearchRoot
-    }
-
-    static func shouldRequestForTabReselection(
-        tab: NativeAppTab,
-        isSearchRoot: Bool
-    ) -> Bool {
-        tab == .search && isSearchRoot
-    }
-}
-
-enum NativeTabReselectPolicy {
-    static func isReselect(
-        tappedTab: NativeAppTab,
-        selectedTabAtTouchBegan: NativeAppTab?
-    ) -> Bool {
-        tappedTab == selectedTabAtTouchBegan
-    }
-}
-
-struct NativeHomeTabDoubleTapGate {
-    let maximumInterval: TimeInterval
-    private var firstTapAt: TimeInterval?
-
-    init(maximumInterval: TimeInterval = 0.45) {
-        self.maximumInterval = maximumInterval
-    }
-
-    mutating func register(
-        _ event: NativeTabTapEvent,
-        isHomeSelected: Bool,
-        isHomeRoot: Bool,
-        isAppUnlocked: Bool
-    ) -> Bool {
-        guard event.tab == .home,
-              isHomeSelected,
-              isHomeRoot,
-              isAppUnlocked
-        else {
-            cancel()
-            return false
-        }
-
-        guard let firstTapAt,
-              event.timestamp >= firstTapAt,
-              event.timestamp - firstTapAt <= maximumInterval
-        else {
-            firstTapAt = event.timestamp
-            return false
-        }
-
-        self.firstTapAt = nil
-        return true
-    }
-
-    mutating func cancel() {
-        firstTapAt = nil
-    }
 }
 
 extension PersonNavigationIntent {
@@ -231,53 +132,48 @@ extension PersonNavigationIntent {
 }
 
 @MainActor
-final class NativeTabNavigationState: ObservableObject {
-    @Published private var paths: [NativeAppTab: [NativeShellRoute]] = [:]
+final class NativeNavigationState: ObservableObject {
+    @Published private var path: [NativeNavigationEntry] = []
     private let diagnostics: PerformanceDiagnosticsClient
 
     init(diagnostics: PerformanceDiagnosticsClient = .disabled) {
         self.diagnostics = diagnostics
     }
 
-    func binding(for tab: NativeAppTab) -> Binding<[NativeShellRoute]> {
+    func binding() -> Binding<[NativeNavigationEntry]> {
         Binding(
-            get: { self.paths[tab] ?? [] },
+            get: { self.path },
             set: { newPath in
-                let oldPath = self.paths[tab] ?? []
+                let oldPath = self.path
                 if newPath.count < oldPath.count {
-                    for route in oldPath.dropFirst(newPath.count).reversed() {
-                        self.record(route, operation: "pop")
+                    for entry in oldPath.dropFirst(newPath.count).reversed() {
+                        self.record(entry.route, operation: "pop")
                     }
                 }
-                self.paths[tab] = newPath
+                self.path = newPath
             }
         )
     }
 
-    func navigate(to route: NativeShellRoute, in tab: NativeAppTab) {
-        var path = paths[tab] ?? []
-        if path.last != route {
-            path.append(route)
+    func navigate(
+        to route: NativeShellRoute,
+        transition: NativeFeedTransitionContext? = nil
+    ) {
+        if path.last?.route != route {
+            path.append(NativeNavigationEntry(route: route, transition: transition))
             record(route, operation: "push")
         }
-        paths[tab] = path
     }
 
-    func replaceTop(with route: NativeShellRoute, in tab: NativeAppTab) {
-        var path = paths[tab] ?? []
+    func replaceTop(with route: NativeShellRoute) {
         if !path.isEmpty { path.removeLast() }
-        path.append(route)
-        paths[tab] = path
+        path.append(NativeNavigationEntry(route: route))
         record(route, operation: "replace")
     }
 
-    func isAtRoot(in tab: NativeAppTab) -> Bool {
-        paths[tab, default: []].isEmpty
-    }
+    var isAtRoot: Bool { path.isEmpty }
 
-    func reset(in tab: NativeAppTab) { paths[tab] = [] }
-
-    func resetAll() { paths.removeAll() }
+    func reset() { path.removeAll() }
 
     private func record(_ route: NativeShellRoute, operation: String) {
         diagnostics.record(.init(
@@ -305,7 +201,7 @@ struct NativeAppShell: View {
     @ObservedObject private var notifications: NativeNotificationStore
     @ObservedObject private var notificationPreferences: NativeNotificationPreferences
 
-    @StateObject private var navigation: NativeTabNavigationState
+    @StateObject private var navigation: NativeNavigationState
     @StateObject private var recommendationStore: HomeFeedNativeStore
     @StateObject private var followingStore: FollowNativeStore
     @StateObject private var hotStore: HotFeedStore
@@ -316,8 +212,8 @@ struct NativeAppShell: View {
     @State private var shareURL: URL?
     @State private var pendingShareChoiceURL: URL?
     @State private var showsCopiedLinkConfirmation = false
-    @State private var homeDoubleTapRefreshRequest: UInt = 0
     @State private var clipboardInspectionArmed = false
+    @State private var feedTransitionRegistry = NativeFeedTransitionRegistry()
     @Namespace private var feedNavigationNamespace
 
     init(hostModel: HostModel, isAppUnlocked: Bool) {
@@ -327,7 +223,7 @@ struct NativeAppShell: View {
         _account = ObservedObject(wrappedValue: hostModel.account)
         _notifications = ObservedObject(wrappedValue: hostModel.notifications)
         _notificationPreferences = ObservedObject(wrappedValue: hostModel.notificationPreferences)
-        _navigation = StateObject(wrappedValue: NativeTabNavigationState(
+        _navigation = StateObject(wrappedValue: NativeNavigationState(
             diagnostics: hostModel.performanceDiagnostics.client
         ))
         _recommendationStore = StateObject(wrappedValue: HomeFeedNativeStore(
@@ -394,29 +290,44 @@ struct NativeAppShell: View {
         .fullScreenCover(item: $mediaPresentation) { presentation in
             NativeMediaGallery(urls: presentation.urls, initialIndex: presentation.initialIndex)
         }
-        .onChange(of: isAppUnlocked) { isUnlocked in
+        .onChange(of: isAppUnlocked) { _, isUnlocked in
             if isUnlocked, scenePhase == .active {
                 inspectClipboardAfterActivationIfNeeded()
             }
         }
-        .onChange(of: scenePhase) { phase in
+        .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
                 inspectClipboardAfterActivationIfNeeded()
             case .inactive, .background:
                 clipboardInspectionArmed = true
+                hostModel.feedAnswerPreloader.cancelSpeculativePreloads()
+                hostModel.commentPreloader.cancelSpeculativePreloads()
+                Task {
+                    if selectedHomeChannelID == HomeChannel.recommendation.id {
+                        await recommendationStore.recordLastViewed()
+                    }
+                    await recommendationStore.flushPendingCacheWrites()
+                }
             @unknown default:
                 clipboardInspectionArmed = true
+                hostModel.feedAnswerPreloader.cancelSpeculativePreloads()
+                hostModel.commentPreloader.cancelSpeculativePreloads()
+                Task { await recommendationStore.flushPendingCacheWrites() }
             }
         }
-        .onChange(of: account.identity.map { "\($0.id)|\($0.urlToken ?? "")" }) { _ in
-            navigation.resetAll()
-            recommendationStore.accountDidChange()
+        .onChange(of: account.identity.map { "\($0.id)|\($0.urlToken ?? "")" }) {
+            navigation.reset()
+            feedTransitionRegistry.reset()
+            hostModel.feedAnswerPreloader.reset()
+            hostModel.commentPreloader.reset()
             followingStore.accountDidChange()
             hotStore.accountDidChange()
             dailyStore.accountDidChange()
             notifications.accountDidChange()
             Task {
+                await hostModel.apiClient.invalidateCredentialsCache()
+                await recommendationStore.accountDidChange()
                 switch HomeChannel(rawValue: selectedHomeChannelID) ?? .recommendation {
                 case .recommendation:
                     await recommendationStore.loadInitialIfNeeded()
@@ -432,8 +343,16 @@ struct NativeAppShell: View {
                 }
             }
         }
-        .onChange(of: preferences.homeRecommendationSource) { _ in
+        .onChange(of: preferences.homeRecommendationSource) {
             Task { await recommendationStore.recommendationSourceDidChange() }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: UIApplication.didReceiveMemoryWarningNotification
+            )
+        ) { _ in
+            hostModel.feedAnswerPreloader.reset()
+            hostModel.commentPreloader.reset()
         }
         .task {
             if case .loading = account.state { account.reloadFromKeychain() }
@@ -452,6 +371,7 @@ struct NativeAppShell: View {
         .environment(\.nativeContentPresentation, preferences.contentPresentation)
         .environment(\.nativeSearchPresentation, preferences.searchPresentation)
         .environment(\.nativeFeedNavigationNamespace, feedNavigationNamespace)
+        .environment(\.nativeFeedTransitionRegistry, feedTransitionRegistry)
         .environment(\.nativeFeedAnswerPreloader, hostModel.feedAnswerPreloader)
         .environment(
             \.nativeHapticFeedback,
@@ -461,34 +381,37 @@ struct NativeAppShell: View {
     }
 
     private var rootNavigationStack: some View {
-        NavigationStack(path: navigation.binding(for: .home)) {
+        NavigationStack(path: navigation.binding()) {
             HomeChannelsNativeView(
                 selectedChannelID: $selectedHomeChannelID,
                 recommendationStore: recommendationStore,
                 followingStore: followingStore,
                 hotStore: hotStore,
                 dailyStore: dailyStore,
-                doubleTapRefreshRequest: homeDoubleTapRefreshRequest,
                 isOperationallyVisible: isAppUnlocked
-                    && navigation.isAtRoot(in: .home),
+                    && navigation.isAtRoot,
                 notificationUnreadCount: notifications.unreadCount,
                 accountAvatarURL: account.identity?.avatarURL,
                 onOpenFeed: openFeed,
                 onOpenPerson: { navigate(.person($0)) },
-                onOpenDaily: { handleDailyDestination($0, in: .home) },
+                onOpenDaily: handleDailyDestination,
                 onOpenAccount: { navigate(.account) },
                 onOpenSearch: openHomeSearch,
                 onOpenCreation: { navigate(.writePin) },
                 onOpenNotifications: { navigate(.notifications) }
             )
-                .navigationDestination(for: NativeShellRoute.self) {
-                    destination($0, in: .home)
+                .navigationDestination(for: NativeNavigationEntry.self) { entry in
+                    destination(entry.route)
+                        .nativeFeedNavigationDestinationTransition(
+                            sourceID: entry.transition?.sourceID,
+                            namespace: feedNavigationNamespace
+                        )
                 }
         }
     }
 
     @ViewBuilder
-    private func destination(_ route: NativeShellRoute, in tab: NativeAppTab) -> some View {
+    private func destination(_ route: NativeShellRoute) -> some View {
         Group {
             switch route {
             case let .answer(route):
@@ -496,29 +419,30 @@ struct NativeAppShell: View {
                     route: route,
                     repository: hostModel.questionAnswerRepository,
                     answerPreloader: hostModel.feedAnswerPreloader,
+                    commentPreloader: hostModel.commentPreloader,
                     openedHistory: hostModel.answerOpenedHistory,
                     diagnostics: hostModel.performanceDiagnostics.client,
-                    onNavigate: { handleQAIntent($0, in: tab) }
+                    onNavigate: handleQAIntent
                 )
         case let .question(route):
             NativeQuestionRouteView(
                 route: route,
                 repository: hostModel.questionAnswerRepository,
-                onNavigate: { handleQAIntent($0, in: tab) }
+                onNavigate: handleQAIntent
             )
         case let .person(payload):
             NativePersonRouteView(
                 payload: payload,
                 accountStore: hostModel.accountStore,
                 diagnostics: hostModel.performanceDiagnostics.client,
-                onNavigate: { handlePersonIntent($0, in: tab) }
+                onNavigate: handlePersonIntent
             )
         case let .personConnections(route):
             NativePersonConnectionsRouteView(
                 route: route,
                 accountStore: hostModel.accountStore,
                 diagnostics: hostModel.performanceDiagnostics.client,
-                onNavigate: { handlePersonIntent($0, in: tab) }
+                onNavigate: handlePersonIntent
             )
         case let .personWeb(route):
             PersonWebDestinationView(
@@ -530,10 +454,10 @@ struct NativeAppShell: View {
             PinNativeView(
                 route: route,
                 repository: hostModel.pinRepository,
-                onOpenPerson: { navigate(.person($0), in: tab) },
+                onOpenPerson: { navigate(.person($0)) },
                 onOpenLink: handlePinLink,
                 onOpenComments: {
-                    navigate(.comments(.init(subject: .pin($0))), in: tab)
+                    navigate(.comments(.init(subject: .pin($0))))
                 }
             )
         case let .video(route):
@@ -546,7 +470,9 @@ struct NativeAppShell: View {
             NativeCommentNavigationRouteView(
                 route: route,
                 accountStore: hostModel.accountStore,
-                onPersonNavigate: { handlePersonIntent($0, in: tab) }
+                repository: hostModel.commentRepository,
+                preloader: hostModel.commentPreloader,
+                onPersonNavigate: handlePersonIntent
             )
         case let .search(route):
             SearchNativeView(
@@ -555,8 +481,6 @@ struct NativeAppShell: View {
                 focusRequest: NativeSearchFocusRequestPolicy.pushedRouteRequest(route),
                 onOpen: openFeed
             )
-        case .hotList:
-            HotListNativeView(store: hotStore, onOpen: openFeed)
         case let .writeAnswer(route):
             WriteAnswerNativeView(
                 route: route,
@@ -567,13 +491,13 @@ struct NativeAppShell: View {
                     kind: .answer,
                     questionID: route.questionID,
                     provisionalTitle: route.questionTitle
-                )), in: tab) }
+                ))) }
             )
         case .writePin:
             WritePinNativeView(
                 repository: hostModel.creationRepository,
                 onSystemIntent: handleCreationIntent,
-                onPublished: { navigation.replaceTop(with: .pin(.init(pinID: $0)), in: tab) }
+                onPublished: { navigation.replaceTop(with: .pin(.init(pinID: $0))) }
             )
         case .account:
             NativeAccountView(store: account, actions: accountActions)
@@ -585,7 +509,7 @@ struct NativeAppShell: View {
             NativeSpecialView(
                 specialID: id,
                 repository: hostModel.specialRepository,
-                onOpenContent: { openFeed($0, in: tab) }
+                onOpenContent: openFeed
             )
         case let .column(id):
             NativeColumnView(
@@ -612,10 +536,6 @@ struct NativeAppShell: View {
                 SystemAndUpdateView(openExternalLink: hostModel.openSystemExternalLink)
             }
         }
-        .nativeFeedNavigationDestinationTransition(
-            sourceID: route.feedNavigationTransitionID,
-            namespace: feedNavigationNamespace
-        )
     }
 
     private var accountActions: NativeAccountActions {
@@ -634,8 +554,14 @@ struct NativeAppShell: View {
         )
     }
 
-    private func navigate(_ route: NativeShellRoute, in tab: NativeAppTab? = nil) {
-        navigation.navigate(to: route, in: tab ?? .home)
+    private func navigate(
+        _ route: NativeShellRoute,
+        transition: NativeFeedTransitionContext? = nil
+    ) {
+        navigation.navigate(
+            to: route,
+            transition: transition
+        )
     }
 
     private func inspectClipboardAfterActivationIfNeeded() {
@@ -645,26 +571,38 @@ struct NativeAppShell: View {
     }
 
     private func openFeed(_ route: FeedItemRoute) {
-        openFeed(route, in: .home)
+        let destination: NativeShellRoute
+        switch route {
+        case let .answer(id, questionID, title):
+            destination = .answer(.init(
+                contentID: id,
+                kind: .answer,
+                questionID: questionID,
+                provisionalTitle: title
+            ))
+        case let .article(id, title):
+            destination = .answer(.init(
+                contentID: id,
+                kind: .article,
+                provisionalTitle: title
+            ))
+        case let .question(id, title):
+            destination = .question(.init(questionID: id, provisionalTitle: title))
+        case let .pin(id):
+            destination = .pin(.init(pinID: id))
+        case let .video(route):
+            destination = .video(route)
+        }
+        navigate(
+            destination,
+            transition: feedTransitionRegistry.consume(
+                contentID: route.navigationTransitionID
+            )
+        )
     }
 
     private func openHomeSearch() {
         navigate(.search(.init()))
-    }
-
-    private func openFeed(_ route: FeedItemRoute, in tab: NativeAppTab) {
-        switch route {
-        case let .answer(id, questionID, title):
-            navigate(.answer(.init(contentID: id, kind: .answer, questionID: questionID, provisionalTitle: title)), in: tab)
-        case let .article(id, title):
-            navigate(.answer(.init(contentID: id, kind: .article, provisionalTitle: title)), in: tab)
-        case let .question(id, title):
-            navigate(.question(.init(questionID: id, provisionalTitle: title)), in: tab)
-        case let .pin(id):
-            navigate(.pin(.init(pinID: id)), in: tab)
-        case let .video(route):
-            navigate(.video(route), in: tab)
-        }
     }
 
     private func openContent(_ destination: NativeContentDestination) {
@@ -684,9 +622,9 @@ struct NativeAppShell: View {
         }
     }
 
-    private func handleDailyDestination(_ destination: DailyStoryDestination, in tab: NativeAppTab) {
+    private func handleDailyDestination(_ destination: DailyStoryDestination) {
         switch destination {
-        case let .feed(route): openFeed(route, in: tab)
+        case let .feed(route): openFeed(route)
         case let .external(url): hostModel.openExternal(url)
         }
     }
@@ -698,25 +636,25 @@ struct NativeAppShell: View {
         }
     }
 
-    private func handleQAIntent(_ intent: QANavigationIntent, in tab: NativeAppTab) {
+    private func handleQAIntent(_ intent: QANavigationIntent) {
         switch intent {
-        case let .person(payload): navigate(.person(payload), in: tab)
-        case let .question(route): navigate(.question(route), in: tab)
-        case let .answer(route): navigate(.answer(route), in: tab)
-        case let .writeAnswer(route): navigate(.writeAnswer(route), in: tab)
+        case let .person(payload): navigate(.person(payload))
+        case let .question(route): navigate(.question(route))
+        case let .answer(route): navigate(.answer(route))
+        case let .writeAnswer(route): navigate(.writeAnswer(route))
         case let .comments(route), let .segmentComments(route):
-            navigate(.comments(route), in: tab)
+            navigate(.comments(route))
         case let .images(urls, index):
             guard !urls.isEmpty else { return }
             mediaPresentation = .init(urls: urls, initialIndex: index)
-        case let .link(link): handleQALink(link, in: tab)
+        case let .link(link): handleQALink(link)
         case let .endorsement(url):
             if let destination = NativeContentDestinationResolver.resolve(url.absoluteString) {
                 openContent(destination)
             } else {
                 hostModel.openExternal(url)
             }
-        case let .video(route): navigate(.video(route), in: tab)
+        case let .video(route): navigate(.video(route))
         case let .share(url): handleShare(url)
         }
     }
@@ -738,22 +676,22 @@ struct NativeAppShell: View {
         showsCopiedLinkConfirmation = true
     }
 
-    private func handleQALink(_ link: QALinkDestination, in tab: NativeAppTab) {
+    private func handleQALink(_ link: QALinkDestination) {
         switch link {
-        case let .answer(id): navigate(.answer(.init(contentID: id, kind: .answer)), in: tab)
-        case let .article(id): navigate(.answer(.init(contentID: id, kind: .article)), in: tab)
-        case let .question(id): navigate(.question(.init(questionID: id)), in: tab)
-        case let .pin(id): navigate(.pin(.init(pinID: id)), in: tab)
+        case let .answer(id): navigate(.answer(.init(contentID: id, kind: .answer)))
+        case let .article(id): navigate(.answer(.init(contentID: id, kind: .article)))
+        case let .question(id): navigate(.question(.init(questionID: id)))
+        case let .pin(id): navigate(.pin(.init(pinID: id)))
         case let .person(token):
             if let payload = PersonRoutePayload(memberID: nil, urlToken: token, displayName: "") {
-                navigate(.person(payload), in: tab)
+                navigate(.person(payload))
             }
         case let .external(url): hostModel.openExternal(url)
         }
     }
 
-    private func handlePersonIntent(_ intent: PersonNavigationIntent, in tab: NativeAppTab) {
-        navigate(intent.nativeShellRoute, in: tab)
+    private func handlePersonIntent(_ intent: PersonNavigationIntent) {
+        navigate(intent.nativeShellRoute)
     }
 
     private func handleCreationIntent(_ intent: CreationSystemIntent, retry: @escaping () async -> Void) {
@@ -768,7 +706,7 @@ struct NativeAppShell: View {
         case let .search(query):
             navigate(.search(.init(query: query ?? "")))
         case .hot:
-            navigation.reset(in: .home)
+            navigation.reset()
             selectedHomeChannelID = HomeChannel.hot.id
         case .collections:
             guard let token = account.identity?.collectionToken else {
@@ -779,179 +717,6 @@ struct NativeAppShell: View {
         }
     }
 
-}
-
-private struct NativeTabTapObserver: UIViewRepresentable {
-    let isEnabled: Bool
-    let tabs: [NativeAppTab]
-    let selectedTab: NativeAppTab
-    let onTap: (NativeTabTapEvent) -> Void
-
-    func makeUIView(context: Context) -> InstallerView {
-        InstallerView(
-            isEnabled: isEnabled,
-            tabs: tabs,
-            selectedTab: selectedTab,
-            onTap: onTap
-        )
-    }
-
-    func updateUIView(_ view: InstallerView, context: Context) {
-        view.update(
-            isEnabled: isEnabled,
-            tabs: tabs,
-            selectedTab: selectedTab,
-            onTap: onTap
-        )
-    }
-
-    static func dismantleUIView(_ view: InstallerView, coordinator: ()) {
-        view.uninstall()
-    }
-
-    final class InstallerView: UIView, UIGestureRecognizerDelegate {
-        private var tabs: [NativeAppTab]
-        private var selectedTab: NativeAppTab
-        private var onTap: (NativeTabTapEvent) -> Void
-        private let tabTap = NativeTabTapGestureRecognizer()
-        private var selectedTabAtTouchBegan: NativeAppTab?
-        private weak var installedWindow: UIWindow?
-        private weak var installedTabBar: UITabBar?
-
-        init(
-            isEnabled: Bool,
-            tabs: [NativeAppTab],
-            selectedTab: NativeAppTab,
-            onTap: @escaping (NativeTabTapEvent) -> Void
-        ) {
-            self.tabs = tabs
-            self.selectedTab = selectedTab
-            self.onTap = onTap
-            super.init(frame: .zero)
-            isUserInteractionEnabled = false
-            tabTap.onTouchesBegan = { [weak self] in
-                self?.selectedTabAtTouchBegan = self?.selectedTab
-            }
-            tabTap.addTarget(self, action: #selector(didTapTabBar(_:)))
-            tabTap.cancelsTouchesInView = false
-            tabTap.delegate = self
-            tabTap.isEnabled = isEnabled
-        }
-
-        required init?(coder: NSCoder) { nil }
-
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            if window == nil {
-                uninstall()
-            } else {
-                installIfNeeded()
-            }
-        }
-
-        func update(
-            isEnabled: Bool,
-            tabs: [NativeAppTab],
-            selectedTab: NativeAppTab,
-            onTap: @escaping (NativeTabTapEvent) -> Void
-        ) {
-            self.tabs = tabs
-            self.selectedTab = selectedTab
-            self.onTap = onTap
-            tabTap.isEnabled = isEnabled
-            installIfNeeded()
-            installTabTapIfNeeded()
-        }
-
-        func uninstall() {
-            installedTabBar?.removeGestureRecognizer(tabTap)
-            installedTabBar = nil
-            installedWindow = nil
-        }
-
-        private func installIfNeeded() {
-            guard let window, installedWindow !== window else { return }
-            uninstall()
-            installedWindow = window
-            installTabTapIfNeeded()
-        }
-
-        private func installTabTapIfNeeded() {
-            guard let tabBar = findTabBarController(from: installedWindow?.rootViewController)?.tabBar,
-                  installedTabBar !== tabBar
-            else { return }
-            installedTabBar?.removeGestureRecognizer(tabTap)
-            tabBar.addGestureRecognizer(tabTap)
-            installedTabBar = tabBar
-        }
-
-        func gestureRecognizer(
-            _ gestureRecognizer: UIGestureRecognizer,
-            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
-        ) -> Bool {
-            true
-        }
-
-        @objc private func didTapTabBar(_ recognizer: UITapGestureRecognizer) {
-            guard recognizer.state == .ended,
-                  let tabBar = installedTabBar,
-                  let tappedIndex = tappedTabIndex(at: recognizer.location(in: tabBar), in: tabBar),
-                  tabs.indices.contains(tappedIndex),
-                  NativeTabReselectPolicy.isReselect(
-                      tappedTab: tabs[tappedIndex],
-                      selectedTabAtTouchBegan: selectedTabAtTouchBegan
-                  )
-            else { return }
-            onTap(.init(tab: tabs[tappedIndex], timestamp: Date().timeIntervalSinceReferenceDate))
-        }
-
-        private func tappedTabIndex(at location: CGPoint, in tabBar: UITabBar) -> Int? {
-            let buttons = tabBarButtonViews(in: tabBar).sorted {
-                $0.convert($0.bounds, to: tabBar).minX < $1.convert($1.bounds, to: tabBar).minX
-            }
-            if let index = buttons.firstIndex(where: {
-                $0.convert($0.bounds, to: tabBar).contains(location)
-            }) {
-                return index
-            }
-            guard !tabs.isEmpty, tabBar.bounds.width > 0 else { return nil }
-            return min(max(Int(location.x / (tabBar.bounds.width / CGFloat(tabs.count))), 0), tabs.count - 1)
-        }
-
-        private func tabBarButtonViews(in view: UIView) -> [UIView] {
-            var result: [UIView] = []
-            for subview in view.subviews {
-                if String(describing: type(of: subview)).contains("UITabBarButton") {
-                    result.append(subview)
-                } else {
-                    result.append(contentsOf: tabBarButtonViews(in: subview))
-                }
-            }
-            return result
-        }
-
-        private func findTabBarController(from controller: UIViewController?) -> UITabBarController? {
-            guard let controller else { return nil }
-            if let tabController = controller as? UITabBarController { return tabController }
-            if let presented = controller.presentedViewController,
-               let result = findTabBarController(from: presented) {
-                return result
-            }
-            for child in controller.children {
-                if let result = findTabBarController(from: child) { return result }
-            }
-            return nil
-        }
-    }
-}
-
-private final class NativeTabTapGestureRecognizer: UITapGestureRecognizer {
-    var onTouchesBegan: (() -> Void)?
-
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        onTouchesBegan?()
-        super.touchesBegan(touches, with: event)
-    }
 }
 
 private struct NativeQuestionRouteView: View {
@@ -1016,10 +781,18 @@ private struct NativePersonConnectionsRouteView: View {
 private struct NativeCommentNavigationRouteView: View {
     @StateObject private var model: CommentHostModel
 
-    init(route: CommentThreadRouteDTO, accountStore: AccountJSONStore, onPersonNavigate: @escaping (PersonNavigationIntent) -> Void) {
+    init(
+        route: CommentThreadRouteDTO,
+        accountStore: AccountJSONStore,
+        repository: CommentRepository,
+        preloader: NativeCommentPreloader,
+        onPersonNavigate: @escaping (PersonNavigationIntent) -> Void
+    ) {
         _model = StateObject(wrappedValue: CommentHostModel(
             route: route,
             accountStore: accountStore,
+            repository: repository,
+            preloader: preloader,
             onPersonNavigate: onPersonNavigate
         ))
     }

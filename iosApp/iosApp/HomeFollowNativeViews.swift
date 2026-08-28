@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct NativeChannelTaskIdentity: Hashable {
     let isActive: Bool
@@ -29,9 +30,14 @@ enum NativeFeedPaginationPrefetchPolicy {
 }
 
 struct NativeHomeFeedScrollView<Content: View>: View {
+    private let minimumContentHeight: CGFloat
     private let content: Content
 
-    init(@ViewBuilder content: () -> Content) {
+    init(
+        minimumContentHeight: CGFloat = 0,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.minimumContentHeight = minimumContentHeight
         self.content = content()
     }
 
@@ -40,7 +46,11 @@ struct NativeHomeFeedScrollView<Content: View>: View {
             LazyVStack(spacing: 0) {
                 content
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: minimumContentHeight,
+                alignment: .topLeading
+            )
         }
     }
 }
@@ -145,93 +155,33 @@ extension EnvironmentValues {
     }
 }
 
-private struct NativeHomeTopBarScrollTracking: ViewModifier {
-    @Environment(\.nativeHomeTopBarScrollIntentAction) private var onIntent
-    @State private var tracker = NativeHomeTopBarScrollIntentTracker()
-    let isActive: Bool
+@MainActor
+final class NativeHomeScrollPositionRegistry {
+    private var offsets: [HomeChannel: CGFloat] = [:]
 
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(iOS 18.0, *) {
-            content.onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentOffset.y + geometry.contentInsets.top
-            } action: { _, newOffset in
-                if let intent = tracker.updateOffset(newOffset, isActive: isActive) {
-                    onIntent(intent)
-                }
-            }
-            .onScrollPhaseChange { _, newPhase, context in
-                let offset = context.geometry.contentOffset.y
-                    + context.geometry.contentInsets.top
-                tracker.updateInteraction(
-                    isInteracting: isActive && newPhase == .interacting,
-                    offset: offset
-                )
-            }
-            .onChange(of: isActive) { active in
-                tracker.reset()
-                if active { onIntent(.show) }
-            }
-        } else {
-            content
-        }
+    func offset(for channel: HomeChannel) -> CGFloat? {
+        offsets[channel]
+    }
+
+    func save(_ offset: CGFloat, for channel: HomeChannel) {
+        guard offset.isFinite else { return }
+        offsets[channel] = max(offset, NativeHomeTopChromeLayout.revealedOffset)
+    }
+
+    func reset() {
+        offsets.removeAll()
     }
 }
 
-enum NativeHomeFeedScrollMetrics {
-    static let collapseDistance = NativeHomeHeaderLayoutPolicy.expandedHeaderHeight
-    static let fallbackCollapseDistance: CGFloat = collapseDistance
-
-    static func collapseProgress(
-        contentOffsetY: CGFloat,
-        contentInsetTop: CGFloat
-    ) -> CGFloat {
-        let effectiveOffset = contentOffsetY + contentInsetTop
-        return min(max(effectiveOffset / collapseDistance, 0), 1)
-    }
+private struct NativeHomeScrollPositionRegistryKey: EnvironmentKey {
+    static let defaultValue: NativeHomeScrollPositionRegistry? = nil
 }
 
-struct NativeScrollToTopRequestPolicy {
-    static func shouldHandleChange(
-        previousRequest: UInt,
-        newRequest: UInt
-    ) -> Bool {
-        newRequest > 0 && newRequest != previousRequest
+extension EnvironmentValues {
+    var nativeHomeScrollPositionRegistry: NativeHomeScrollPositionRegistry? {
+        get { self[NativeHomeScrollPositionRegistryKey.self] }
+        set { self[NativeHomeScrollPositionRegistryKey.self] = newValue }
     }
-}
-
-struct NativeHomeHeaderLayoutPolicy {
-    static let horizontalContentInset: CGFloat = 20
-    static let expandedTitleHeight: CGFloat = 76
-    static let channelSelectorHeight: CGFloat = 60
-    static let expandedHeaderHeight = expandedTitleHeight + channelSelectorHeight
-
-    static func normalized(_ collapseProgress: CGFloat) -> CGFloat {
-        min(max(collapseProgress, 0), 1)
-    }
-
-    static func visibleHeaderHeight(collapseProgress: CGFloat) -> CGFloat {
-        expandedHeaderHeight * (1 - normalized(collapseProgress))
-    }
-
-    static func listViewportOrigin(collapseProgress _: CGFloat) -> CGFloat {
-        0
-    }
-
-    static func scrollAnchor(for channel: HomeChannel) -> HomeChannel {
-        channel
-    }
-}
-
-enum NativeHomeContentScrollTarget: Hashable {
-    case recommendation(FeedItemID)
-    case followingRecentUsers
-    case following(FeedItemID)
-    case followingStatus
-    case hot(FeedItemID)
-    case hotStatus
-    case daily(Int64)
-    case dailyStatus
 }
 
 enum NativeHomeTopChromeLayout {
@@ -249,13 +199,7 @@ enum NativeHomeTopChromeLayout {
     }
 }
 
-enum NativeHomeListScrollAnchor: Hashable {
-    case revealedTop(HomeChannel)
-    case collapsedTop(HomeChannel)
-}
-
 struct NativeHomeRefreshRevealSpacer: View {
-    let channel: HomeChannel
     let isRefreshing: Bool
 
     var body: some View {
@@ -275,17 +219,11 @@ struct NativeHomeRefreshRevealSpacer: View {
         .lineLimit(1)
         .frame(height: NativeHomeTopChromeLayout.refreshRevealHeight)
         .frame(maxWidth: .infinity)
-        .listRowInsets(EdgeInsets())
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
-        .id(NativeHomeListScrollAnchor.revealedTop(channel))
         .accessibilityHidden(true)
     }
 }
 
 struct NativeHomePullSearchDrawer: View {
-    let channel: HomeChannel
-    let isRevealed: Bool
     let action: () -> Void
 
     var body: some View {
@@ -317,65 +255,14 @@ struct NativeHomePullSearchDrawer: View {
             .padding(.bottom, NativeHomeTopChromeLayout.searchBottomInset)
         }
         .frame(height: NativeHomeTopChromeLayout.searchDrawerHeight)
-        .listRowInsets(EdgeInsets())
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
-        .id(NativeHomeListScrollAnchor.collapsedTop(channel))
-        // The persistent channel control exposes the same action while this row is covered.
-        .accessibilityHidden(!isRevealed)
-    }
-}
-
-struct NativeHomeMinimumScrollExtent: View {
-    let height: CGFloat
-
-    var body: some View {
-        Color.clear
-            .frame(height: max(height, NativeHomeMinimumScrollRangePolicy.minimumExtentHeight))
-            .listRowInsets(EdgeInsets())
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
-            .accessibilityHidden(true)
-    }
-}
-
-struct NativeHomeMinimumScrollRangePolicy {
-    static let minimumExtentHeight: CGFloat = 1
-    static let tolerance: CGFloat = 0.5
-
-    static func extentHeight(
-        currentExtentHeight: CGFloat,
-        maximumNormalizedOffset: CGFloat,
-        requiredMaximumOffset: CGFloat
-    ) -> CGFloat {
-        max(
-            minimumExtentHeight,
-            currentExtentHeight
-                + requiredMaximumOffset
-                - maximumNormalizedOffset
-        )
-    }
-}
-
-struct NativeHomeSearchDrawerVisibilityPolicy {
-    static func isRevealed(
-        normalizedOffset: CGFloat,
-        drawerHeight: CGFloat = NativeHomeTopChromeLayout.searchDrawerHeight
-    ) -> Bool {
-        guard normalizedOffset.isFinite else { return false }
-        return normalizedOffset
-            < drawerHeight - NativeHomeSearchDrawerSnapPolicy.settledTolerance
+        // The persistent channel control exposes the same search action to VoiceOver.
+        .accessibilityHidden(true)
     }
 }
 
 enum NativeHomeSearchDrawerSnapTarget: Equatable {
     case revealed
     case collapsed
-}
-
-enum NativeHomeSearchDrawerSettleReason: Equatable {
-    case interactionEnded
-    case layoutChanged
 }
 
 struct NativeHomeSearchDrawerSnapPolicy {
@@ -398,431 +285,374 @@ struct NativeHomeSearchDrawerSnapPolicy {
     }
 }
 
-struct NativeHomeSearchDrawerSettlementDecision: Equatable {
-    let settledTarget: NativeHomeSearchDrawerSnapTarget
-    let scrollTarget: NativeHomeSearchDrawerSnapTarget?
+private struct NativeHomeScrollRuntimeConfiguration: Equatable {
+    let isActive: Bool
+    let scrollToTopRequest: UInt
+    let hasSearchDrawer: Bool
+    let isRefreshing: Bool
+    let restoredNormalizedOffset: CGFloat?
 }
 
-struct NativeHomeSearchDrawerSettlementPolicy {
-    static func decision(
-        previousTarget: NativeHomeSearchDrawerSnapTarget,
-        normalizedOffset: CGFloat,
-        reason: NativeHomeSearchDrawerSettleReason,
-        isRefreshing: Bool
-    ) -> NativeHomeSearchDrawerSettlementDecision {
-        guard normalizedOffset.isFinite, !isRefreshing else {
-            return NativeHomeSearchDrawerSettlementDecision(
-                settledTarget: previousTarget,
-                scrollTarget: nil
+/// Owns the native scroll interaction without publishing per-pixel offsets into SwiftUI.
+/// Search reveal is represented by the scroll view's natural 0...drawerHeight range;
+/// refresh begins only after that range has been fully traversed.
+private struct NativeHomeScrollRuntimeBridge: UIViewRepresentable {
+    let configuration: NativeHomeScrollRuntimeConfiguration
+    let onIntent: (NativeHomeTopBarScrollIntent) -> Void
+    let onPrepared: () -> Void
+    let onOffsetSaved: (CGFloat) -> Void
+
+    func makeUIView(context: Context) -> NativeHomeScrollRuntimeView {
+        let view = NativeHomeScrollRuntimeView()
+        view.configure(
+            configuration: configuration,
+            onIntent: onIntent,
+            onPrepared: onPrepared,
+            onOffsetSaved: onOffsetSaved
+        )
+        return view
+    }
+
+    func updateUIView(_ uiView: NativeHomeScrollRuntimeView, context: Context) {
+        uiView.configure(
+            configuration: configuration,
+            onIntent: onIntent,
+            onPrepared: onPrepared,
+            onOffsetSaved: onOffsetSaved
+        )
+    }
+
+    static func dismantleUIView(
+        _ uiView: NativeHomeScrollRuntimeView,
+        coordinator: ()
+    ) {
+        uiView.uninstall()
+    }
+}
+
+private final class NativeHomeScrollRuntimeView: UIView {
+    private weak var scrollView: UIScrollView?
+    private var configuration = NativeHomeScrollRuntimeConfiguration(
+        isActive: false,
+        scrollToTopRequest: 0,
+        hasSearchDrawer: false,
+        isRefreshing: false,
+        restoredNormalizedOffset: nil
+    )
+    private var onIntent: (NativeHomeTopBarScrollIntent) -> Void = { _ in }
+    private var onPrepared: () -> Void = {}
+    private var onOffsetSaved: (CGFloat) -> Void = { _ in }
+    private var tracker = NativeHomeTopBarScrollIntentTracker()
+    private var lastHandledScrollRequest: UInt?
+    private var didPrepareInitialPosition = false
+    private var isInstallationScheduled = false
+    private var isProgrammaticScrollScheduled = false
+
+    override func didMoveToSuperview() {
+        super.didMoveToSuperview()
+        scheduleInstallation()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        scheduleInstallation()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if scrollView == nil {
+            scheduleInstallation()
+        } else {
+            prepareInitialPositionIfPossible()
+        }
+    }
+
+    func configure(
+        configuration: NativeHomeScrollRuntimeConfiguration,
+        onIntent: @escaping (NativeHomeTopBarScrollIntent) -> Void,
+        onPrepared: @escaping () -> Void,
+        onOffsetSaved: @escaping (CGFloat) -> Void
+    ) {
+        let wasActive = self.configuration.isActive
+        self.configuration = configuration
+        self.onIntent = onIntent
+        self.onPrepared = onPrepared
+        self.onOffsetSaved = onOffsetSaved
+
+        if lastHandledScrollRequest == nil {
+            lastHandledScrollRequest = configuration.scrollToTopRequest
+        } else if configuration.isActive,
+                  didPrepareInitialPosition,
+                  configuration.scrollToTopRequest != lastHandledScrollRequest {
+            lastHandledScrollRequest = configuration.scrollToTopRequest
+            scheduleScrollToCollapsedPosition(animated: true)
+        }
+
+        if wasActive, !configuration.isActive {
+            saveCurrentOffset()
+            tracker.reset()
+        }
+        scheduleInstallation()
+    }
+
+    func uninstall() {
+        saveCurrentOffset()
+        scrollView?.panGestureRecognizer.removeTarget(
+            self,
+            action: #selector(handlePan(_:))
+        )
+        scrollView = nil
+        isInstallationScheduled = false
+        isProgrammaticScrollScheduled = false
+        tracker.reset()
+    }
+
+    private func scheduleInstallation() {
+        guard !isInstallationScheduled else { return }
+        isInstallationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isInstallationScheduled = false
+            self.installIfNeeded()
+        }
+    }
+
+    private func installIfNeeded() {
+        guard window != nil, let candidate = enclosingScrollView() else { return }
+        if scrollView !== candidate {
+            scrollView?.panGestureRecognizer.removeTarget(
+                self,
+                action: #selector(handlePan(_:))
+            )
+            candidate.panGestureRecognizer.addTarget(self, action: #selector(handlePan(_:)))
+            scrollView = candidate
+        }
+        candidate.layoutIfNeeded()
+        prepareInitialPositionIfPossible()
+    }
+
+    private func enclosingScrollView() -> UIScrollView? {
+        var candidate = superview
+        while let view = candidate {
+            if let scrollView = view as? UIScrollView { return scrollView }
+            candidate = view.superview
+        }
+        return nil
+    }
+
+    private func prepareInitialPositionIfPossible() {
+        guard !didPrepareInitialPosition, let scrollView else { return }
+        guard scrollView.bounds.height > 0 else { return }
+
+        if configuration.hasSearchDrawer {
+            let minimumOffset = NativeHomeTopChromeLayout.collapsedOffset
+            let maximumOffset = maximumNormalizedOffset(in: scrollView)
+            guard maximumOffset
+                    >= minimumOffset - NativeHomeSearchDrawerSnapPolicy.settledTolerance
+            else { return }
+            let restoredOffset = configuration.restoredNormalizedOffset
+                .flatMap { $0.isFinite ? $0 : nil }
+            let targetOffset = min(
+                max(restoredOffset ?? minimumOffset, NativeHomeTopChromeLayout.revealedOffset),
+                maximumOffset
+            )
+            setNormalizedOffset(targetOffset, in: scrollView, animated: false)
+        }
+
+        didPrepareInitialPosition = true
+        DispatchQueue.main.async { [weak self] in
+            self?.onPrepared()
+        }
+    }
+
+    private func scheduleScrollToCollapsedPosition(animated: Bool) {
+        guard !isProgrammaticScrollScheduled else { return }
+        isProgrammaticScrollScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isProgrammaticScrollScheduled = false
+            guard self.configuration.isActive,
+                  let scrollView = self.scrollView
+            else { return }
+            self.setNormalizedOffset(
+                self.configuration.hasSearchDrawer
+                    ? NativeHomeTopChromeLayout.collapsedOffset
+                    : 0,
+                in: scrollView,
+                animated: animated
+            )
+            self.onOffsetSaved(
+                self.configuration.hasSearchDrawer
+                    ? NativeHomeTopChromeLayout.collapsedOffset
+                    : 0
             )
         }
+    }
 
-        switch reason {
-        case .interactionEnded:
-            if normalizedOffset
-                < -NativeHomeSearchDrawerSnapPolicy.settledTolerance {
-                // Let the native bounce/refresh control finish before enforcing position.
-                return NativeHomeSearchDrawerSettlementDecision(
-                    settledTarget: .revealed,
-                    scrollTarget: nil
-                )
+    @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
+        guard let scrollView, configuration.isActive else { return }
+        let offset = normalizedOffset(in: scrollView)
+        switch recognizer.state {
+        case .began:
+            tracker.updateInteraction(isInteracting: true, offset: offset)
+        case .changed:
+            if let intent = tracker.updateOffset(offset, isActive: true) {
+                onIntent(intent)
             }
-            if let target = NativeHomeSearchDrawerSnapPolicy.target(
+        case .ended:
+            _ = tracker.updateOffset(offset, isActive: true)
+            tracker.updateInteraction(isInteracting: false, offset: offset)
+            settleSearchDrawer(in: scrollView, normalizedOffset: offset)
+            saveCurrentOffset()
+        case .cancelled, .failed:
+            tracker.updateInteraction(isInteracting: false, offset: offset)
+            saveCurrentOffset()
+        default:
+            break
+        }
+    }
+
+    private func settleSearchDrawer(
+        in scrollView: UIScrollView,
+        normalizedOffset: CGFloat
+    ) {
+        guard configuration.hasSearchDrawer,
+              let target = NativeHomeSearchDrawerSnapPolicy.target(
                 normalizedOffset: normalizedOffset,
-                isRefreshing: false
-            ) {
-                return NativeHomeSearchDrawerSettlementDecision(
-                    settledTarget: target,
-                    scrollTarget: target
-                )
-            }
-            if normalizedOffset
-                > NativeHomeTopChromeLayout.searchDrawerHeight
-                    + NativeHomeSearchDrawerSnapPolicy.settledTolerance {
-                return NativeHomeSearchDrawerSettlementDecision(
-                    settledTarget: .collapsed,
-                    scrollTarget: nil
-                )
-            }
+                isRefreshing: configuration.isRefreshing
+              )
+        else { return }
+        let targetOffset = target == .revealed
+            ? NativeHomeTopChromeLayout.revealedOffset
+            : NativeHomeTopChromeLayout.collapsedOffset
+        guard abs(normalizedOffset - targetOffset)
+                > NativeHomeSearchDrawerSnapPolicy.settledTolerance
+        else { return }
+        setNormalizedOffset(targetOffset, in: scrollView, animated: true)
+        onOffsetSaved(targetOffset)
+    }
 
-        case .layoutChanged:
-            let tolerance = NativeHomeSearchDrawerSnapPolicy.settledTolerance
-            if normalizedOffset >= -tolerance,
-               normalizedOffset
-                <= NativeHomeTopChromeLayout.searchDrawerHeight + tolerance {
-                return NativeHomeSearchDrawerSettlementDecision(
-                    settledTarget: previousTarget,
-                    scrollTarget: previousTarget
-                )
-            }
-        }
+    private func normalizedOffset(in scrollView: UIScrollView) -> CGFloat {
+        scrollView.contentOffset.y + scrollView.adjustedContentInset.top
+    }
 
-        return NativeHomeSearchDrawerSettlementDecision(
-            settledTarget: previousTarget,
-            scrollTarget: nil
+    private func saveCurrentOffset() {
+        guard didPrepareInitialPosition, let scrollView else { return }
+        onOffsetSaved(normalizedOffset(in: scrollView))
+    }
+
+    private func maximumNormalizedOffset(in scrollView: UIScrollView) -> CGFloat {
+        max(
+            0,
+            scrollView.contentSize.height
+                - scrollView.bounds.height
+                + scrollView.adjustedContentInset.top
+                + scrollView.adjustedContentInset.bottom
+        )
+    }
+
+    private func setNormalizedOffset(
+        _ normalizedOffset: CGFloat,
+        in scrollView: UIScrollView,
+        animated: Bool
+    ) {
+        let contentOffsetY = normalizedOffset - scrollView.adjustedContentInset.top
+        scrollView.setContentOffset(
+            CGPoint(x: scrollView.contentOffset.x, y: contentOffsetY),
+            animated: animated
         )
     }
 }
 
-struct NativeHomeInitialTopAlignmentPolicy {
-    static let maximumAttempts = 4
-    static let validationDelay: TimeInterval = 0.12
+/// Shared channel surface. It keeps only semantic refresh/readiness state in SwiftUI;
+/// all continuous gesture state remains inside the native scroll view.
+struct NativeHomeChannelScrollView<Content: View>: View {
+    @Environment(\.nativeHomeTopBarScrollIntentAction) private var onTopBarIntent
+    @Environment(\.nativeHomeScrollPositionRegistry) private var positionRegistry
+    @State private var isPrepared: Bool
+    @State private var isPullRefreshInFlight = false
 
-    static func isAligned(
-        normalizedOffset: CGFloat,
-        targetOffset: CGFloat = NativeHomeTopChromeLayout.collapsedOffset
-    ) -> Bool {
-        normalizedOffset.isFinite
-            && abs(normalizedOffset - targetOffset)
-                <= NativeHomeSearchDrawerSnapPolicy.settledTolerance
-    }
-
-    static func canAttempt(after attempts: Int) -> Bool {
-        attempts < maximumAttempts
-    }
-}
-
-private struct NativeHomeTwoStagePullGeometry: ViewModifier {
-    @Binding var extentHeight: CGFloat?
-    @Binding var latestNormalizedOffset: CGFloat
-    let initialExtentHeight: CGFloat
+    let channel: HomeChannel
     let isActive: Bool
+    let scrollToTopRequest: UInt
     let isRefreshing: Bool
-    let isReady: Bool
-    let onSettled: (CGFloat, NativeHomeSearchDrawerSettleReason) -> Void
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(iOS 18.0, *) {
-            content.modifier(NativeHomeTwoStagePullGeometryAvailable(
-                extentHeight: $extentHeight,
-                latestNormalizedOffset: $latestNormalizedOffset,
-                initialExtentHeight: initialExtentHeight,
-                isActive: isActive,
-                isRefreshing: isRefreshing,
-                isReady: isReady,
-                onSettled: onSettled
-            ))
-        } else {
-            content
-        }
-    }
-}
-
-private struct NativeHomeScrollGeometryMetrics: Equatable {
-    let normalizedOffset: CGFloat
-    let maximumNormalizedOffset: CGFloat
-}
-
-@available(iOS 18.0, *)
-private struct NativeHomeTwoStagePullGeometryAvailable: ViewModifier {
-    @Binding var extentHeight: CGFloat?
-    @Binding var latestNormalizedOffset: CGFloat
-    let initialExtentHeight: CGFloat
-    let isActive: Bool
-    let isRefreshing: Bool
-    let isReady: Bool
-    let onSettled: (CGFloat, NativeHomeSearchDrawerSettleReason) -> Void
-    @State private var isIdle = true
-    @State private var didInteractSinceLastIdle = false
-
-    func body(content: Content) -> some View {
-        content
-            .onScrollGeometryChange(for: NativeHomeScrollGeometryMetrics.self) { geometry in
-                NativeHomeScrollGeometryMetrics(
-                    normalizedOffset: geometry.contentOffset.y + geometry.contentInsets.top,
-                    maximumNormalizedOffset: geometry.contentSize.height
-                        - geometry.containerSize.height
-                        + geometry.contentInsets.top
-                        + geometry.contentInsets.bottom
-                )
-            } action: { _, metrics in
-                latestNormalizedOffset = metrics.normalizedOffset
-                let didChangeExtent = updateExtentIfNeeded(using: metrics)
-                if isReady, isActive, !isRefreshing, !didChangeExtent, isIdle {
-                    onSettled(metrics.normalizedOffset, .layoutChanged)
-                }
-            }
-            .onScrollPhaseChange { _, newPhase, context in
-                if newPhase == .interacting {
-                    didInteractSinceLastIdle = true
-                }
-                isIdle = newPhase == .idle
-                let geometry = context.geometry
-                let metrics = NativeHomeScrollGeometryMetrics(
-                    normalizedOffset: geometry.contentOffset.y + geometry.contentInsets.top,
-                    maximumNormalizedOffset: geometry.contentSize.height
-                        - geometry.containerSize.height
-                        + geometry.contentInsets.top
-                        + geometry.contentInsets.bottom
-                )
-                latestNormalizedOffset = metrics.normalizedOffset
-                guard isIdle else { return }
-                let reason: NativeHomeSearchDrawerSettleReason = didInteractSinceLastIdle
-                    ? .interactionEnded
-                    : .layoutChanged
-                didInteractSinceLastIdle = false
-                let didChangeExtent = updateExtentIfNeeded(using: metrics)
-                if isReady, isActive, !isRefreshing, !didChangeExtent {
-                    onSettled(metrics.normalizedOffset, reason)
-                }
-            }
-            .onChange(of: isActive) { active in
-                if active, isReady, isIdle, !isRefreshing {
-                    onSettled(latestNormalizedOffset, .layoutChanged)
-                }
-            }
-    }
-
-    @discardableResult
-    private func updateExtentIfNeeded(using metrics: NativeHomeScrollGeometryMetrics) -> Bool {
-        guard isIdle, !isRefreshing else { return false }
-        let currentHeight = extentHeight ?? initialExtentHeight
-        let desiredHeight = NativeHomeMinimumScrollRangePolicy.extentHeight(
-            currentExtentHeight: currentHeight,
-            maximumNormalizedOffset: metrics.maximumNormalizedOffset,
-            requiredMaximumOffset: NativeHomeTopChromeLayout.searchDrawerHeight
-        )
-        if extentHeight != nil,
-           abs(desiredHeight - currentHeight)
-            <= NativeHomeMinimumScrollRangePolicy.tolerance {
-            return false
-        }
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            extentHeight = desiredHeight
-        }
-        return true
-    }
-}
-
-struct NativeRootHeaderVisibility {
-    static let compactThreshold: CGFloat = 0.5
-    static let crossfadeLowerBound: CGFloat = 0.35
-    static let crossfadeUpperBound: CGFloat = 0.65
-
-    static func expandedOpacity(collapseProgress: CGFloat) -> Double {
-        1 - compactOpacity(collapseProgress: collapseProgress)
-    }
-
-    static func compactOpacity(collapseProgress: CGFloat) -> Double {
-        let progress = normalized(collapseProgress)
-        guard progress > crossfadeLowerBound else { return 0 }
-        guard progress < crossfadeUpperBound else { return 1 }
-
-        let range = crossfadeUpperBound - crossfadeLowerBound
-        let fraction = (progress - crossfadeLowerBound) / range
-        return Double(fraction * fraction * (3 - 2 * fraction))
-    }
-
-    static func usesCompactSemantics(collapseProgress: CGFloat) -> Bool {
-        normalized(collapseProgress) >= compactThreshold
-    }
-
-    private static func normalized(_ collapseProgress: CGFloat) -> CGFloat {
-        min(max(collapseProgress, 0), 1)
-    }
-}
-
-struct NativeHomeRefreshIndicatorPresentation {
-    static let minimumPullDistance: CGFloat = 8
-
-    static func isVisible(
-        pullDistance: CGFloat,
-        isRefreshing: Bool
-    ) -> Bool {
-        isRefreshing || pullDistance >= minimumPullDistance
-    }
-}
-
-extension View {
-    func nativeHomeTopBarScrollTracking(isActive: Bool) -> some View {
-        modifier(NativeHomeTopBarScrollTracking(isActive: isActive))
-    }
-
-    func nativeHomeTwoStagePullGeometry(
-        extentHeight: Binding<CGFloat?>,
-        latestNormalizedOffset: Binding<CGFloat>,
-        initialExtentHeight: CGFloat,
-        isActive: Bool,
-        isRefreshing: Bool,
-        isReady: Bool,
-        onSettled: @escaping (CGFloat, NativeHomeSearchDrawerSettleReason) -> Void
-    ) -> some View {
-        modifier(NativeHomeTwoStagePullGeometry(
-            extentHeight: extentHeight,
-            latestNormalizedOffset: latestNormalizedOffset,
-            initialExtentHeight: initialExtentHeight,
-            isActive: isActive,
-            isRefreshing: isRefreshing,
-            isReady: isReady,
-            onSettled: onSettled
-        ))
-    }
-
-}
-
-private struct NativeRootTitleOffsetKey: PreferenceKey {
-    static var defaultValue: CGFloat = .nan
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-struct NativeRootLargeTitle: View {
-    let title: String
-    let coordinateSpaceName: String
-    let displaysTitle: Bool
-    let isActive: Bool
-    let isRefreshing: Bool
-    @Binding var collapseProgress: CGFloat
-    @State private var latestMinY: CGFloat = .nan
-    @State private var fallbackIsCollapsed = false
+    let onOpenSearch: (() -> Void)?
+    let onRefresh: () async -> Void
+    private let content: Content
 
     init(
-        _ title: String,
-        coordinateSpaceName: String = "home-root-scroll",
-        displaysTitle: Bool = true,
-        isActive: Bool = true,
-        isRefreshing: Bool = false,
-        collapseProgress: Binding<CGFloat>
+        channel: HomeChannel,
+        isActive: Bool,
+        scrollToTopRequest: UInt,
+        isRefreshing: Bool,
+        onOpenSearch: (() -> Void)?,
+        onRefresh: @escaping () async -> Void,
+        @ViewBuilder content: () -> Content
     ) {
-        self.title = title
-        self.coordinateSpaceName = coordinateSpaceName
-        self.displaysTitle = displaysTitle
+        self.channel = channel
         self.isActive = isActive
+        self.scrollToTopRequest = scrollToTopRequest
         self.isRefreshing = isRefreshing
-        _collapseProgress = collapseProgress
+        self.onOpenSearch = onOpenSearch
+        self.onRefresh = onRefresh
+        self.content = content()
+        _isPrepared = State(initialValue: onOpenSearch == nil)
     }
 
     var body: some View {
-        Group {
-            if displaysTitle {
-                Text(title)
-                    .font(.largeTitle.bold())
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .opacity(1 - collapseProgress)
-                    .offset(y: -6 * collapseProgress)
-            } else {
-                Color.clear
-                    .frame(height: NativeHomeHeaderLayoutPolicy.expandedHeaderHeight)
-                    .overlay(alignment: .top) {
-                        if NativeHomeRefreshIndicatorPresentation.isVisible(
-                            pullDistance: pullDistance,
-                            isRefreshing: isRefreshing
-                        ) {
-                            // The native refresh control lives above this transparent spacer
-                            // and is covered by the fixed opaque header. Keeping one indicator
-                            // inside the spacer makes it enter the revealed overscroll region.
-                            ProgressView()
-                                .controlSize(.regular)
-                                .padding(.top, 14)
-                                .accessibilityLabel("正在更新")
-                                .accessibilityIdentifier("home_refresh_indicator")
-                        }
-                    }
-            }
-        }
-            .background {
-                GeometryReader { geometry in
-                    Color.clear.preference(
-                        key: NativeRootTitleOffsetKey.self,
-                        value: geometry.frame(in: .named(coordinateSpaceName)).minY
+        GeometryReader { viewport in
+            NativeHomeFeedScrollView(
+                minimumContentHeight: viewport.size.height
+                    + (onOpenSearch == nil ? 0 : NativeHomeTopChromeLayout.searchDrawerHeight)
+            ) {
+                NativeHomeScrollRuntimeBridge(
+                    configuration: NativeHomeScrollRuntimeConfiguration(
+                        isActive: isActive,
+                        scrollToTopRequest: scrollToTopRequest,
+                        hasSearchDrawer: onOpenSearch != nil,
+                        isRefreshing: effectiveIsRefreshing,
+                        restoredNormalizedOffset: positionRegistry?.offset(for: channel)
+                    ),
+                    onIntent: onTopBarIntent,
+                    onPrepared: markPrepared,
+                    onOffsetSaved: saveOffset
+                )
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+
+                if let onOpenSearch {
+                    NativeHomeRefreshRevealSpacer(
+                        isRefreshing: effectiveIsRefreshing
+                    )
+                    NativeHomePullSearchDrawer(
+                        action: onOpenSearch
                     )
                 }
-            }
-            .onPreferenceChange(NativeRootTitleOffsetKey.self) { minY in
-                guard minY.isFinite else { return }
-                latestMinY = minY
-                reportCollapseProgress(minY: minY)
-            }
-            .onChange(of: isActive) { active in
-                guard active, latestMinY.isFinite else { return }
-                reportCollapseProgress(minY: latestMinY)
-            }
-            .listRowInsets(displaysTitle
-                ? EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16)
-                : EdgeInsets())
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .accessibilityHidden(!displaysTitle)
-            .accessibilityAddTraits(.isHeader)
-    }
 
-    private func reportCollapseProgress(minY: CGFloat) {
-        guard isActive else { return }
-        if #available(iOS 18.0, *) { return }
-        let progress = min(
-            max(-minY / NativeHomeFeedScrollMetrics.fallbackCollapseDistance, 0),
-            1
-        )
-        if progress >= 1 {
-            fallbackIsCollapsed = true
-            collapseProgress = 1
-            return
+                content
+            }
+            .refreshable {
+                guard isActive, !isPullRefreshInFlight else { return }
+                isPullRefreshInFlight = true
+                defer { isPullRefreshInFlight = false }
+                await onRefresh()
+            }
+            .opacity(isPrepared ? 1 : 0)
+            .allowsHitTesting(isPrepared)
         }
-        if fallbackIsCollapsed {
-            // A virtualized probe can emit its default value after leaving the List.
-            // Keep the collapsed state until the real probe re-enters from above.
-            if minY > 0 {
-                fallbackIsCollapsed = false
-                collapseProgress = 0
-                return
-            }
-            guard minY < 0 else { return }
-            fallbackIsCollapsed = false
-        }
-        collapseProgress = progress
     }
 
-    private var pullDistance: CGFloat {
-        guard latestMinY.isFinite else { return 0 }
-        return max(latestMinY, 0)
+    private var effectiveIsRefreshing: Bool {
+        isPullRefreshInFlight || isRefreshing
     }
 
-}
-
-struct NativeRootCompactTitle: View {
-    let title: String
-    let subtitle: String?
-    let collapseProgress: CGFloat
-
-    init(_ title: String, subtitle: String? = nil, collapseProgress: CGFloat) {
-        self.title = title
-        self.subtitle = subtitle
-        self.collapseProgress = collapseProgress
+    private func markPrepared() {
+        guard !isPrepared else { return }
+        isPrepared = true
     }
 
-    static func shouldRender(collapseProgress: CGFloat) -> Bool {
-        NativeRootHeaderVisibility.usesCompactSemantics(
-            collapseProgress: collapseProgress
-        )
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Text(title)
-                .font(.headline)
-
-            if let subtitle {
-                Text(subtitle)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            .opacity(
-                NativeRootHeaderVisibility.compactOpacity(
-                    collapseProgress: collapseProgress
-                )
-            )
-            .accessibilityHidden(
-                !NativeRootHeaderVisibility.usesCompactSemantics(
-                    collapseProgress: collapseProgress
-                )
-            )
+    private func saveOffset(_ offset: CGFloat) {
+        positionRegistry?.save(offset, for: channel)
     }
 }
 
@@ -832,14 +662,6 @@ struct HomeNativeView: View {
     @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
     @Environment(\.nativeChannelIsActive) private var isActiveChannel
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
-    @State private var observedScrollToTopRequest: UInt
-    @State private var hasAlignedInitialTop = false
-    @State private var isInitialTopAlignmentScheduled = false
-    @State private var initialTopAlignmentAttempts = 0
-    @State private var isPullRefreshInFlight = false
-    @State private var settledSearchDrawerTarget: NativeHomeSearchDrawerSnapTarget = .collapsed
-    @State private var scrollExtentHeight: CGFloat?
-    @State private var latestNormalizedOffset = CGFloat.nan
     let scrollToTopRequest: UInt
     private let onOpenSearch: (() -> Void)?
     let onOpen: (FeedItemRoute) -> Void
@@ -851,206 +673,69 @@ struct HomeNativeView: View {
         onOpen: @escaping (FeedItemRoute) -> Void
     ) {
         _store = ObservedObject(wrappedValue: store)
-        _observedScrollToTopRequest = State(initialValue: scrollToTopRequest)
         self.scrollToTopRequest = scrollToTopRequest
         self.onOpenSearch = onOpenSearch
         self.onOpen = onOpen
     }
 
     var body: some View {
-        GeometryReader { viewport in
-            ScrollViewReader { proxy in
-                NativeHomeFeedScrollView {
-                if let onOpenSearch {
-                    NativeHomeRefreshRevealSpacer(
-                        channel: .recommendation,
-                        isRefreshing: isRefreshInFlight
-                    )
-                    NativeHomePullSearchDrawer(
-                        channel: .recommendation,
-                        isRevealed: NativeHomeSearchDrawerVisibilityPolicy.isRevealed(
-                            normalizedOffset: latestNormalizedOffset
-                        ),
-                        action: onOpenSearch
-                    )
-                    .opacity(hasAlignedInitialTop ? 1 : 0)
-                }
+        let items = visibleItems
+        NativeHomeChannelScrollView(
+            channel: .recommendation,
+            isActive: isActiveChannel,
+            scrollToTopRequest: scrollToTopRequest,
+            isRefreshing: store.isRefreshing,
+            onOpenSearch: onOpenSearch,
+            onRefresh: refresh
+        ) {
+            if items.isEmpty {
+                recommendationEmptyState
+            }
 
-                if visibleItems.isEmpty {
-                    recommendationEmptyState
-                }
-
-                ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
-                    let prefetchTaskID = NativeFeedPaginationPrefetchTaskIdentity(
-                        isActive: isActiveChannel,
-                        nextPage: store.nextPageLoadID,
-                        isNearEnd: NativeFeedPaginationPrefetchPolicy.isNearEnd(
-                            itemIndex: index,
-                            itemCount: visibleItems.count
-                        )
-                    )
-                    FeedItemRow(item: item, showsThumbnail: true) { route in
-                        store.opened(item)
-                        onOpen(route)
-                    }
-                    .id(NativeHomeContentScrollTarget.recommendation(item.id))
-                    .nativeFeedCardItemLayout()
-                    .task(id: prefetchTaskID) {
-                        guard prefetchTaskID.isActive,
-                              prefetchTaskID.isNearEnd,
-                              prefetchTaskID.nextPage != nil,
-                              prefetchTaskID.nextPage == store.nextPageLoadID
-                        else { return }
-                        await store.loadMore()
-                    }
-                }
-
-                if !visibleItems.isEmpty, let message = store.errorMessage {
-                    FeedRetryRow(message: message) { Task { await store.retry() } }
-                        .nativeFeedCardItemLayout()
-                } else if !visibleItems.isEmpty, store.isLoading {
-                    NativeFeedPaginationLoadingRow(title: "正在加载更多推荐")
-                        .listRowSeparator(.hidden)
-                }
-
-                if store.hasNextPage {
-                    let taskID = NativeChannelTaskIdentity(
-                        isActive: isActiveChannel,
-                        value: store.nextPageLoadID
-                    )
-                    Color.clear
-                        .frame(height: 1)
-                        .accessibilityHidden(true)
-                        .task(id: taskID) {
-                            guard taskID.isActive,
-                                  taskID.value == store.nextPageLoadID
-                            else { return }
-                            await store.loadMore()
-                        }
-                }
-
-                    NativeHomeMinimumScrollExtent(
-                        height: scrollExtentHeight ?? viewport.size.height
-                    )
-                }
-                .nativeHomeTwoStagePullGeometry(
-                    extentHeight: $scrollExtentHeight,
-                    latestNormalizedOffset: $latestNormalizedOffset,
-                    initialExtentHeight: viewport.size.height,
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                let prefetchTaskID = NativeFeedPaginationPrefetchTaskIdentity(
                     isActive: isActiveChannel,
-                    isRefreshing: isRefreshInFlight,
-                    isReady: hasAlignedInitialTop
-                ) { offset, reason in
-                    settleSearchDrawer(at: offset, reason: reason, proxy: proxy)
-                }
-                .nativeHomeTopBarScrollTracking(isActive: isActiveChannel)
-                .refreshable {
-                    guard isActiveChannel else { return }
-                    settledSearchDrawerTarget = .revealed
-                    isPullRefreshInFlight = true
-                    defer { isPullRefreshInFlight = false }
-                    let outcome = await store.refresh(intent: .pull)
-                    if outcome == .ignored {
-                        hapticFeedback(.refreshIgnored)
-                    }
-                }
-                .allowsHitTesting(hasAlignedInitialTop)
-                .onAppear {
-                    // A request token records an action that already happened. Returning
-                    // from a pushed answer must not replay it and destroy List's retained
-                    // scroll position. New requests are handled by onChange below.
-                    observedScrollToTopRequest = scrollToTopRequest
-                    alignInitialTopIfNeeded(proxy)
-                }
-                .onChange(of: scrollExtentHeight) { newHeight in
-                    if newHeight != nil {
-                        alignInitialTopIfNeeded(proxy)
-                    }
-                }
-                .onChange(of: isRefreshInFlight) { refreshing in
-                    if refreshing {
-                        isInitialTopAlignmentScheduled = false
-                    } else {
-                        alignInitialTopIfNeeded(proxy)
-                    }
-                }
-                .onChange(of: scrollToTopRequest) { newRequest in
-                    let shouldScroll = NativeScrollToTopRequestPolicy.shouldHandleChange(
-                        previousRequest: observedScrollToTopRequest,
-                        newRequest: newRequest
+                    nextPage: store.nextPageLoadID,
+                    isNearEnd: NativeFeedPaginationPrefetchPolicy.isNearEnd(
+                        itemIndex: index,
+                        itemCount: items.count
                     )
-                    observedScrollToTopRequest = newRequest
-                    if shouldScroll {
-                        scrollToTop(proxy, animated: true)
-                    }
+                )
+                FeedItemRow(item: item, showsThumbnail: true) { route in
+                    store.opened(item)
+                    onOpen(route)
                 }
-                .onChange(of: store.refreshFeedbackSequence) { _ in
-                    guard isActiveChannel else { return }
-                    hapticFeedback(.refreshSucceeded)
-                }
-                .task(id: isActiveChannel) {
-                    guard isActiveChannel else { return }
-                    await store.loadInitialIfNeeded()
+                .nativeFeedCardItemLayout()
+                .task(id: prefetchTaskID) {
+                    guard prefetchTaskID.isActive,
+                          prefetchTaskID.isNearEnd,
+                          prefetchTaskID.nextPage != nil,
+                          prefetchTaskID.nextPage == store.nextPageLoadID
+                    else { return }
+                    await store.loadMore()
                 }
             }
+
+            if !items.isEmpty, let message = store.errorMessage {
+                FeedRetryRow(message: message) { Task { await store.retry() } }
+                    .nativeFeedCardItemLayout()
+            } else if !items.isEmpty, store.isLoading {
+                NativeFeedPaginationLoadingRow(title: "正在加载更多推荐")
+            }
+
+            // Pagination is driven by the trailing visible cards above. A footer
+            // task can remain mounted after it moves off-screen and recursively
+            // consume every continuation while the user is idle.
+        }
+        .onChange(of: store.refreshFeedbackSequence) { _, _ in
+            guard isActiveChannel else { return }
+            hapticFeedback(.refreshSucceeded)
+        }
+        .task(id: isActiveChannel) {
+            guard isActiveChannel else { return }
+            await store.loadInitialIfNeeded()
         }
         .accessibilityIdentifier("home_native")
-    }
-
-    private func settleSearchDrawer(
-        at normalizedOffset: CGFloat,
-        reason: NativeHomeSearchDrawerSettleReason,
-        proxy: ScrollViewProxy
-    ) {
-        guard isActiveChannel else { return }
-        let decision = NativeHomeSearchDrawerSettlementPolicy.decision(
-            previousTarget: settledSearchDrawerTarget,
-            normalizedOffset: normalizedOffset,
-            reason: reason,
-            isRefreshing: isRefreshInFlight
-        )
-        settledSearchDrawerTarget = decision.settledTarget
-        guard let target = decision.scrollTarget else { return }
-        let anchor: NativeHomeListScrollAnchor
-        switch target {
-        case .revealed:
-            anchor = .revealedTop(.recommendation)
-        case .collapsed:
-            anchor = .collapsedTop(.recommendation)
-        }
-        guard abs(normalizedOffset - targetOffset(for: target))
-            > NativeHomeSearchDrawerSnapPolicy.settledTolerance
-        else { return }
-        scrollSearchDrawer(to: anchor, reason: reason, proxy: proxy)
-    }
-
-    private func scrollSearchDrawer(
-        to anchor: NativeHomeListScrollAnchor,
-        reason: NativeHomeSearchDrawerSettleReason,
-        proxy: ScrollViewProxy
-    ) {
-        switch reason {
-        case .interactionEnded:
-            withAnimation(.easeOut(duration: 0.16)) {
-                proxy.scrollTo(anchor, anchor: .top)
-            }
-        case .layoutChanged:
-            DispatchQueue.main.async {
-                guard isActiveChannel, !isRefreshInFlight else { return }
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) {
-                    proxy.scrollTo(anchor, anchor: .top)
-                }
-            }
-        }
-    }
-
-    private func targetOffset(for target: NativeHomeSearchDrawerSnapTarget) -> CGFloat {
-        switch target {
-        case .revealed: return 0
-        case .collapsed: return NativeHomeTopChromeLayout.searchDrawerHeight
-        }
     }
 
     private var visibleItems: [FeedItemDTO] {
@@ -1064,7 +749,6 @@ struct HomeNativeView: View {
     private var recommendationEmptyState: some View {
         if store.isLoading {
             HStack { Spacer(); ProgressView("正在加载推荐"); Spacer() }
-                .listRowSeparator(.hidden)
         } else if let message = store.errorMessage {
             FeedRetryRow(message: message) { Task { await store.retry() } }
                 .nativeFeedCardItemLayout()
@@ -1074,77 +758,12 @@ struct HomeNativeView: View {
         }
     }
 
-    private var isRefreshInFlight: Bool {
-        isPullRefreshInFlight || store.isRefreshing
-    }
-
-    private var pullDrawerAnchor: NativeHomeListScrollAnchor {
-        .collapsedTop(.recommendation)
-    }
-
-    private func scrollToTop(_ proxy: ScrollViewProxy, animated: Bool) {
-        settledSearchDrawerTarget = .collapsed
-        DispatchQueue.main.async {
-            if animated {
-                withAnimation {
-                    proxy.scrollTo(pullDrawerAnchor, anchor: .top)
-                }
-            } else {
-                proxy.scrollTo(pullDrawerAnchor, anchor: .top)
-            }
+    private func refresh() async {
+        guard isActiveChannel else { return }
+        let outcome = await store.refresh(intent: .pull)
+        if outcome == .ignored {
+            hapticFeedback(.refreshIgnored)
         }
-    }
-
-    private func alignInitialTopIfNeeded(_ proxy: ScrollViewProxy) {
-        guard !hasAlignedInitialTop, !isInitialTopAlignmentScheduled else { return }
-        guard onOpenSearch != nil else {
-            finishInitialTopAlignment()
-            return
-        }
-        guard !isRefreshInFlight else { return }
-        guard NativeHomeInitialTopAlignmentPolicy.canAttempt(
-            after: initialTopAlignmentAttempts
-        ) else {
-            // Never keep programmatic scrolling alive long enough to compete with a user gesture.
-            finishInitialTopAlignment()
-            return
-        }
-        initialTopAlignmentAttempts += 1
-        isInitialTopAlignmentScheduled = true
-        DispatchQueue.main.async {
-            guard !hasAlignedInitialTop,
-                  isInitialTopAlignmentScheduled,
-                  !isRefreshInFlight
-            else { return }
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                proxy.scrollTo(pullDrawerAnchor, anchor: .top)
-            }
-            validateInitialTopAlignment(proxy)
-        }
-    }
-
-    private func validateInitialTopAlignment(_ proxy: ScrollViewProxy) {
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + NativeHomeInitialTopAlignmentPolicy.validationDelay
-        ) {
-            guard !hasAlignedInitialTop, isInitialTopAlignmentScheduled else { return }
-            isInitialTopAlignmentScheduled = false
-            guard !isRefreshInFlight else { return }
-            if NativeHomeInitialTopAlignmentPolicy.isAligned(
-                normalizedOffset: latestNormalizedOffset
-            ) {
-                finishInitialTopAlignment()
-            } else {
-                alignInitialTopIfNeeded(proxy)
-            }
-        }
-    }
-
-    private func finishInitialTopAlignment() {
-        hasAlignedInitialTop = true
-        isInitialTopAlignmentScheduled = false
     }
 }
 
@@ -1153,14 +772,6 @@ struct FollowNativeView: View {
     @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
     @Environment(\.nativeChannelIsActive) private var isActiveChannel
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
-    @State private var observedScrollToTopRequest: UInt
-    @State private var hasAlignedInitialTop = false
-    @State private var isInitialTopAlignmentScheduled = false
-    @State private var initialTopAlignmentAttempts = 0
-    @State private var isPullRefreshInFlight = false
-    @State private var settledSearchDrawerTarget: NativeHomeSearchDrawerSnapTarget = .collapsed
-    @State private var scrollExtentHeight: CGFloat?
-    @State private var latestNormalizedOffset = CGFloat.nan
     let scrollToTopRequest: UInt
     private let onOpenSearch: (() -> Void)?
     let onOpen: (FeedItemRoute) -> Void
@@ -1174,7 +785,6 @@ struct FollowNativeView: View {
         onOpenPerson: @escaping (PersonRoutePayload) -> Void
     ) {
         _store = ObservedObject(wrappedValue: store)
-        _observedScrollToTopRequest = State(initialValue: scrollToTopRequest)
         self.scrollToTopRequest = scrollToTopRequest
         self.onOpenSearch = onOpenSearch
         self.onOpen = onOpen
@@ -1182,173 +792,56 @@ struct FollowNativeView: View {
     }
 
     var body: some View {
-        GeometryReader { viewport in
-            ScrollViewReader { proxy in
-                NativeHomeFeedScrollView {
-                if let onOpenSearch {
-                    NativeHomeRefreshRevealSpacer(
-                        channel: .following,
-                        isRefreshing: isRefreshInFlight
-                    )
-                    NativeHomePullSearchDrawer(
-                        channel: .following,
-                        isRevealed: NativeHomeSearchDrawerVisibilityPolicy.isRevealed(
-                            normalizedOffset: latestNormalizedOffset
-                        ),
-                        action: onOpenSearch
-                    )
-                    .opacity(hasAlignedInitialTop ? 1 : 0)
-                }
+        let items = visibleItems
+        NativeHomeChannelScrollView(
+            channel: .following,
+            isActive: isActiveChannel,
+            scrollToTopRequest: scrollToTopRequest,
+            isRefreshing: store.isMomentsRefreshing,
+            onOpenSearch: onOpenSearch,
+            onRefresh: refresh
+        ) {
+            recentUsers
 
-                recentUsers
+            if store.moments.items.isEmpty, store.moments.isLoading {
+                HStack { Spacer(); ProgressView("正在加载关注内容"); Spacer() }
+            }
 
-                if store.moments.items.isEmpty, store.moments.isLoading {
-                    HStack { Spacer(); ProgressView("正在加载关注内容"); Spacer() }
-                        .listRowSeparator(.hidden)
-                        .id(NativeHomeContentScrollTarget.followingStatus)
-                }
-
-                ForEach(visibleItems) { item in
-                    FeedItemRow(item: item, showsThumbnail: true, onOpen: onOpen)
-                        .id(NativeHomeContentScrollTarget.following(item.id))
-                        .nativeFeedCardItemLayout()
-                }
-
-                if let message = store.moments.errorMessage {
-                    FeedRetryRow(message: message) {
-                        Task { await store.retry(section: .moments) }
-                    }
-                    .id(NativeHomeContentScrollTarget.followingStatus)
+            ForEach(items) { item in
+                FeedItemRow(item: item, showsThumbnail: true, onOpen: onOpen)
                     .nativeFeedCardItemLayout()
-                } else if store.moments.hasNextPage {
-                    let taskID = NativeChannelTaskIdentity(
-                        isActive: isActiveChannel,
-                        value: store.moments.nextPageLoadID
-                    )
-                    NativeFeedPaginationLoadingRow(title: "正在加载更多关注内容")
-                        .listRowSeparator(.hidden)
-                        .id(NativeHomeContentScrollTarget.followingStatus)
-                        .task(id: taskID) {
-                            guard taskID.isActive,
-                                  taskID.value == store.moments.nextPageLoadID
-                            else { return }
-                            await store.loadMore(section: .moments)
-                        }
-                } else if visibleItems.isEmpty, !store.moments.isLoading {
-                    Label("暂无关注内容", systemImage: "person.2")
-                        .foregroundStyle(.secondary)
-                        .id(NativeHomeContentScrollTarget.followingStatus)
-                }
+            }
 
-                    NativeHomeMinimumScrollExtent(
-                        height: scrollExtentHeight ?? viewport.size.height
-                    )
+            if let message = store.moments.errorMessage {
+                FeedRetryRow(message: message) {
+                    Task { await store.retry(section: .moments) }
                 }
-                .nativeHomeTwoStagePullGeometry(
-                    extentHeight: $scrollExtentHeight,
-                    latestNormalizedOffset: $latestNormalizedOffset,
-                    initialExtentHeight: viewport.size.height,
+                .nativeFeedCardItemLayout()
+            } else if store.moments.hasNextPage {
+                let taskID = NativeChannelTaskIdentity(
                     isActive: isActiveChannel,
-                    isRefreshing: isRefreshInFlight,
-                    isReady: hasAlignedInitialTop
-                ) { offset, reason in
-                    settleSearchDrawer(at: offset, reason: reason, proxy: proxy)
-                }
-                .nativeHomeTopBarScrollTracking(isActive: isActiveChannel)
-                .refreshable {
-                    guard isActiveChannel else { return }
-                    settledSearchDrawerTarget = .revealed
-                    isPullRefreshInFlight = true
-                    defer { isPullRefreshInFlight = false }
-                    let previousSuccessfulRefresh = store.refreshMetadata.lastSuccessfulRefreshAt
-                    await store.refresh(section: .moments)
-                    if !Task.isCancelled,
-                       NativeRefreshHapticPolicy.shouldEmit(
-                        previousSuccessfulRefreshAt: previousSuccessfulRefresh,
-                        currentSuccessfulRefreshAt: store.refreshMetadata.lastSuccessfulRefreshAt
-                       ) {
-                        hapticFeedback(.refreshSucceeded)
+                    value: store.moments.nextPageLoadID
+                )
+                NativeFeedPaginationLoadingRow(title: "正在加载更多关注内容")
+                    .task(id: taskID) {
+                        guard taskID.isActive,
+                              taskID.value == store.moments.nextPageLoadID
+                        else { return }
+                        await store.loadMore(section: .moments)
                     }
-                }
-                .allowsHitTesting(hasAlignedInitialTop)
-                .onAppear {
-                    observedScrollToTopRequest = scrollToTopRequest
-                    alignInitialTopIfNeeded(proxy)
-                }
-                .onChange(of: scrollExtentHeight) { newHeight in
-                    if newHeight != nil {
-                        alignInitialTopIfNeeded(proxy)
-                    }
-                }
-                .onChange(of: isRefreshInFlight) { refreshing in
-                    if refreshing {
-                        isInitialTopAlignmentScheduled = false
-                    } else {
-                        alignInitialTopIfNeeded(proxy)
-                    }
-                }
-                .onChange(of: scrollToTopRequest) { newRequest in
-                    let shouldScroll = NativeScrollToTopRequestPolicy.shouldHandleChange(
-                        previousRequest: observedScrollToTopRequest,
-                        newRequest: newRequest
-                    )
-                    observedScrollToTopRequest = newRequest
-                    if shouldScroll { scrollToTop(proxy, animated: true) }
-                }
+            } else if items.isEmpty, !store.moments.isLoading {
+                Label("暂无关注内容", systemImage: "person.2")
+                    .foregroundStyle(.secondary)
             }
         }
         .task(id: NativeChannelTaskIdentity(
-                isActive: isActiveChannel,
-                value: FollowSection.moments.rawValue
-            )) {
-                guard isActiveChannel else { return }
-                await store.loadMomentsIfNeeded()
-            }
+            isActive: isActiveChannel,
+            value: FollowSection.moments.rawValue
+        )) {
+            guard isActiveChannel else { return }
+            await store.loadMomentsIfNeeded()
+        }
         .accessibilityIdentifier("follow_native")
-    }
-
-    private func settleSearchDrawer(
-        at normalizedOffset: CGFloat,
-        reason: NativeHomeSearchDrawerSettleReason,
-        proxy: ScrollViewProxy
-    ) {
-        guard isActiveChannel else { return }
-        let decision = NativeHomeSearchDrawerSettlementPolicy.decision(
-            previousTarget: settledSearchDrawerTarget,
-            normalizedOffset: normalizedOffset,
-            reason: reason,
-            isRefreshing: isRefreshInFlight
-        )
-        settledSearchDrawerTarget = decision.settledTarget
-        guard let target = decision.scrollTarget else { return }
-        let anchor: NativeHomeListScrollAnchor
-        switch target {
-        case .revealed:
-            anchor = .revealedTop(.following)
-        case .collapsed:
-            anchor = .collapsedTop(.following)
-        }
-        let targetOffset = target == .revealed
-            ? 0
-            : NativeHomeTopChromeLayout.searchDrawerHeight
-        guard abs(normalizedOffset - targetOffset)
-            > NativeHomeSearchDrawerSnapPolicy.settledTolerance
-        else { return }
-        switch reason {
-        case .interactionEnded:
-            withAnimation(.easeOut(duration: 0.16)) {
-                proxy.scrollTo(anchor, anchor: .top)
-            }
-        case .layoutChanged:
-            DispatchQueue.main.async {
-                guard isActiveChannel, !isRefreshInFlight else { return }
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) {
-                    proxy.scrollTo(anchor, anchor: .top)
-                }
-            }
-        }
     }
 
     private var visibleItems: [FeedItemDTO] {
@@ -1356,14 +849,6 @@ struct FollowNativeView: View {
             from: store.moments.items,
             blockedMemberIDs: questionAuthorBlocklist.blockedMemberIDs
         )
-    }
-
-    private var pullDrawerAnchor: NativeHomeListScrollAnchor {
-        .collapsedTop(.following)
-    }
-
-    private var isRefreshInFlight: Bool {
-        isPullRefreshInFlight || store.isMomentsRefreshing
     }
 
     @ViewBuilder
@@ -1404,80 +889,26 @@ struct FollowNativeView: View {
                     }
                     .padding(.vertical, 4)
                 }
-                .nativeChannelSwipeExclusion()
             }
-            .id(NativeHomeContentScrollTarget.followingRecentUsers)
         } else if let error = store.recentUsersErrorMessage {
             Section("最近动态") {
                 FeedRetryRow(message: error) { Task { await store.reloadRecentUsers() } }
                     .nativeFeedCardItemLayout()
             }
-            .id(NativeHomeContentScrollTarget.followingRecentUsers)
         }
     }
 
-    private func scrollToTop(_ proxy: ScrollViewProxy, animated: Bool) {
-        settledSearchDrawerTarget = .collapsed
-        DispatchQueue.main.async {
-            if animated {
-                withAnimation {
-                    proxy.scrollTo(pullDrawerAnchor, anchor: .top)
-                }
-            } else {
-                proxy.scrollTo(pullDrawerAnchor, anchor: .top)
-            }
+    private func refresh() async {
+        guard isActiveChannel else { return }
+        let previousSuccessfulRefresh = store.refreshMetadata.lastSuccessfulRefreshAt
+        await store.refresh(section: .moments)
+        if !Task.isCancelled,
+           NativeRefreshHapticPolicy.shouldEmit(
+            previousSuccessfulRefreshAt: previousSuccessfulRefresh,
+            currentSuccessfulRefreshAt: store.refreshMetadata.lastSuccessfulRefreshAt
+           ) {
+            hapticFeedback(.refreshSucceeded)
         }
-    }
-
-    private func alignInitialTopIfNeeded(_ proxy: ScrollViewProxy) {
-        guard !hasAlignedInitialTop, !isInitialTopAlignmentScheduled else { return }
-        guard onOpenSearch != nil else {
-            finishInitialTopAlignment()
-            return
-        }
-        guard !isRefreshInFlight else { return }
-        guard NativeHomeInitialTopAlignmentPolicy.canAttempt(
-            after: initialTopAlignmentAttempts
-        ) else {
-            finishInitialTopAlignment()
-            return
-        }
-        initialTopAlignmentAttempts += 1
-        isInitialTopAlignmentScheduled = true
-        DispatchQueue.main.async {
-            guard !hasAlignedInitialTop,
-                  isInitialTopAlignmentScheduled,
-                  !isRefreshInFlight
-            else { return }
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                proxy.scrollTo(pullDrawerAnchor, anchor: .top)
-            }
-            validateInitialTopAlignment(proxy)
-        }
-    }
-
-    private func validateInitialTopAlignment(_ proxy: ScrollViewProxy) {
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + NativeHomeInitialTopAlignmentPolicy.validationDelay
-        ) {
-            guard !hasAlignedInitialTop, isInitialTopAlignmentScheduled else { return }
-            isInitialTopAlignmentScheduled = false
-            guard !isRefreshInFlight else { return }
-            if NativeHomeInitialTopAlignmentPolicy.isAligned(
-                normalizedOffset: latestNormalizedOffset
-            ) {
-                finishInitialTopAlignment()
-            } else {
-                alignInitialTopIfNeeded(proxy)
-            }
-        }
-    }
-
-    private func finishInitialTopAlignment() {
-        hasAlignedInitialTop = true
-        isInitialTopAlignmentScheduled = false
     }
 }
 

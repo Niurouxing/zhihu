@@ -113,6 +113,7 @@ actor ZhihuAPIClient {
     private let session: URLSession
     private let signer: ZhihuRequestSigning
     private let diagnostics: PerformanceDiagnosticsClient
+    private var cachedAccountCredentials: Credentials?
 
     init(
         accountStore: AccountJSONStore,
@@ -162,7 +163,7 @@ actor ZhihuAPIClient {
                   ZhihuAPIURLPolicy.allowsAPIRequest(finalURL)
             else { throw ZhihuAPIError.invalidResponse }
             statusCode = response.statusCode
-            try persistResponseCookies(response)
+            try persistResponseCookies(response, currentCredentials: credentials)
             guard (200..<300).contains(response.statusCode) else {
                 throw ZhihuAPIError.httpStatus(response.statusCode)
             }
@@ -194,24 +195,29 @@ actor ZhihuAPIClient {
         }
     }
 
+    /// Account JSON lives in Keychain. Reading and decoding it for every image-adjacent
+    /// API request is surprisingly expensive during rapid navigation, so one app-level
+    /// client keeps a memory copy and explicit account mutations invalidate it.
+    func invalidateCredentialsCache() {
+        cachedAccountCredentials = nil
+    }
+
     private func credentials(authentication: ZhihuRequestAuthentication) throws -> Credentials {
         if case .guest = authentication {
             return Credentials(cookies: [:], userAgent: Self.defaultUserAgent)
         }
+        if let cachedAccountCredentials {
+            return try validated(cachedAccountCredentials, for: authentication)
+        }
         do {
-            guard let stored = try ZhihuAccountSessionCodec.credentials(from: accountStore.load()) else {
-                if case .accountRequired = authentication { throw ZhihuAPIError.authenticationRequired }
-                return Credentials(cookies: [:], userAgent: Self.defaultUserAgent)
-            }
-            if case .accountRequired = authentication {
-                guard stored.cookies["d_c0"]?.nonBlank != nil,
-                      stored.cookies["z_c0"]?.nonBlank != nil
-                else { throw ZhihuAPIError.authenticationRequired }
-            }
-            return Credentials(
-                cookies: stored.cookies,
-                userAgent: stored.userAgent?.nonBlank ?? Self.defaultUserAgent
-            )
+            let resolved = try ZhihuAccountSessionCodec.credentials(from: accountStore.load()).map {
+                Credentials(
+                    cookies: $0.cookies,
+                    userAgent: $0.userAgent?.nonBlank ?? Self.defaultUserAgent
+                )
+            } ?? Credentials(cookies: [:], userAgent: Self.defaultUserAgent)
+            cachedAccountCredentials = resolved
+            return try validated(resolved, for: authentication)
         } catch let error as ZhihuAPIError {
             throw error
         } catch {
@@ -219,7 +225,22 @@ actor ZhihuAPIClient {
         }
     }
 
-    private func persistResponseCookies(_ response: HTTPURLResponse) throws {
+    private func validated(
+        _ credentials: Credentials,
+        for authentication: ZhihuRequestAuthentication
+    ) throws -> Credentials {
+        if case .accountRequired = authentication {
+            guard credentials.cookies["d_c0"]?.nonBlank != nil,
+                  credentials.cookies["z_c0"]?.nonBlank != nil
+            else { throw ZhihuAPIError.authenticationRequired }
+        }
+        return credentials
+    }
+
+    private func persistResponseCookies(
+        _ response: HTTPURLResponse,
+        currentCredentials: Credentials
+    ) throws {
         guard let responseURL = response.url else { return }
         var headerFields: [String: String] = [:]
         response.allHeaderFields.forEach { key, value in
@@ -227,10 +248,14 @@ actor ZhihuAPIClient {
             headerFields[key] = String(describing: value)
         }
         let responseCookies = HTTPCookie.cookies(withResponseHeaderFields: headerFields, for: responseURL)
-        guard !responseCookies.isEmpty else { return }
+        guard responseCookiesContainChanges(
+            responseCookies,
+            comparedWith: currentCredentials.cookies
+        ) else { return }
 
         do {
             try ZhihuAccountCookieWriter.merge(cookies: responseCookies, into: accountStore)
+            cachedAccountCredentials = nil
         } catch let error as ZhihuAPIError {
             throw error
         } catch {
@@ -238,10 +263,29 @@ actor ZhihuAPIClient {
         }
     }
 
+    private func responseCookiesContainChanges(
+        _ responseCookies: [HTTPCookie],
+        comparedWith storedCookies: [String: String]
+    ) -> Bool {
+        responseCookies.contains { cookie in
+            guard ZhihuAPIURLPolicy.allowsCookieDomain(cookie.domain) else { return false }
+            if cookie.name == "z_c0", cookie.value.nonBlank == nil { return false }
+            if cookie.value.isEmpty || cookie.expiresDate.map({ $0 <= Date() }) == true {
+                return storedCookies[cookie.name] != nil
+            }
+            return storedCookies[cookie.name] != cookie.value
+        }
+    }
+
     private static func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.httpMaximumConnectionsPerHost = 4
+        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForResource = 30
         return URLSession(
             configuration: configuration,
             delegate: ZhihuRedirectDelegate(),

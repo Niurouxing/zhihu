@@ -147,9 +147,9 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
     private static let questionInclude =
         "read_count,visit_count,answer_count,voteup_count,comment_count,follower_count,detail,excerpt,author,relationship.is_following,topics"
     private static let questionFeedInclude =
-        "data[*].content,excerpt,headline,target.author.badge_v2"
+        "data[*].excerpt,headline,target.author.badge_v2"
     private static let answerInclude =
-        ".settings,content,editable_content,paid_info,can_comment,excerpt,thanks_count,favlists_count,voteup_count,comment_count,visited_count,attachment,reaction,relationship,ip_info,pagination_info,endorsements,question.topics,reaction.relation.voting,author.badge_v2,settings.table_of_contents.enabled"
+        "content,favlists_count,voteup_count,comment_count,attachment,reaction,relationship,ip_info,endorsements,reaction.relation.voting,author.badge_v2"
     private static let articleInclude =
         "content,topics,paid_info,can_comment,excerpt,favlists_count,voteup_count,comment_count,visited_count,relationship,ip_info,relationship.vote,author.badge_v2"
 

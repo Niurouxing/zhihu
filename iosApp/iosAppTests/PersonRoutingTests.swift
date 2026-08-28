@@ -73,23 +73,29 @@ final class PersonRoutingTests: XCTestCase {
         XCTAssertEqual(PersonNavigationIntent.web(webRoute).nativeShellRoute, .personWeb(webRoute))
     }
 
-    func testPersonDestinationsStayInTheirSourceTabNavigationStack() throws {
+    func testNestedDestinationsShareOneUnboundedNavigationStack() throws {
         let payload = try XCTUnwrap(PersonRoutePayload(
             memberID: "member",
             urlToken: "token",
             displayName: "用户"
         ))
-        let navigation = NativeTabNavigationState()
+        let navigation = NativeNavigationState()
         let person = NativeShellRoute.person(payload)
         let answer = PersonNavigationIntent.article(.init(id: 42, kind: .answer)).nativeShellRoute
         let pin = PersonNavigationIntent.pin(11).nativeShellRoute
 
-        navigation.navigate(to: person, in: .home)
-        navigation.navigate(to: answer, in: .home)
-        navigation.navigate(to: pin, in: .hot)
+        navigation.navigate(to: person)
+        navigation.navigate(to: answer)
+        navigation.navigate(to: pin)
 
-        XCTAssertEqual(navigation.binding(for: .home).wrappedValue, [person, answer])
-        XCTAssertEqual(navigation.binding(for: .hot).wrappedValue, [pin])
-        XCTAssertTrue(navigation.binding(for: .account).wrappedValue.isEmpty)
+        XCTAssertEqual(
+            navigation.binding().wrappedValue.map(\.route),
+            [person, answer, pin]
+        )
+        XCTAssertFalse(navigation.isAtRoot)
+
+        navigation.reset()
+
+        XCTAssertTrue(navigation.isAtRoot)
     }
 }

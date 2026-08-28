@@ -36,56 +36,24 @@ final class FeedInfrastructureTests: XCTestCase {
         XCTAssertEqual(item.route, .article(articleID: 81, title: "原生搜索文章"))
     }
 
-    func testFeedRoutesAndShellDestinationsShareZoomTransitionIdentity() {
-        let answer = FeedItemRoute.answer(
-            answerID: 42,
-            questionID: 7,
-            questionTitle: "问题"
-        )
-        XCTAssertEqual(
-            answer.navigationTransitionID,
-            NativeShellRoute.answer(.init(
-                contentID: 42,
-                kind: .answer,
-                questionID: 7,
-                provisionalTitle: "问题"
-            )).feedNavigationTransitionID
-        )
+    @MainActor
+    func testFeedTransitionUsesTheExactTappedCardAndIsConsumedOnce() {
+        let registry = NativeFeedTransitionRegistry()
+        let contentID = FeedItemID(kind: .answer, contentID: "42")
+        let sourceID = NativeFeedTransitionSourceID()
 
-        let article = FeedItemRoute.article(articleID: 81, title: "文章")
-        XCTAssertEqual(
-            article.navigationTransitionID,
-            NativeShellRoute.answer(.init(
-                contentID: 81,
-                kind: .article,
-                provisionalTitle: "文章"
-            )).feedNavigationTransitionID
-        )
+        registry.register(sourceID: sourceID, contentID: contentID)
 
-        let question = FeedItemRoute.question(questionID: 7, title: "问题")
-        XCTAssertEqual(
-            question.navigationTransitionID,
-            NativeShellRoute.question(.init(
-                questionID: 7,
-                provisionalTitle: "问题"
-            )).feedNavigationTransitionID
-        )
+        let transition = registry.consume(contentID: contentID)
+        XCTAssertEqual(transition?.sourceID, sourceID)
+        XCTAssertEqual(transition?.contentID, contentID)
+        XCTAssertNil(registry.consume(contentID: contentID))
 
-        let pin = FeedItemRoute.pin(pinID: 99)
-        XCTAssertEqual(
-            pin.navigationTransitionID,
-            NativeShellRoute.pin(.init(pinID: 99)).feedNavigationTransitionID
+        let destination = NativeNavigationEntry(
+            route: .answer(.init(contentID: 42, kind: .answer, questionID: 7)),
+            transition: transition
         )
-
-        let videoRoute = NativeVideoRouteDTO(
-            contentID: 123,
-            contentType: .zvideo
-        )
-        XCTAssertEqual(
-            FeedItemRoute.video(videoRoute).navigationTransitionID,
-            NativeShellRoute.video(videoRoute).feedNavigationTransitionID
-        )
-        XCTAssertNil(NativeShellRoute.account.feedNavigationTransitionID)
+        XCTAssertEqual(destination.transition, transition)
     }
 
     func testAnswerProjectionPreservesThumbnailDimensionsForTallLayout() throws {
@@ -120,7 +88,7 @@ final class FeedInfrastructureTests: XCTestCase {
             FeedResponseMapper.page(from: data, policy: .search).items.first
         )
 
-        XCTAssertEqual(item.thumbnailURL, URL(string: "https://picx.zhimg.com/answer_qhd.jpg"))
+        XCTAssertEqual(item.thumbnailURL, URL(string: "https://picx.zhimg.com/answer_720w.jpg"))
         XCTAssertEqual(item.thumbnailPixelWidth, 1280)
         XCTAssertEqual(item.thumbnailPixelHeight, 6076)
         XCTAssertEqual(
@@ -192,10 +160,7 @@ final class FeedInfrastructureTests: XCTestCase {
                 pixelWidth: nil,
                 pixelHeight: nil
             ),
-            .crop(
-                containerAspectRatio:
-                    FeedSingleImagePresentationPolicy.minimumFullyVisibleAspectRatio
-            )
+            .fit
         )
     }
 
@@ -507,6 +472,20 @@ final class FeedInfrastructureTests: XCTestCase {
         }
     }
 
+    func testFeedMapperClassifiesNonJSONResponseBeforeDecoding() {
+        let markup = Data("\u{FEFF}  <html><body>gateway</body></html>".utf8)
+
+        XCTAssertThrowsError(
+            try FeedResponseMapper.page(
+                from: markup,
+                policy: .search,
+                endpointCategory: .homeAppRecommendations
+            )
+        ) { error in
+            XCTAssertEqual(error as? FeedResponseError, .unexpectedPayload)
+        }
+    }
+
     func testSuggestionsPreserveOrderAndAreCappedAtFifteen() throws {
         let suggestions = try FeedResponseMapper.suggestions(from: FeedFixtures.suggestions)
         XCTAssertEqual(suggestions.count, 15)
@@ -686,6 +665,27 @@ final class FeedInfrastructureTests: XCTestCase {
         XCTAssertEqual(url.path, "/topstory/recommend")
         XCTAssertEqual(items.first(where: { $0.name == "limit" })?.value, "10")
         XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+    }
+
+    func testHomeRecommendationRetriesOneTransientNonJSONResponse() async throws {
+        let responses = FeedResponseSequence([
+            (200, Data("<html>temporary gateway response</html>".utf8), ["Content-Type": "text/html"]),
+            (200, FeedFixtures.emptyPage, ["Content-Type": "application/json"]),
+        ])
+        FeedURLProtocol.setHandler { _ in
+            try responses.next()
+        }
+        let client = ZhihuAPIClient(
+            accountStore: FeedAccountStore(json: nil),
+            session: makeFeedSession()
+        )
+        let repository = URLSessionHomeFeedRepository(client: client)
+
+        let page = try await repository.fetchPage(source: .app, after: nil)
+
+        XCTAssertTrue(page.items.isEmpty)
+        XCTAssertTrue(page.isEnd)
+        XCTAssertEqual(responses.requestCount, 2)
     }
 
     func testHotListUsesGuestCompatibleMobileContract() async throws {
@@ -1069,6 +1069,32 @@ private final class FeedRequestRecorder: @unchecked Sendable {
         lock.lock()
         storedRequest = captured
         lock.unlock()
+    }
+}
+
+private final class FeedResponseSequence: @unchecked Sendable {
+    typealias Response = (Int, Data, [String: String])
+
+    private let lock = NSLock()
+    private var responses: [Response]
+    private var count = 0
+
+    init(_ responses: [Response]) {
+        self.responses = responses
+    }
+
+    var requestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func next() throws -> Response {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !responses.isEmpty else { throw ZhihuAPIError.invalidResponse }
+        count += 1
+        return responses.removeFirst()
     }
 }
 

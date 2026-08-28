@@ -12,8 +12,21 @@ enum FeedProjectionPolicy: Equatable {
 
 enum FeedResponseEndpointCategory: String {
     case unspecified = "unspecified"
+    case homeAppRecommendations = "home.app_recommendations"
+    case homeWebRecommendations = "home.web_recommendations"
     case followRecommendations = "follow.recommendations"
     case followMoments = "follow.moments"
+}
+
+enum FeedResponseError: LocalizedError, Equatable {
+    case unexpectedPayload
+
+    var errorDescription: String? {
+        switch self {
+        case .unexpectedPayload:
+            return "服务器临时返回了非数据内容，已保留原推荐，请重试"
+        }
+    }
 }
 
 enum FeedResponseMapper {
@@ -22,6 +35,12 @@ enum FeedResponseMapper {
         policy: FeedProjectionPolicy,
         endpointCategory: FeedResponseEndpointCategory = .unspecified
     ) throws -> FeedPageDTO {
+        guard hasJSONContainerRoot(data) else {
+            #if DEBUG
+            logUnexpectedPayload(data, endpointCategory: endpointCategory)
+            #endif
+            throw FeedResponseError.unexpectedPayload
+        }
         let envelope: FeedAPIEnvelope
         do {
             envelope = try JSONDecoder.zhihuFeed.decode(FeedAPIEnvelope.self, from: data)
@@ -92,6 +111,25 @@ enum FeedResponseMapper {
         )
     }
 
+    private static func logUnexpectedPayload(
+        _ data: Data,
+        endpointCategory: FeedResponseEndpointCategory
+    ) {
+        diagnosticsLogger.debug(
+            "FeedDecodeDiagnostics unexpected_payload endpoint=\(endpointCategory.rawValue, privacy: .public) classification=\(payloadClassification(data), privacy: .public) byteCount=\(data.count, privacy: .public)"
+        )
+    }
+
+    private static func payloadClassification(_ data: Data) -> String {
+        guard let first = firstPayloadByte(in: data) else { return "empty" }
+        switch first {
+        case 0x3C: return "markup"
+        case 0x7B, 0x5B: return "json"
+        case 0x20 ... 0x7E: return "text"
+        default: return "binary"
+        }
+    }
+
     private static func decodingErrorDetails(
         _ error: DecodingError
     ) -> (
@@ -143,6 +181,21 @@ enum FeedResponseMapper {
         )
     }
     #endif
+
+    private static func hasJSONContainerRoot(_ data: Data) -> Bool {
+        guard let first = firstPayloadByte(in: data) else { return false }
+        return first == 0x7B || first == 0x5B
+    }
+
+    private static func firstPayloadByte(in data: Data) -> UInt8? {
+        var bytes = data[...]
+        if bytes.starts(with: [0xEF, 0xBB, 0xBF]) {
+            bytes = bytes.dropFirst(3)
+        }
+        return bytes.first { byte in
+            byte != 0x09 && byte != 0x0A && byte != 0x0D && byte != 0x20
+        }
+    }
 
     static func suggestions(from data: Data) throws -> [SearchSuggestionDTO] {
         do {
@@ -423,7 +476,11 @@ private struct FeedTargetPayload: Decodable {
     var pinContentItems: [PinContentItem] { content?.items ?? [] }
 
     var thumbnailURL: URL? {
-        (thumbnail ?? thumbnailInfo?.thumbnails.first?.url ?? thumbnailExtraInfo?.url)
+        // `thumbnail` is commonly the qhd original while `thumbnail_info`
+        // contains a feed-sized CDN rendition. Prefer the rendition whose
+        // dimensions we also publish, avoiding both excess transfer and a URL /
+        // geometry mismatch in the card preview.
+        (thumbnailInfo?.thumbnails.first?.url ?? thumbnail ?? thumbnailExtraInfo?.url)
             .flatMap(validHTTPSURL)
     }
     var thumbnailPixelWidth: Int? {

@@ -9,157 +9,6 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         super.tearDown()
     }
 
-    func testReadingPreferencesIgnoreLegacyAnswerSwitchMode() throws {
-        let suiteName = "QuestionAnswerFeatureTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        let baseline = QAReadingPreferences(defaults: defaults)
-        defaults.set("off", forKey: "answerSwitchMode")
-
-        XCTAssertEqual(QAReadingPreferences(defaults: defaults), baseline)
-    }
-
-    func testAnswerPagerGestureArbitrationPrioritizesSystemBackAtLeadingEdge() {
-        let right = CGPoint(x: 120, y: 10)
-        let left = CGPoint(x: -120, y: 10)
-        let vertical = CGPoint(x: 10, y: 120)
-
-        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
-            translation: right,
-            velocity: .zero,
-            startLocationX: 20,
-            containerWidth: 390,
-            hasPreviousAnswer: true,
-            canNavigateBack: true,
-            layoutDirection: .leftToRight
-        ), .systemBack)
-        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
-            translation: right,
-            velocity: .zero,
-            startLocationX: 120,
-            containerWidth: 390,
-            hasPreviousAnswer: true,
-            canNavigateBack: true,
-            layoutDirection: .leftToRight
-        ), .pager)
-        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
-            translation: right,
-            velocity: .zero,
-            startLocationX: 120,
-            containerWidth: 390,
-            hasPreviousAnswer: false,
-            canNavigateBack: true,
-            layoutDirection: .leftToRight
-        ), .systemBack)
-        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
-            translation: left,
-            velocity: .zero,
-            startLocationX: 20,
-            containerWidth: 390,
-            hasPreviousAnswer: false,
-            canNavigateBack: true,
-            layoutDirection: .leftToRight
-        ), .pager)
-        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
-            translation: vertical,
-            velocity: .zero,
-            startLocationX: 20,
-            containerWidth: 390,
-            hasPreviousAnswer: false,
-            canNavigateBack: true,
-            layoutDirection: .leftToRight
-        ), .undecided)
-
-        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
-            translation: right,
-            velocity: .zero,
-            startLocationX: 20,
-            containerWidth: 390,
-            hasPreviousAnswer: true,
-            canNavigateBack: false,
-            layoutDirection: .leftToRight
-        ), .pager)
-    }
-
-    func testAnswerPagerGestureArbitrationUsesLeadingDirectionInRTL() {
-        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
-            translation: CGPoint(x: -120, y: 5),
-            velocity: .zero,
-            startLocationX: 370,
-            containerWidth: 390,
-            hasPreviousAnswer: true,
-            canNavigateBack: true,
-            layoutDirection: .rightToLeft
-        ), .systemBack)
-        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
-            translation: CGPoint(x: -120, y: 5),
-            velocity: .zero,
-            startLocationX: 260,
-            containerWidth: 390,
-            hasPreviousAnswer: true,
-            canNavigateBack: true,
-            layoutDirection: .rightToLeft
-        ), .pager)
-
-        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
-            translation: CGPoint(x: -120, y: 5),
-            velocity: .zero,
-            startLocationX: 370,
-            containerWidth: 390,
-            hasPreviousAnswer: false,
-            canNavigateBack: false,
-            layoutDirection: .rightToLeft
-        ), .pager)
-
-        XCTAssertEqual(AnswerPagerGestureArbitrationPolicy.owner(
-            translation: CGPoint(x: 120, y: 5),
-            velocity: .zero,
-            startLocationX: 370,
-            containerWidth: 390,
-            hasPreviousAnswer: false,
-            canNavigateBack: true,
-            layoutDirection: .rightToLeft
-        ), .pager)
-    }
-
-    @MainActor
-    func testInteractivePopObserverPreservesDelegateAcrossRepeatedInstallation() {
-        let navigationController = UINavigationController(rootViewController: UIViewController())
-        let observer = NativeAnswerInteractivePopObserverController()
-        navigationController.pushViewController(observer, animated: false)
-
-        let gesture = UIPanGestureRecognizer()
-        let originalDelegate = GestureDelegateSpy(shouldBegin: false)
-        gesture.delegate = originalDelegate
-
-        observer.observeInteractivePopGesture(gesture)
-        observer.observeInteractivePopGesture(gesture)
-
-        XCTAssertTrue(gesture.delegate === observer)
-        XCTAssertFalse(observer.gestureRecognizerShouldBegin(gesture))
-        XCTAssertEqual(originalDelegate.shouldBeginCallCount, 1)
-
-        observer.stopObservingInteractivePopGesture()
-        XCTAssertTrue(gesture.delegate === originalDelegate)
-    }
-
-    @MainActor
-    func testAnswerPagerFeedbackOnlyEmitsForSemanticCompletion() {
-        var events: [NativeHapticFeedbackEvent] = []
-        let action = NativeHapticFeedbackAction(configuration: .init()) { event, _ in
-            events.append(event)
-        }
-        let feedback = NativeAnswerPagerFeedback(action: action)
-
-        feedback.pageDidCommit(false)
-        feedback.forwardBoundaryDidPublish(false)
-        feedback.pageDidCommit(true)
-        feedback.forwardBoundaryDidPublish(true)
-
-        XCTAssertEqual(events, [.selection, .navigationBoundary])
-    }
-
     func testRichContentParserProjectsSemanticBlocksAndPreservesTypedLinks() throws {
         let html = """
         <h2>标题</h2>
@@ -448,7 +297,7 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         XCTAssertEqual(articleDocument.suggestedFileName, "文章-标题.md")
     }
 
-    func testMarkdownSharePayloadUsesTextThenSafeTemporaryFileForLongContent() throws {
+    func testMarkdownSharePayloadUsesTextThenFilePayloadForLongContent() {
         let short = QAMarkdownDocument(
             title: "短文",
             authorName: "作者",
@@ -472,30 +321,6 @@ final class QuestionAnswerFeatureTests: XCTestCase {
             QAMarkdownSharePayloadBuilder.payload(for: long, inlineTextByteLimit: 100),
             .file(contents: long.markdown, suggestedFileName: "../../不可覆盖.md")
         )
-
-        let fileManager = FileManager.default
-        let base = fileManager.temporaryDirectory.appendingPathComponent(
-            "QAMarkdownTemporaryFileStoreTests-\(UUID().uuidString)",
-            isDirectory: true
-        )
-        try fileManager.createDirectory(at: base, withIntermediateDirectories: false)
-        defer { try? fileManager.removeItem(at: base) }
-        let sibling = base.appendingPathComponent("keep.txt")
-        try Data("keep".utf8).write(to: sibling)
-
-        let temporary = try QAMarkdownTemporaryFileStore.write(
-            contents: long.markdown,
-            suggestedFileName: "../../不可覆盖.md",
-            baseDirectory: base,
-            fileManager: fileManager
-        )
-        XCTAssertEqual(temporary.fileURL.lastPathComponent, "不可覆盖.md")
-        XCTAssertEqual(try String(contentsOf: temporary.fileURL), long.markdown)
-        XCTAssertTrue(fileManager.fileExists(atPath: sibling.path))
-
-        temporary.cleanup(fileManager: fileManager)
-        XCTAssertFalse(fileManager.fileExists(atPath: temporary.directoryURL.path))
-        XCTAssertTrue(fileManager.fileExists(atPath: sibling.path))
     }
 
     func testParserProjectsZhihuVideoBoxInsteadOfTreatingCoverAsImage() throws {
@@ -823,9 +648,31 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         )
         XCTAssertTrue(
             continuation.url?.query?.contains(
-                "include=data%5B*%5D.content,excerpt,headline,target.author.badge_v2"
+                "include=data%5B*%5D.excerpt,headline,target.author.badge_v2"
             ) == true
         )
+    }
+
+    func testAPIClientCachesAccountCredentialsUntilExplicitInvalidation() async throws {
+        QAURLProtocol.setHandler { _ in (200, Data("{}".utf8), [:]) }
+        let accountStore = QAAccountStore()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [QAURLProtocol.self]
+        let client = ZhihuAPIClient(
+            accountStore: accountStore,
+            session: URLSession(configuration: configuration)
+        )
+        let url = try XCTUnwrap(URL(string: "https://www.zhihu.com/api/v4/questions/7"))
+
+        _ = try await client.data(for: url, authentication: .accountRequired)
+        _ = try await client.data(for: url, authentication: .accountRequired)
+
+        XCTAssertEqual(accountStore.loadCount, 1)
+
+        await client.invalidateCredentialsCache()
+        _ = try await client.data(for: url, authentication: .accountRequired)
+
+        XCTAssertEqual(accountStore.loadCount, 2)
     }
 
     func testVoteUsesAnswerStatePayloadAndPublishesServerCount() async throws {
@@ -901,7 +748,7 @@ final class QuestionAnswerFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testQuestionSourcePreservesClickedPositionForPager() {
+    func testQuestionSourcePlacesClickedAnswerFirstAndPreservesRemainingOrder() {
         let repository = StubQuestionAnswerRepository()
         let answers = [40, 41, 42, 43].map(QAFixtures.preview)
         let route = AnswerRouteDTO(
@@ -917,26 +764,25 @@ final class QuestionAnswerFeatureTests: XCTestCase {
             )
         )
 
-        let pager = AnswerPagerStore(
+        let stream = AnswerStreamStore(
             route: route,
             repository: repository,
             openedHistory: StubOpenedHistory()
         )
 
-        XCTAssertEqual(pager.current.id, 42)
-        XCTAssertEqual(pager.previous?.id, 41)
-        XCTAssertEqual(pager.next?.id, 43)
+        XCTAssertEqual(stream.current.id, 42)
+        XCTAssertEqual(stream.answers.map(\.id), [42, 40, 41, 43])
+        XCTAssertEqual(stream.paginationState, .end)
     }
 
     @MainActor
-    func testVisibleFeedAnswerPreloadsAndSeedsPagerBeforeItsFirstFrame() async throws {
+    func testVisibleFeedAnswerPreloadsAndSeedsStreamBeforeItsFirstFrame() async throws {
         let repository = StubQuestionAnswerRepository()
         repository.answerResult = .success(QAFixtures.answerDTO)
         let preloader = NativeFeedAnswerPreloader(
             repository: repository,
             maximumCachedAnswers: 2,
-            maximumConcurrentPreloads: 1,
-            maximumPendingPreloads: 1
+            maximumConcurrentPreloads: 1
         )
         let item = FeedItemDTO(
             id: FeedItemID(kind: .answer, contentID: "42"),
@@ -958,34 +804,304 @@ final class QuestionAnswerFeatureTests: XCTestCase {
 
         preloader.register(item)
         let route = try XCTUnwrap(item.route.answerRoute)
-        let prefetched = await preloader.answer(for: route)
+        let prefetched = try await preloader.answer(for: route)
 
         XCTAssertEqual(prefetched, QAFixtures.answerDTO)
         XCTAssertEqual(preloader.cachedPreview(for: route)?.summary, "信息流摘要")
         XCTAssertEqual(repository.answerFetchCount, 1)
-        preloader.cacheUpdatedAnswer(try XCTUnwrap(prefetched))
 
-        let pager = AnswerPagerStore(
+        let stream = AnswerStreamStore(
             route: route,
             repository: repository,
             answerPreloader: preloader,
             openedHistory: StubOpenedHistory()
         )
 
-        XCTAssertEqual(pager.current.content, QAFixtures.answerDTO)
-        XCTAssertEqual(pager.current.loadState, .loaded)
-        await pager.prepare()
+        XCTAssertEqual(stream.current.content, QAFixtures.answerDTO)
+        XCTAssertEqual(stream.current.loadState, .loaded)
+        await stream.prepare()
         XCTAssertEqual(repository.answerFetchCount, 1)
     }
 
     @MainActor
-    func testPagerContinuesAcrossPagesUntilItFindsAnUnopenedAnswer() async {
+    func testTappedFeedAnswerPromotesExistingRequestWithoutFetchingTwice() async throws {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerResult = .success(QAFixtures.answerDTO)
+        let preloader = NativeFeedAnswerPreloader(
+            repository: repository,
+            maximumCachedAnswers: 2,
+            maximumConcurrentPreloads: 1
+        )
+        let item = FeedItemDTO(
+            id: FeedItemID(kind: .answer, contentID: "42"),
+            kind: .answer,
+            title: "原生问题",
+            summary: "信息流摘要",
+            details: "1 赞同 · 0 评论",
+            sourceLabel: nil,
+            author: nil,
+            thumbnailURL: nil,
+            route: .answer(answerID: 42, questionID: 7, questionTitle: "原生问题")
+        )
+        let route = try XCTUnwrap(item.route.answerRoute)
+
+        preloader.promoteForNavigation(item)
+        let answer = try await preloader.answer(for: route)
+
+        XCTAssertEqual(answer, QAFixtures.answerDTO)
+        XCTAssertEqual(repository.answerFetchCount, 1)
+    }
+
+    @MainActor
+    func testConsumedAnswerRemainsCachedForImmediateReopen() async throws {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerResult = .success(QAFixtures.answerDTO)
+        let preloader = NativeFeedAnswerPreloader(
+            repository: repository,
+            maximumCachedAnswers: 2,
+            maximumConcurrentPreloads: 1
+        )
+        let route = AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7)
+
+        let first = try await preloader.answer(for: route)
+        for _ in 0 ..< 50 where preloader.cachedAnswer(for: route) == nil {
+            await Task.yield()
+        }
+        let second = try await preloader.answer(for: route)
+
+        XCTAssertEqual(first, QAFixtures.answerDTO)
+        XCTAssertEqual(second, QAFixtures.answerDTO)
+        XCTAssertNotNil(preloader.cachedAnswer(for: route))
+        XCTAssertEqual(repository.answerFetchCount, 1)
+    }
+
+    @MainActor
+    func testPreloaderFailureDoesNotTriggerAnImmediateDuplicateFetch() async {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerResult = .failure(QAStubError.failed)
+        let preloader = NativeFeedAnswerPreloader(repository: repository)
+        let store = AnswerStore(
+            route: AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7),
+            repository: repository,
+            answerPreloader: preloader
+        )
+
+        await store.retry()
+
+        XCTAssertEqual(store.loadState, .failed("测试失败"))
+        XCTAssertEqual(repository.answerFetchCount, 1)
+    }
+
+    @MainActor
+    func testReadingSessionPrefetchesOnlyTheFollowingAnswer() async {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerResult = .success(QAFixtures.answerDTO(id: 44))
+        let preloader = NativeFeedAnswerPreloader(repository: repository)
+        preloader.cacheUpdatedAnswer(QAFixtures.answerDTO)
+        let route = AnswerRouteDTO(
+            contentID: 42,
+            kind: .answer,
+            questionID: 7,
+            source: AnswerPageSourceDTO(
+                questionID: 7,
+                order: .default,
+                orderedAnswers: [QAFixtures.preview(42), QAFixtures.preview(44), QAFixtures.preview(45)],
+                selectedAnswerID: 42,
+                nextURL: nil
+            )
+        )
+        let stream = AnswerStreamStore(
+            route: route,
+            repository: repository,
+            answerPreloader: preloader,
+            followingAnswerPrefetchDelayNanoseconds: 0,
+            openedHistory: StubOpenedHistory()
+        )
+        let followingRoute = AnswerRouteDTO(contentID: 44, kind: .answer, questionID: 7)
+        let laterRoute = AnswerRouteDTO(contentID: 45, kind: .answer, questionID: 7)
+
+        stream.focus(answerID: 42)
+        for _ in 0 ..< 200 where preloader.cachedAnswer(for: followingRoute) == nil {
+            await Task.yield()
+        }
+
+        XCTAssertNotNil(preloader.cachedAnswer(for: followingRoute))
+        XCTAssertNil(preloader.cachedAnswer(for: laterRoute))
+        XCTAssertEqual(repository.answerFetchCount, 1)
+        stream.cancelPendingReadingPrefetches()
+    }
+
+    @MainActor
+    func testURLSessionCancellationNeverBecomesVisibleAnswerFailure() async {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerResult = .failure(URLError(.cancelled))
+        let store = AnswerStore(
+            route: AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7),
+            repository: repository
+        )
+
+        await store.retry()
+
+        XCTAssertEqual(store.loadState, .idle)
+        XCTAssertNil(store.content)
+    }
+
+    @MainActor
+    func testURLSessionCancellationKeepsAnswerPaginationRetryable() async {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerResult = .success(QAFixtures.answerDTO)
+        repository.answerPageResults = [
+            .failure(URLError(.cancelled)),
+            .success(QuestionAnswerPageDTO(items: [], nextURL: nil, isEnd: true)),
+        ]
+        let continuation = URL(string: "https://www.zhihu.com/api/v4/questions/7/feeds?offset=20")!
+        let stream = AnswerStreamStore(
+            route: AnswerRouteDTO(
+                contentID: 42,
+                kind: .answer,
+                questionID: 7,
+                source: AnswerPageSourceDTO(
+                    questionID: 7,
+                    order: .default,
+                    orderedAnswers: [QAFixtures.preview(42)],
+                    selectedAnswerID: 42,
+                    nextURL: continuation
+                )
+            ),
+            repository: repository,
+            openedHistory: StubOpenedHistory()
+        )
+
+        await stream.prepare()
+
+        XCTAssertEqual(stream.current.loadState, .loaded)
+        XCTAssertEqual(stream.paginationState, .idle)
+
+        await stream.loadMoreIfNeeded()
+
+        XCTAssertEqual(stream.paginationState, .end)
+    }
+
+    @MainActor
+    func testStalledCommentPrefetchCannotBlockInitialAnswerPagination() async {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerResult = .success(QAFixtures.answerDTO)
+        repository.answerPageResults = [
+            .success(QuestionAnswerPageDTO(items: [], nextURL: nil, isEnd: true)),
+        ]
+        let commentRepository = GatedCommentRepository()
+        let commentPreloader = NativeCommentPreloader(repository: commentRepository)
+        let stream = AnswerStreamStore(
+            route: AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7),
+            repository: repository,
+            commentPreloader: commentPreloader,
+            commentPrefetchDelayNanoseconds: 0,
+            openedHistory: StubOpenedHistory()
+        )
+
+        let preparation = Task { await stream.prepare() }
+        var commentStarted = false
+        var paginationStarted = false
+        for _ in 0 ..< 200 {
+            commentStarted = await commentRepository.hasStarted
+            paginationStarted = repository.answerPageFetchCount > 0
+            if commentStarted, paginationStarted { break }
+            await Task.yield()
+        }
+        await commentRepository.release()
+        await preparation.value
+
+        XCTAssertTrue(commentStarted)
+        XCTAssertTrue(paginationStarted)
+        XCTAssertEqual(stream.paginationState, .end)
+    }
+
+    @MainActor
+    func testQuicklyDismissedAnswerDoesNotStartCommentSpeculation() async {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerResult = .success(QAFixtures.answerDTO)
+        repository.answerPageResults = [
+            .success(QuestionAnswerPageDTO(items: [], nextURL: nil, isEnd: true)),
+        ]
+        let commentRepository = GatedCommentRepository()
+        let stream = AnswerStreamStore(
+            route: AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7),
+            repository: repository,
+            commentPreloader: NativeCommentPreloader(repository: commentRepository),
+            commentPrefetchDelayNanoseconds: 60_000_000_000,
+            openedHistory: StubOpenedHistory()
+        )
+
+        await stream.prepare()
+        stream.cancelPendingCommentPrefetch()
+
+        let commentStarted = await commentRepository.hasStarted
+        XCTAssertFalse(commentStarted)
+        XCTAssertEqual(stream.paginationState, .end)
+    }
+
+    @MainActor
+    func testBackgroundAnswerPrefetchDoesNotPublishLoadingIndicatorUntilReaderReachesEnd() async {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerPageDelayNanoseconds = 1_000_000_000
+        repository.answerPageResults = [
+            .success(QuestionAnswerPageDTO(items: [], nextURL: nil, isEnd: true)),
+        ]
+        let stream = AnswerStreamStore(
+            route: AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7),
+            repository: repository,
+            paginationTimeoutNanoseconds: 5_000_000_000,
+            openedHistory: StubOpenedHistory()
+        )
+
+        let prefetch = Task {
+            await stream.loadMoreIfNeeded(showsLoadingIndicator: false)
+        }
+        for _ in 0 ..< 200 {
+            if stream.paginationState == .loading(showsIndicator: false) { break }
+            await Task.yield()
+        }
+
+        XCTAssertEqual(stream.paginationState, .loading(showsIndicator: false))
+
+        await stream.loadMoreIfNeeded(showsLoadingIndicator: true)
+
+        XCTAssertEqual(stream.paginationState, .loading(showsIndicator: true))
+        prefetch.cancel()
+        await prefetch.value
+        XCTAssertEqual(stream.paginationState, .idle)
+    }
+
+    @MainActor
+    func testAnswerPaginationTimeoutBecomesRetryableFailureInsteadOfInfiniteLoading() async {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerPageDelayNanoseconds = 1_000_000_000
+        repository.answerPageResults = [
+            .success(QuestionAnswerPageDTO(items: [], nextURL: nil, isEnd: true)),
+        ]
+        let stream = AnswerStreamStore(
+            route: AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7),
+            repository: repository,
+            paginationTimeoutNanoseconds: 1_000_000,
+            openedHistory: StubOpenedHistory()
+        )
+
+        await stream.loadMoreIfNeeded()
+
+        guard case let .failed(message) = stream.paginationState else {
+            return XCTFail("超时必须结束加载状态并提供重试")
+        }
+        XCTAssertEqual(message, "加载更多回答超时，请重试")
+    }
+
+    @MainActor
+    func testStreamContinuesPastEmptyPagesWithoutPublishingFalseEndState() async {
         let repository = StubQuestionAnswerRepository()
         repository.answerResult = .success(QAFixtures.answerDTO)
         repository.answerPageResults = [
             .success(
                 QuestionAnswerPageDTO(
-                    items: [QAFixtures.preview(43)],
+                    items: [],
                     nextURL: URL(string: "https://www.zhihu.com/api/v4/questions/7/feeds?offset=20"),
                     isEnd: false
                 )
@@ -998,19 +1114,20 @@ final class QuestionAnswerFeatureTests: XCTestCase {
                 )
             ),
         ]
-        let pager = AnswerPagerStore(
+        let stream = AnswerStreamStore(
             route: AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7),
             repository: repository,
-            openedHistory: StubOpenedHistory(opened: [43])
+            openedHistory: StubOpenedHistory()
         )
 
-        await pager.prepare()
+        await stream.prepare()
 
-        XCTAssertEqual(pager.next?.id, 44)
+        XCTAssertEqual(stream.answers.map(\.id), [42, 44])
+        XCTAssertEqual(stream.paginationState, .end)
     }
 
     @MainActor
-    func testPagerKeepsPublishingNeighborsAcrossInitialAndLoadedPages() async {
+    func testStreamAppendsLoadedPagesWithoutReorderingExistingAnswers() async {
         let repository = StubQuestionAnswerRepository()
         repository.answerResult = .success(QAFixtures.answerDTO)
         repository.answerPageResults = [
@@ -1023,7 +1140,7 @@ final class QuestionAnswerFeatureTests: XCTestCase {
             ),
         ]
         let initial = [40, 41, 42, 43].map(QAFixtures.preview)
-        let pager = AnswerPagerStore(
+        let stream = AnswerStreamStore(
             route: AnswerRouteDTO(
                 contentID: 40,
                 kind: .answer,
@@ -1040,17 +1157,16 @@ final class QuestionAnswerFeatureTests: XCTestCase {
             openedHistory: StubOpenedHistory()
         )
 
-        await pager.prepare()
-        XCTAssertEqual(pager.next?.id, 41)
-        for expected in [41, 42, 43, 44, 45, 46] {
-            await pager.didDisplay(answerID: Int64(expected))
-            XCTAssertEqual(pager.current.id, Int64(expected))
-            XCTAssertEqual(pager.next?.id, expected == 46 ? nil : Int64(expected + 1))
-        }
+        await stream.loadMoreIfNeeded()
+
+        XCTAssertEqual(stream.answers.map(\.id), [40, 41, 42, 43, 44, 45, 46])
+        XCTAssertEqual(stream.paginationState, .end)
+        stream.focus(answerID: 45)
+        XCTAssertEqual(stream.current.id, 45)
     }
 
     @MainActor
-    func testPagerDistinguishesLoadingAvailableEndAndFailedForwardStates() async {
+    func testStreamDistinguishesAvailableContentEndAndFailedPagination() async {
         let availableRepository = StubQuestionAnswerRepository()
         let availableRoute = AnswerRouteDTO(
             contentID: 42,
@@ -1064,46 +1180,42 @@ final class QuestionAnswerFeatureTests: XCTestCase {
                 nextURL: nil
             )
         )
-        let availablePager = AnswerPagerStore(
+        let availableStream = AnswerStreamStore(
             route: availableRoute,
             repository: availableRepository,
             openedHistory: StubOpenedHistory()
         )
-        XCTAssertEqual(availablePager.forwardAvailability, .available)
+        XCTAssertEqual(availableStream.answers.map(\.id), [42, 43])
+        XCTAssertEqual(availableStream.paginationState, .end)
 
         let endRepository = StubQuestionAnswerRepository()
         endRepository.answerResult = .success(QAFixtures.answerDTO)
         endRepository.answerPageResults = [
             .success(QuestionAnswerPageDTO(items: [], nextURL: nil, isEnd: true)),
         ]
-        let endPager = AnswerPagerStore(
+        let endStream = AnswerStreamStore(
             route: AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7),
             repository: endRepository,
             openedHistory: StubOpenedHistory()
         )
-        XCTAssertEqual(endPager.forwardAvailability, .loading)
-        XCTAssertFalse(endPager.reportForwardBoundaryReached())
-        XCTAssertNil(endPager.boundaryNotice)
-        await endPager.prepare()
-        XCTAssertEqual(endPager.forwardAvailability, .end)
-        XCTAssertTrue(endPager.reportForwardBoundaryReached())
-        XCTAssertEqual(endPager.boundaryNotice, "没有更多了")
-        XCTAssertFalse(endPager.reportForwardBoundaryReached())
+        XCTAssertEqual(endStream.paginationState, .idle)
+        await endStream.prepare()
+        XCTAssertEqual(endStream.paginationState, .end)
 
         let failedRepository = StubQuestionAnswerRepository()
         failedRepository.answerResult = .success(QAFixtures.answerDTO)
         failedRepository.answerPageResults = [.failure(QAStubError.failed)]
-        let failedPager = AnswerPagerStore(
+        let failedStream = AnswerStreamStore(
             route: AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7),
             repository: failedRepository,
             openedHistory: StubOpenedHistory()
         )
-        await failedPager.prepare()
-        XCTAssertEqual(failedPager.forwardAvailability, .failed("测试失败"))
+        await failedStream.prepare()
+        XCTAssertEqual(failedStream.paginationState, .failed("测试失败"))
     }
 
     @MainActor
-    func testPagerCommitsDisplayedAnswerBeforeAsyncPreparation() {
+    func testStreamFocusChangesCurrentAnswerWithoutChangingReadingOrder() {
         let repository = StubQuestionAnswerRepository()
         let route = AnswerRouteDTO(
             contentID: 40,
@@ -1117,17 +1229,16 @@ final class QuestionAnswerFeatureTests: XCTestCase {
                 nextURL: nil
             )
         )
-        let pager = AnswerPagerStore(
+        let stream = AnswerStreamStore(
             route: route,
             repository: repository,
             openedHistory: StubOpenedHistory()
         )
 
-        XCTAssertTrue(pager.commitDisplayedAnswer(answerID: 41))
+        stream.focus(answerID: 41)
 
-        XCTAssertEqual(pager.current.id, 41)
-        XCTAssertEqual(pager.previous?.id, 40)
-        XCTAssertEqual(pager.next?.id, 42)
+        XCTAssertEqual(stream.current.id, 41)
+        XCTAssertEqual(stream.answers.map(\.id), [40, 41, 42])
     }
 
     private func makeRepository(
@@ -1140,20 +1251,6 @@ final class QuestionAnswerFeatureTests: XCTestCase {
             session: URLSession(configuration: configuration)
         )
         return URLSessionQuestionAnswerRepository(client: client)
-    }
-}
-
-private final class GestureDelegateSpy: NSObject, UIGestureRecognizerDelegate {
-    private let shouldBegin: Bool
-    private(set) var shouldBeginCallCount = 0
-
-    init(shouldBegin: Bool) {
-        self.shouldBegin = shouldBegin
-    }
-
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        shouldBeginCallCount += 1
-        return shouldBegin
     }
 }
 
@@ -1209,25 +1306,29 @@ private enum QAFixtures {
 
     static let answerPageDTO = QuestionAnswerPageDTO(items: [preview(42)], nextURL: nil, isEnd: true)
 
-    static let answerDTO = AnswerDTO(
-        route: AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7),
-        title: "原生问题",
-        questionID: 7,
-        author: author,
-        blocks: [.paragraph(UUID(), [QAInlineRun(text: "正文")])],
-        attachment: nil,
-        sourceURL: URL(string: "https://www.zhihu.com/question/7/answer/42")!,
-        voteUpCount: 1,
-        favoriteCount: 0,
-        commentCount: 0,
-        voteState: .neutral,
-        favoriteState: .unknown,
-        createdTimeSeconds: 1,
-        updatedTimeSeconds: 1,
-        ipLocation: nil,
-        invitationPreface: nil,
-        endorsements: []
-    )
+    static let answerDTO = answerDTO(id: 42)
+
+    static func answerDTO(id: Int64) -> AnswerDTO {
+        AnswerDTO(
+            route: AnswerRouteDTO(contentID: id, kind: .answer, questionID: 7),
+            title: "原生问题",
+            questionID: 7,
+            author: author,
+            blocks: [.paragraph(UUID(), [QAInlineRun(text: "正文")])],
+            attachment: nil,
+            sourceURL: URL(string: "https://www.zhihu.com/question/7/answer/\(id)")!,
+            voteUpCount: 1,
+            favoriteCount: 0,
+            commentCount: 0,
+            voteState: .neutral,
+            favoriteState: .unknown,
+            createdTimeSeconds: 1,
+            updatedTimeSeconds: 1,
+            ipLocation: nil,
+            invitationPreface: nil,
+            endorsements: []
+        )
+    }
 }
 
 private final class QARequestRecorder: @unchecked Sendable {
@@ -1281,10 +1382,16 @@ private final class QAURLProtocol: URLProtocol {
 private final class QAAccountStore: AccountJSONStore, @unchecked Sendable {
     private let lock = NSLock()
     private var json: String?
+    private var loads = 0
     init(json: String? = #"{"cookies":{"d_c0":"device","z_c0":"login"},"userAgent":"qa-test"}"#) {
         self.json = json
     }
-    func load() throws -> String? { lock.lock(); defer { lock.unlock() }; return json }
+    var loadCount: Int { lock.lock(); defer { lock.unlock() }; return loads }
+    func load() throws -> String? {
+        lock.lock(); defer { lock.unlock() }
+        loads += 1
+        return json
+    }
     func save(_ value: String) throws { lock.lock(); json = value; lock.unlock() }
     func clear() throws { lock.lock(); json = nil; lock.unlock() }
     func update(_ transform: (String?) throws -> String?) throws {
@@ -1298,11 +1405,17 @@ private enum QAStubError: LocalizedError { case failed; var errorDescription: St
 private final class StubQuestionAnswerRepository: QuestionAnswerRepository, @unchecked Sendable {
     var questionResult: Result<QuestionDTO, Error> = .failure(QAStubError.failed)
     var answerPageResults: [Result<QuestionAnswerPageDTO, Error>] = []
+    var answerPageDelayNanoseconds: UInt64 = 0
     var answerResult: Result<AnswerDTO, Error> = .failure(QAStubError.failed)
     private(set) var answerFetchCount = 0
+    private(set) var answerPageFetchCount = 0
 
     func fetchQuestion(_ route: QuestionRouteDTO) async throws -> QuestionDTO { try questionResult.get() }
     func fetchQuestionAnswers(questionID: Int64, sort: QuestionAnswerSort, after nextURL: URL?) async throws -> QuestionAnswerPageDTO {
+        answerPageFetchCount += 1
+        if answerPageDelayNanoseconds > 0 {
+            try await Task.sleep(nanoseconds: answerPageDelayNanoseconds)
+        }
         guard !answerPageResults.isEmpty else { return QuestionAnswerPageDTO(items: [], nextURL: nil, isEnd: true) }
         return try answerPageResults.removeFirst().get()
     }
@@ -1318,6 +1431,39 @@ private final class StubQuestionAnswerRepository: QuestionAnswerRepository, @unc
         QACollectionsResult(items: [], favoriteState: .notFavorited)
     }
     func setCollection(_ selected: Bool, collectionID: String, route: AnswerRouteDTO) async throws {}
+}
+
+private actor GatedCommentRepository: CommentRepository {
+    private var started = false
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    var hasStarted: Bool { started }
+
+    func fetchPage(
+        route: CommentThreadRouteDTO,
+        level: CommentLevelKey,
+        sort: CommentSortDTO,
+        nextURL: URL?
+    ) async throws -> CommentPageResult {
+        started = true
+        if !released {
+            await withCheckedContinuation { continuation = $0 }
+        }
+        return CommentPageResult(items: [], nextURL: nil, isEnd: true)
+    }
+
+    func setLiked(_ target: Bool, commentID: String) async throws {}
+
+    func submit(_ snapshot: CommentSubmissionSnapshotDTO) async throws -> CommentDTO {
+        throw QAStubError.failed
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
 }
 
 private actor StubOpenedHistory: AnswerOpenedHistory {

@@ -1,5 +1,86 @@
 import Foundation
 
+@MainActor
+final class NativeCommentPreloader {
+    private let repository: CommentRepository
+    private let maximumCachedPages: Int
+    private var pages: [CommentSubjectDTO: CommentPageResult] = [:]
+    private var order: [CommentSubjectDTO] = []
+    private var tasks: [CommentSubjectDTO: Task<CommentPageResult?, Never>] = [:]
+    private var generation: UInt64 = 0
+
+    init(repository: CommentRepository, maximumCachedPages: Int = 3) {
+        self.repository = repository
+        self.maximumCachedPages = max(1, maximumCachedPages)
+    }
+
+    func prefetch(_ route: CommentThreadRouteDTO) async {
+        let subject = route.subject
+        guard pages[subject] == nil else {
+            touch(subject)
+            return
+        }
+        let acceptedGeneration = generation
+        let task: Task<CommentPageResult?, Never>
+        if let existing = tasks[subject] {
+            task = existing
+        } else {
+            guard tasks.isEmpty else { return }
+            let repository = repository
+            task = Task {
+                try? await repository.fetchPage(
+                    route: route,
+                    level: .root,
+                    sort: .score,
+                    nextURL: nil
+                )
+            }
+            tasks[subject] = task
+        }
+
+        // A visible answer may leave the lazy viewport while this single
+        // bounded request is in flight. Let it finish into cache instead of
+        // repeatedly tearing down and recreating the same network connection.
+        let result = await task.value
+        guard acceptedGeneration == generation else { return }
+        tasks[subject] = nil
+        guard !Task.isCancelled, let result else { return }
+        pages[subject] = result
+        touch(subject)
+        trimIfNeeded()
+    }
+
+    func takeCachedPage(for route: CommentThreadRouteDTO) -> CommentPageResult? {
+        let subject = route.subject
+        guard let page = pages.removeValue(forKey: subject) else { return nil }
+        order.removeAll { $0 == subject }
+        return page
+    }
+
+    func cancelSpeculativePreloads() {
+        tasks.values.forEach { $0.cancel() }
+        tasks.removeAll()
+    }
+
+    func reset() {
+        generation &+= 1
+        cancelSpeculativePreloads()
+        pages.removeAll()
+        order.removeAll()
+    }
+
+    private func touch(_ subject: CommentSubjectDTO) {
+        order.removeAll { $0 == subject }
+        order.append(subject)
+    }
+
+    private func trimIfNeeded() {
+        while order.count > maximumCachedPages {
+            pages.removeValue(forKey: order.removeFirst())
+        }
+    }
+}
+
 enum CommentComposerPresentation: Equatable {
     case hidden
     case active(level: CommentLevelKey)
@@ -25,7 +106,6 @@ final class CommentSessionStore: ObservableObject {
 
     private let repository: CommentRepository
     private let onOpenPerson: (PersonRoutePayload) -> Void
-    private var anchors: [CommentLevelKey: CommentScrollAnchor] = [:]
     private var drafts: [CommentLevelKey: CommentComposerDraft] = [:]
     private var pageTasks: [CommentLevelKey: Task<Void, Never>] = [:]
     private var likeTasks: [CommentLevelKey: Task<Void, Never>] = [:]
@@ -36,6 +116,7 @@ final class CommentSessionStore: ObservableObject {
     init(
         route: CommentThreadRouteDTO,
         repository: CommentRepository,
+        preloadedRootPage: CommentPageResult? = nil,
         sessionID: CommentSessionID = CommentSessionID(),
         onOpenPerson: @escaping (PersonRoutePayload) -> Void
     ) {
@@ -44,7 +125,14 @@ final class CommentSessionStore: ObservableObject {
         self.sessionID = sessionID
         self.onOpenPerson = onOpenPerson
         let rootKey = CommentPageAcceptanceKey(sessionID: sessionID, level: .root, generation: 0)
-        var pages: [CommentLevelKey: CommentPageState] = [.root: CommentPageState(acceptanceKey: rootKey)]
+        var rootPage = CommentPageState(acceptanceKey: rootKey)
+        if let preloadedRootPage {
+            rootPage.items = preloadedRootPage.items
+            rootPage.nextURL = preloadedRootPage.nextURL
+            rootPage.isEnd = preloadedRootPage.isEnd
+            rootPage.initialLoad = .loaded
+        }
+        var pages: [CommentLevelKey: CommentPageState] = [.root: rootPage]
         switch route.initialLevel {
         case .root:
             navigationPath = []
@@ -82,7 +170,6 @@ final class CommentSessionStore: ObservableObject {
     func changeSort(_ sort: CommentSortDTO) {
         guard !isDisposed, rootSort != sort else { return }
         rootSort = sort
-        anchors[.root] = nil
         loadInitial(level: .root, invalidating: true)
     }
 
@@ -218,12 +305,11 @@ final class CommentSessionStore: ObservableObject {
                 }
                 acceptedPage.activeLikeMutation = nil
                 pages[level] = acceptedPage
-            } catch is CancellationError {
-                return
             } catch {
                 guard accepts(mutation, level: level), var acceptedPage = pages[level] else { return }
                 acceptedPage.activeLikeMutation = nil
                 pages[level] = acceptedPage
+                if error.isNativeRequestCancellation { return }
                 show(error)
             }
         }
@@ -281,10 +367,12 @@ final class CommentSessionStore: ObservableObject {
                 }
                 draft = CommentComposerDraft()
                 drafts[level] = draft
-            } catch is CancellationError {
-                return
             } catch {
                 guard accepts(snapshot) else { return }
+                if error.isNativeRequestCancellation {
+                    draft.submissionState = .idle
+                    return
+                }
                 draft.submissionState = .failed(operationID: snapshot.operationID, message: displayMessage(error))
                 show(error)
             }
@@ -316,36 +404,6 @@ final class CommentSessionStore: ObservableObject {
 
     func galleryBindingChanged(to destination: CommentMediaGalleryDestination?) {
         if destination == nil { galleryDestination = nil }
-    }
-
-    func updateAnchor(_ anchor: CommentScrollAnchor?, for level: CommentLevelKey) {
-        anchors[level] = anchor
-    }
-
-    func restorationContext() -> CommentRestorationContext {
-        preserveActiveDraft()
-        var replyAnchors: [String: CommentScrollAnchor] = [:]
-        for (level, anchor) in anchors {
-            if case let .replies(rootCommentID) = level {
-                replyAnchors[rootCommentID] = anchor
-            }
-        }
-        return CommentRestorationContext(
-            sessionID: sessionID,
-            level: activeLevel,
-            rootSort: rootSort,
-            rootAnchor: anchors[.root],
-            replyAnchors: replyAnchors,
-            activeDraft: draft
-        )
-    }
-
-    func anchorRestorationResult(for level: CommentLevelKey) -> CommentAnchorRestorationResult {
-        guard let anchor = anchors[level] else { return .noAnchor }
-        guard pages[level]?.items.contains(where: { $0.id == anchor.commentID }) == true else {
-            return .missingAnchor(anchor)
-        }
-        return .restored(anchor)
     }
 
     func consumeScrollToStart(for level: CommentLevelKey) {
@@ -405,10 +463,13 @@ final class CommentSessionStore: ObservableObject {
                 acceptedPage.initialLoad = .loaded
                 acceptedPage.nextPage = .idle
                 pages[level] = acceptedPage
-            } catch is CancellationError {
-                return
             } catch {
                 guard accepts(acceptanceKey), var acceptedPage = pages[level] else { return }
+                if error.isNativeRequestCancellation {
+                    acceptedPage.initialLoad = .idle
+                    pages[level] = acceptedPage
+                    return
+                }
                 acceptedPage.initialLoad = .failed(displayMessage(error))
                 pages[level] = acceptedPage
             }
@@ -443,10 +504,13 @@ final class CommentSessionStore: ObservableObject {
                 acceptedPage.isEnd = result.isEnd
                 acceptedPage.nextPage = .idle
                 pages[level] = acceptedPage
-            } catch is CancellationError {
-                return
             } catch {
                 guard accepts(acceptanceKey), var acceptedPage = pages[level] else { return }
+                if error.isNativeRequestCancellation {
+                    acceptedPage.nextPage = .idle
+                    pages[level] = acceptedPage
+                    return
+                }
                 acceptedPage.nextPage = .failed(displayMessage(error))
                 pages[level] = acceptedPage
             }

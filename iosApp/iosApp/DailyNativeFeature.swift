@@ -381,14 +381,6 @@ struct DailyNativeView: View {
     @State private var navigationTask: Task<Void, Never>?
     @State private var supplementalLoadTask: Task<Void, Never>?
     @State private var resolutionFailure: DailyStoryResolutionFailure?
-    @State private var observedScrollToTopRequest: UInt
-    @State private var hasAlignedInitialTop = false
-    @State private var isInitialTopAlignmentScheduled = false
-    @State private var initialTopAlignmentAttempts = 0
-    @State private var isPullRefreshInFlight = false
-    @State private var settledSearchDrawerTarget: NativeHomeSearchDrawerSnapTarget = .collapsed
-    @State private var scrollExtentHeight: CGFloat?
-    @State private var latestNormalizedOffset = CGFloat.nan
     let scrollToTopRequest: UInt
     private let onOpenSearch: (() -> Void)?
     let onOpen: (DailyStoryDestination) -> Void
@@ -400,238 +392,119 @@ struct DailyNativeView: View {
         onOpen: @escaping (DailyStoryDestination) -> Void
     ) {
         _store = ObservedObject(wrappedValue: store)
-        _observedScrollToTopRequest = State(initialValue: scrollToTopRequest)
         self.scrollToTopRequest = scrollToTopRequest
         self.onOpenSearch = onOpenSearch
         self.onOpen = onOpen
     }
 
     var body: some View {
-        GeometryReader { viewport in
-            ScrollViewReader { proxy in
-                NativeHomeFeedScrollView {
-                if let onOpenSearch {
-                    NativeHomeRefreshRevealSpacer(
-                        channel: .daily,
-                        isRefreshing: isRefreshInFlight
-                    )
-                    NativeHomePullSearchDrawer(
-                        channel: .daily,
-                        isRevealed: NativeHomeSearchDrawerVisibilityPolicy.isRevealed(
-                            normalizedOffset: latestNormalizedOffset
-                        ),
-                        action: onOpenSearch
-                    )
-                    .opacity(hasAlignedInitialTop ? 1 : 0)
-                }
-
-                if store.sections.isEmpty, store.isLoading {
-                    HStack { Spacer(); ProgressView("正在加载日报"); Spacer() }
-                        .listRowSeparator(.hidden)
-                        .id(NativeHomeContentScrollTarget.dailyStatus)
-                }
-                ForEach(store.sections) { section in
-                    Section(formatted(section.date)) {
-                        ForEach(section.stories) { story in
-                            Button {
-                                navigationTask?.cancel()
-                                navigationTask = Task {
-                                    let resolution = await store.destination(for: story)
-                                    guard !Task.isCancelled else { return }
-                                    switch resolution {
-                                    case let .destination(destination):
-                                        onOpen(destination)
-                                    case let .failure(failure):
-                                        resolutionFailure = failure
-                                    }
-                                }
-                            } label: {
-                                HStack(alignment: .top, spacing: 12) {
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Text(story.title).font(.headline).foregroundStyle(.primary)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                        Text(story.hint).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    if let imageURL = story.imageURL {
-                                        AsyncImage(url: imageURL) { image in
-                                            image.resizable().scaledToFill()
-                                        } placeholder: {
-                                            Color.secondary.opacity(0.12)
-                                        }
-                                        .frame(width: 92, height: 68)
-                                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                    }
+        NativeHomeChannelScrollView(
+            channel: .daily,
+            isActive: isActiveChannel,
+            scrollToTopRequest: scrollToTopRequest,
+            isRefreshing: store.isRefreshing,
+            onOpenSearch: onOpenSearch,
+            onRefresh: refresh
+        ) {
+            if store.sections.isEmpty, store.isLoading {
+                HStack { Spacer(); ProgressView("正在加载日报"); Spacer() }
+            }
+            ForEach(store.sections) { section in
+                Section(formatted(section.date)) {
+                    ForEach(section.stories) { story in
+                        Button {
+                            navigationTask?.cancel()
+                            navigationTask = Task {
+                                let resolution = await store.destination(for: story)
+                                guard !Task.isCancelled else { return }
+                                switch resolution {
+                                case let .destination(destination):
+                                    onOpen(destination)
+                                case let .failure(failure):
+                                    resolutionFailure = failure
                                 }
                             }
-                            .buttonStyle(.plain)
-                            .id(NativeHomeContentScrollTarget.daily(story.id))
-                            .padding(.horizontal, NativeFeedCardLayout.horizontalInset)
-                            .padding(.vertical, NativeFeedCardLayout.verticalInset)
+                        } label: {
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(story.title).font(.headline).foregroundStyle(.primary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Text(story.hint).font(.caption).foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                if let imageURL = story.imageURL {
+                                    AsyncImage(url: imageURL) { image in
+                                        image.resizable().scaledToFill()
+                                    } placeholder: {
+                                        Color.secondary.opacity(0.12)
+                                    }
+                                    .frame(width: 92, height: 68)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                }
+                            }
                         }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, NativeFeedCardLayout.horizontalInset)
+                        .padding(.vertical, NativeFeedCardLayout.verticalInset)
                     }
-                }
-                if let error = store.errorMessage {
-                    FeedRetryRow(message: error) {
-                        supplementalLoadTask?.cancel()
-                        supplementalLoadTask = Task { await store.loadLatest() }
-                    }
-                    .id(NativeHomeContentScrollTarget.dailyStatus)
-                    .nativeFeedCardItemLayout()
-                } else if !store.sections.isEmpty {
-                    let taskID = NativeChannelTaskIdentity(
-                        isActive: isActiveChannel,
-                        value: store.nextPageLoadID
-                    )
-                    HStack { Spacer(); ProgressView(); Spacer() }
-                        .listRowSeparator(.hidden)
-                        .id(NativeHomeContentScrollTarget.dailyStatus)
-                        .task(id: taskID) {
-                            guard taskID.isActive,
-                                  taskID.value == store.nextPageLoadID
-                            else { return }
-                            await store.loadMore()
-                        }
-                } else if !store.isLoading {
-                    Text("暂无日报内容")
-                        .foregroundStyle(.secondary)
-                        .id(NativeHomeContentScrollTarget.dailyStatus)
-                }
-
-                    NativeHomeMinimumScrollExtent(
-                        height: scrollExtentHeight ?? viewport.size.height
-                    )
-                }
-                .nativeHomeTwoStagePullGeometry(
-                    extentHeight: $scrollExtentHeight,
-                    latestNormalizedOffset: $latestNormalizedOffset,
-                    initialExtentHeight: viewport.size.height,
-                    isActive: isActiveChannel,
-                    isRefreshing: isRefreshInFlight,
-                    isReady: hasAlignedInitialTop
-                ) { offset, reason in
-                    settleSearchDrawer(at: offset, reason: reason, proxy: proxy)
-                }
-                .nativeHomeTopBarScrollTracking(isActive: isActiveChannel)
-                .refreshable {
-                    guard isActiveChannel else { return }
-                    settledSearchDrawerTarget = .revealed
-                    isPullRefreshInFlight = true
-                    defer { isPullRefreshInFlight = false }
-                    let previousSuccessfulRefresh = store.refreshMetadata.lastSuccessfulRefreshAt
-                    await store.refresh()
-                    if !Task.isCancelled,
-                       NativeRefreshHapticPolicy.shouldEmit(
-                        previousSuccessfulRefreshAt: previousSuccessfulRefresh,
-                        currentSuccessfulRefreshAt: store.refreshMetadata.lastSuccessfulRefreshAt
-                       ) {
-                        hapticFeedback(.refreshSucceeded)
-                    }
-                }
-                .allowsHitTesting(hasAlignedInitialTop)
-                .onAppear {
-                    observedScrollToTopRequest = scrollToTopRequest
-                    alignInitialTopIfNeeded(proxy)
-                }
-                .onChange(of: scrollExtentHeight) { newHeight in
-                    if newHeight != nil {
-                        alignInitialTopIfNeeded(proxy)
-                    }
-                }
-                .onChange(of: isRefreshInFlight) { refreshing in
-                    if refreshing {
-                        isInitialTopAlignmentScheduled = false
-                    } else {
-                        alignInitialTopIfNeeded(proxy)
-                    }
-                }
-                .onChange(of: scrollToTopRequest) { newRequest in
-                    let shouldScroll = NativeScrollToTopRequestPolicy.shouldHandleChange(
-                        previousRequest: observedScrollToTopRequest,
-                        newRequest: newRequest
-                    )
-                    observedScrollToTopRequest = newRequest
-                    if shouldScroll { scrollToTop(proxy, animated: true) }
-                }
-                .task(id: isActiveChannel) {
-                    guard isActiveChannel else { return }
-                    await store.loadInitialIfNeeded()
-                }
-                .onChange(of: isActiveChannel) { isActive in
-                    if !isActive {
-                        navigationTask?.cancel()
-                        supplementalLoadTask?.cancel()
-                    }
-                }
-                .onDisappear {
-                    navigationTask?.cancel()
-                    supplementalLoadTask?.cancel()
-                }
-                .alert(
-                    "无法找到日报原文",
-                    isPresented: Binding(
-                        get: { resolutionFailure != nil },
-                        set: { if !$0 { resolutionFailure = nil } }
-                    ),
-                    presenting: resolutionFailure
-                ) { failure in
-                    Button("浏览器打开") {
-                        resolutionFailure = nil
-                        onOpen(.external(failure.sourceURL))
-                    }
-                    Button("取消", role: .cancel) {
-                        resolutionFailure = nil
-                    }
-                } message: { failure in
-                    Text(failure.message)
                 }
             }
+            if let error = store.errorMessage {
+                FeedRetryRow(message: error) {
+                    supplementalLoadTask?.cancel()
+                    supplementalLoadTask = Task { await store.loadLatest() }
+                }
+                .nativeFeedCardItemLayout()
+            } else if !store.sections.isEmpty {
+                let taskID = NativeChannelTaskIdentity(
+                    isActive: isActiveChannel,
+                    value: store.nextPageLoadID
+                )
+                HStack { Spacer(); ProgressView(); Spacer() }
+                    .task(id: taskID) {
+                        guard taskID.isActive,
+                              taskID.value == store.nextPageLoadID
+                        else { return }
+                        await store.loadMore()
+                    }
+            } else if !store.isLoading {
+                Text("暂无日报内容")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .task(id: isActiveChannel) {
+            guard isActiveChannel else { return }
+            await store.loadInitialIfNeeded()
+        }
+        .onChange(of: isActiveChannel) { _, isActive in
+            if !isActive {
+                navigationTask?.cancel()
+                supplementalLoadTask?.cancel()
+            }
+        }
+        .onDisappear {
+            navigationTask?.cancel()
+            supplementalLoadTask?.cancel()
+        }
+        .alert(
+            "无法找到日报原文",
+            isPresented: Binding(
+                get: { resolutionFailure != nil },
+                set: { if !$0 { resolutionFailure = nil } }
+            ),
+            presenting: resolutionFailure
+        ) { failure in
+            Button("浏览器打开") {
+                resolutionFailure = nil
+                onOpen(.external(failure.sourceURL))
+            }
+            Button("取消", role: .cancel) {
+                resolutionFailure = nil
+            }
+        } message: { failure in
+            Text(failure.message)
         }
         .accessibilityIdentifier("daily_native")
-    }
-
-    private func settleSearchDrawer(
-        at normalizedOffset: CGFloat,
-        reason: NativeHomeSearchDrawerSettleReason,
-        proxy: ScrollViewProxy
-    ) {
-        guard isActiveChannel else { return }
-        let decision = NativeHomeSearchDrawerSettlementPolicy.decision(
-            previousTarget: settledSearchDrawerTarget,
-            normalizedOffset: normalizedOffset,
-            reason: reason,
-            isRefreshing: isRefreshInFlight
-        )
-        settledSearchDrawerTarget = decision.settledTarget
-        guard let target = decision.scrollTarget else { return }
-        let anchor: NativeHomeListScrollAnchor
-        switch target {
-        case .revealed:
-            anchor = .revealedTop(.daily)
-        case .collapsed:
-            anchor = .collapsedTop(.daily)
-        }
-        let targetOffset = target == .revealed
-            ? 0
-            : NativeHomeTopChromeLayout.searchDrawerHeight
-        guard abs(normalizedOffset - targetOffset)
-            > NativeHomeSearchDrawerSnapPolicy.settledTolerance
-        else { return }
-        switch reason {
-        case .interactionEnded:
-            withAnimation(.easeOut(duration: 0.16)) {
-                proxy.scrollTo(anchor, anchor: .top)
-            }
-        case .layoutChanged:
-            DispatchQueue.main.async {
-                guard isActiveChannel, !isRefreshInFlight else { return }
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) {
-                    proxy.scrollTo(anchor, anchor: .top)
-                }
-            }
-        }
     }
 
     private func formatted(_ date: String) -> String {
@@ -639,76 +512,17 @@ struct DailyNativeView: View {
         return "\(date.prefix(4)) 年 \(date.dropFirst(4).prefix(2)) 月 \(date.suffix(2)) 日"
     }
 
-    private var pullDrawerAnchor: NativeHomeListScrollAnchor {
-        .collapsedTop(.daily)
-    }
-
-    private var isRefreshInFlight: Bool {
-        isPullRefreshInFlight || store.isRefreshing
-    }
-
-    private func scrollToTop(_ proxy: ScrollViewProxy, animated: Bool) {
-        settledSearchDrawerTarget = .collapsed
-        DispatchQueue.main.async {
-            if animated {
-                withAnimation {
-                    proxy.scrollTo(pullDrawerAnchor, anchor: .top)
-                }
-            } else {
-                proxy.scrollTo(pullDrawerAnchor, anchor: .top)
-            }
+    private func refresh() async {
+        guard isActiveChannel else { return }
+        let previousSuccessfulRefresh = store.refreshMetadata.lastSuccessfulRefreshAt
+        await store.refresh()
+        if !Task.isCancelled,
+           NativeRefreshHapticPolicy.shouldEmit(
+            previousSuccessfulRefreshAt: previousSuccessfulRefresh,
+            currentSuccessfulRefreshAt: store.refreshMetadata.lastSuccessfulRefreshAt
+           ) {
+            hapticFeedback(.refreshSucceeded)
         }
-    }
-
-    private func alignInitialTopIfNeeded(_ proxy: ScrollViewProxy) {
-        guard !hasAlignedInitialTop, !isInitialTopAlignmentScheduled else { return }
-        guard onOpenSearch != nil else {
-            finishInitialTopAlignment()
-            return
-        }
-        guard !isRefreshInFlight else { return }
-        guard NativeHomeInitialTopAlignmentPolicy.canAttempt(
-            after: initialTopAlignmentAttempts
-        ) else {
-            finishInitialTopAlignment()
-            return
-        }
-        initialTopAlignmentAttempts += 1
-        isInitialTopAlignmentScheduled = true
-        DispatchQueue.main.async {
-            guard !hasAlignedInitialTop,
-                  isInitialTopAlignmentScheduled,
-                  !isRefreshInFlight
-            else { return }
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                proxy.scrollTo(pullDrawerAnchor, anchor: .top)
-            }
-            validateInitialTopAlignment(proxy)
-        }
-    }
-
-    private func validateInitialTopAlignment(_ proxy: ScrollViewProxy) {
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + NativeHomeInitialTopAlignmentPolicy.validationDelay
-        ) {
-            guard !hasAlignedInitialTop, isInitialTopAlignmentScheduled else { return }
-            isInitialTopAlignmentScheduled = false
-            guard !isRefreshInFlight else { return }
-            if NativeHomeInitialTopAlignmentPolicy.isAligned(
-                normalizedOffset: latestNormalizedOffset
-            ) {
-                finishInitialTopAlignment()
-            } else {
-                alignInitialTopIfNeeded(proxy)
-            }
-        }
-    }
-
-    private func finishInitialTopAlignment() {
-        hasAlignedInitialTop = true
-        isInitialTopAlignmentScheduled = false
     }
 }
 

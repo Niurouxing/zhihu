@@ -11,9 +11,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
-    @Namespace private var swipeCoordinateSpace
     @State private var dragTranslation: CGFloat = 0
-    @State private var swipeExclusionFrames: [CGRect] = []
 
     init(
         channels: [Channel],
@@ -35,25 +33,16 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
                     NativeHorizontalChannelSwipeObserver(
                         isEnabled: isEnabled,
                         containerWidth: geometry.size.width,
-                        excludedFrames: swipeExclusionFrames,
                         onChanged: updateChannelSwipe,
                         onCancelled: cancelChannelSwipe,
                         onEnded: commitChannelSwipe
                     )
                 }
-            .coordinateSpace(name: swipeCoordinateSpace)
-            .environment(
-                \.nativeChannelSwipeCoordinateSpace,
-                AnyHashable(swipeCoordinateSpace)
-            )
-            .onPreferenceChange(NativeChannelSwipeExclusionPreferenceKey.self) {
-                swipeExclusionFrames = $0
-            }
         }
-        .onChange(of: reduceMotion) { shouldReduceMotion in
+        .onChange(of: reduceMotion) { _, shouldReduceMotion in
             if shouldReduceMotion { dragTranslation = 0 }
         }
-        .onChange(of: isEnabled) { enabled in
+        .onChange(of: isEnabled) { _, enabled in
             if !enabled { dragTranslation = 0 }
         }
         .onDisappear { dragTranslation = 0 }
@@ -62,24 +51,30 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
     private func channelContent(containerWidth: CGFloat) -> some View {
         ZStack {
             ForEach(Array(channels.enumerated()), id: \.element.id) { index, channel in
-                let isActive = NativeChannelPresentationPolicy.isActive(
-                    isEnabled: isEnabled,
-                    channelID: channel.id,
-                    selection: selection
-                )
-                content(channel)
-                    .frame(width: containerWidth)
-                    .offset(x: NativeChannelPageTransitionPolicy.pageOffset(
-                        pageIndex: index,
-                        selectedIndex: selectedChannelIndex,
-                        containerWidth: containerWidth,
-                        dragTranslation: dragTranslation
-                    ))
-                    .zIndex(isActive ? 1 : 0)
-                    .scrollDisabled(!isActive)
-                    .allowsHitTesting(isActive && dragTranslation == 0)
-                    .accessibilityHidden(!isActive)
-                    .environment(\.nativeChannelIsActive, isActive)
+                if NativeChannelPresentationPolicy.shouldMount(
+                    pageIndex: index,
+                    selectedIndex: selectedChannelIndex,
+                    channelCount: channels.count
+                ) {
+                    let isActive = NativeChannelPresentationPolicy.isActive(
+                        isEnabled: isEnabled,
+                        channelID: channel.id,
+                        selection: selection
+                    )
+                    content(channel)
+                        .frame(width: containerWidth)
+                        .offset(x: NativeChannelPageTransitionPolicy.pageOffset(
+                            pageIndex: index,
+                            selectedIndex: selectedChannelIndex,
+                            containerWidth: containerWidth,
+                            dragTranslation: dragTranslation
+                        ))
+                        .zIndex(isActive ? 1 : 0)
+                        .scrollDisabled(!isActive)
+                        .allowsHitTesting(isActive && dragTranslation == 0)
+                        .accessibilityHidden(!isActive)
+                        .environment(\.nativeChannelIsActive, isActive)
+                }
             }
         }
         .clipped()
@@ -151,6 +146,19 @@ struct NativeChannelPresentationPolicy {
     ) -> Bool {
         isEnabled && channelID == selection
     }
+
+    static func shouldMount(
+        pageIndex: Int,
+        selectedIndex: Int,
+        channelCount: Int
+    ) -> Bool {
+        guard pageIndex >= 0,
+              selectedIndex >= 0,
+              pageIndex < channelCount,
+              selectedIndex < channelCount
+        else { return false }
+        return abs(pageIndex - selectedIndex) <= 1
+    }
 }
 
 struct NativeChannelPageTransitionPolicy {
@@ -189,7 +197,6 @@ struct NativeChannelPageTransitionPolicy {
 private struct NativeHorizontalChannelSwipeObserver: UIViewRepresentable {
     let isEnabled: Bool
     let containerWidth: CGFloat
-    let excludedFrames: [CGRect]
     let onChanged: (CGSize, CGFloat) -> Void
     let onCancelled: () -> Void
     let onEnded: (CGSize, CGSize, CGFloat) -> Void
@@ -218,7 +225,6 @@ private struct NativeHorizontalChannelSwipeObserver: UIViewRepresentable {
     private func update(_ view: NativeHorizontalChannelSwipeInstallerView) {
         view.isSwipeEnabled = isEnabled
         view.containerWidth = containerWidth
-        view.excludedFrames = excludedFrames
         view.onChanged = onChanged
         view.onCancelled = onCancelled
         view.onEnded = onEnded
@@ -237,12 +243,12 @@ private final class NativeHorizontalChannelSwipeInstallerView: UIView,
         }
     }
     var containerWidth: CGFloat = 0
-    var excludedFrames: [CGRect] = []
     var onChanged: ((CGSize, CGFloat) -> Void)?
     var onCancelled: (() -> Void)?
     var onEnded: ((CGSize, CGSize, CGFloat) -> Void)?
 
     private weak var gestureHostView: UIView?
+    private var isInstallationScheduled = false
     private lazy var panGestureRecognizer: UIPanGestureRecognizer = {
         let recognizer = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
         recognizer.delegate = self
@@ -265,8 +271,12 @@ private final class NativeHorizontalChannelSwipeInstallerView: UIView,
     }
 
     func scheduleInstallation() {
+        guard !isInstallationScheduled else { return }
+        isInstallationScheduled = true
         DispatchQueue.main.async { [weak self] in
-            self?.installIfNeeded()
+            guard let self else { return }
+            self.isInstallationScheduled = false
+            self.installIfNeeded()
         }
     }
 
@@ -306,13 +316,11 @@ private final class NativeHorizontalChannelSwipeInstallerView: UIView,
         let startLocation = convert(pan.location(in: hostView), from: hostView)
         let isInside = bounds.contains(startLocation)
         guard isInside else { return false }
-        let isMarkedForExclusion = excludedFrames.contains(where: { $0.contains(startLocation) })
         let nestedMetrics = horizontalScrollMetrics(
             at: pan.location(in: hostView),
             in: hostView
         )
         return !NativeChannelSwipeExclusionPolicy.shouldExcludeParentSwipe(
-            isMarkedForExclusion: isMarkedForExclusion,
             nestedContentWidth: nestedMetrics?.contentWidth,
             nestedViewportWidth: nestedMetrics?.viewportWidth
         )
@@ -381,99 +389,22 @@ private final class NativeHorizontalChannelSwipeInstallerView: UIView,
 
 struct NativeChannelSwipeExclusionPolicy {
     static func shouldExcludeParentSwipe(
-        isMarkedForExclusion: Bool,
         nestedContentWidth: CGFloat?,
         nestedViewportWidth: CGFloat?
     ) -> Bool {
-        guard isMarkedForExclusion else { return false }
-        guard let nestedContentWidth, let nestedViewportWidth else { return true }
+        guard let nestedContentWidth, let nestedViewportWidth else { return false }
         return nestedContentWidth > nestedViewportWidth
     }
-}
-
-enum NativeChannelSelectorScrollAlignment: Equatable {
-    case leading
-    case center
-    case trailing
-
-    var anchor: UnitPoint {
-        switch self {
-        case .leading: return .leading
-        case .center: return .center
-        case .trailing: return .trailing
-        }
-    }
-
-    static func alignment<ID: Equatable>(
-        for selection: ID,
-        in channelIDs: [ID]
-    ) -> Self {
-        guard let selectedIndex = channelIDs.firstIndex(of: selection) else {
-            return .center
-        }
-        if selectedIndex == channelIDs.startIndex {
-            return .leading
-        }
-        if selectedIndex == channelIDs.index(before: channelIDs.endIndex) {
-            return .trailing
-        }
-        return .center
-    }
-}
-
-/// Marks a nested horizontal interaction where a drag must not switch the parent channel.
-/// Apply this to horizontal carousels, media pagers, and other same-axis controls.
-extension View {
-    func nativeChannelSwipeExclusion() -> some View {
-        modifier(NativeChannelSwipeExclusionModifier())
-    }
-}
-
-private struct NativeChannelSwipeExclusionModifier: ViewModifier {
-    @Environment(\.nativeChannelSwipeCoordinateSpace) private var coordinateSpace
-    @Environment(\.nativeChannelIsActive) private var isActiveChannel
-
-    func body(content: Content) -> some View {
-        content.background {
-            if isActiveChannel, let coordinateSpace {
-                GeometryReader { geometry in
-                    Color.clear.preference(
-                        key: NativeChannelSwipeExclusionPreferenceKey.self,
-                        value: [geometry.frame(in: .named(coordinateSpace))]
-                    )
-                }
-            }
-        }
-    }
-}
-
-private struct NativeChannelSwipeCoordinateSpaceKey: EnvironmentKey {
-    static let defaultValue: AnyHashable? = nil
 }
 
 private struct NativeChannelIsActiveKey: EnvironmentKey {
     static let defaultValue = true
 }
 
-private extension EnvironmentValues {
-    var nativeChannelSwipeCoordinateSpace: AnyHashable? {
-        get { self[NativeChannelSwipeCoordinateSpaceKey.self] }
-        set { self[NativeChannelSwipeCoordinateSpaceKey.self] = newValue }
-    }
-}
-
 extension EnvironmentValues {
     var nativeChannelIsActive: Bool {
         get { self[NativeChannelIsActiveKey.self] }
         set { self[NativeChannelIsActiveKey.self] = newValue }
-    }
-}
-
-private struct NativeChannelSwipeExclusionPreferenceKey: PreferenceKey {
-    static let defaultValue: [CGRect] = []
-
-    static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) {
-        value.append(contentsOf: nextValue())
     }
 }
 

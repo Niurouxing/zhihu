@@ -1,4 +1,3 @@
-import CoreGraphics
 import Foundation
 
 struct CommentSessionID: Hashable, Codable {
@@ -254,26 +253,6 @@ enum CommentEmojiCatalog {
             text.replacingOccurrences(of: entry.placeholder, with: entry.symbol)
         }
     }
-}
-
-struct CommentScrollAnchor: Hashable {
-    let commentID: String
-    let offsetFromViewportTopPoints: CGFloat
-}
-
-struct CommentRestorationContext {
-    let sessionID: CommentSessionID
-    let level: CommentLevelKey
-    let rootSort: CommentSortDTO
-    let rootAnchor: CommentScrollAnchor?
-    let replyAnchors: [String: CommentScrollAnchor]
-    let activeDraft: CommentComposerDraft
-}
-
-enum CommentAnchorRestorationResult: Equatable {
-    case restored(CommentScrollAnchor)
-    case noAnchor
-    case missingAnchor(CommentScrollAnchor)
 }
 
 struct CommentUserMessage: Identifiable, Equatable {

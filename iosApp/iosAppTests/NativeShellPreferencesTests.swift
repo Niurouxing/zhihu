@@ -4,147 +4,6 @@ import XCTest
 
 @MainActor
 final class NativeShellPreferencesTests: XCTestCase {
-    func testBottomBarUsesThreePrimaryTabsAndTrailingSearchInProductOrder() {
-        XCTAssertEqual(
-            NativeAppTab.fixedBottomBarTabs,
-            [.home, .collections, .account, .search]
-        )
-        XCTAssertEqual(
-            NativeAppTab.fixedBottomBarTabs.map(\.title),
-            ["首页", "收藏", "账号", "搜索"]
-        )
-        XCTAssertEqual(NativeAppTab.primaryBottomBarTabs, [.home, .collections, .account])
-        XCTAssertTrue(NativeAppTab.search.usesSearchRole)
-        XCTAssertFalse(NativeAppTab.home.usesSearchRole)
-    }
-
-    func testStartTabUsesFixedTabsInsteadOfLegacyBottomBarSelection() {
-        let defaults = makeDefaults()
-        defaults.set(["Account"], forKey: NativeShellPreferences.Key.selectedTabs)
-        defaults.set(NativeAppTab.collections.rawValue, forKey: NativeShellPreferences.Key.startTab)
-
-        let preferences = NativeShellPreferences(defaults: defaults)
-
-        XCTAssertEqual(preferences.startTab, .collections)
-        XCTAssertEqual(preferences.selectedTabs, [.account])
-    }
-
-    func testLegacyAccountInHomeSettingMigratesWithoutDuplicateAccountTab() {
-        let defaults = makeDefaults()
-        defaults.set(true, forKey: NativeShellPreferences.Key.accountInHome)
-        defaults.set(["Home", "Follow", "Account"], forKey: NativeShellPreferences.Key.selectedTabs)
-
-        let preferences = NativeShellPreferences(defaults: defaults)
-
-        XCTAssertEqual(preferences.selectedTabs, [.home])
-        XCTAssertEqual(defaults.integer(forKey: NativeShellPreferences.Key.bottomTabStructureVersion), 3)
-    }
-
-    func testAccountTabCanBeEnabledAfterLegacyMigration() {
-        let defaults = makeDefaults()
-        defaults.set(true, forKey: NativeShellPreferences.Key.accountInHome)
-        defaults.set(["Home", "Follow", "Account"], forKey: NativeShellPreferences.Key.selectedTabs)
-        let preferences = NativeShellPreferences(defaults: defaults)
-
-        preferences.setTabEnabled(.account, enabled: true)
-        let restored = NativeShellPreferences(defaults: defaults)
-
-        XCTAssertEqual(restored.selectedTabs, [.home, .account])
-    }
-
-    func testLegacyAccountInHomeWithoutHomeMigratesToAccountTab() {
-        let defaults = makeDefaults()
-        defaults.set(true, forKey: NativeShellPreferences.Key.accountInHome)
-        defaults.set(["Follow", "Daily"], forKey: NativeShellPreferences.Key.selectedTabs)
-        defaults.set("Follow,Daily", forKey: NativeShellPreferences.Key.tabOrder)
-
-        let preferences = NativeShellPreferences(defaults: defaults)
-
-        XCTAssertEqual(preferences.selectedTabs, [.account])
-        XCTAssertEqual(
-            defaults.stringArray(forKey: NativeShellPreferences.Key.selectedTabs),
-            ["Account"]
-        )
-        XCTAssertEqual(defaults.integer(forKey: NativeShellPreferences.Key.bottomTabStructureVersion), 3)
-    }
-
-    func testLegacyTopLevelFeedTabsAreRemovedFromBottomBar() {
-        let defaults = makeDefaults()
-        defaults.set(false, forKey: NativeShellPreferences.Key.accountInHome)
-        defaults.set(NativeAppTab.allCases.map(\.rawValue), forKey: NativeShellPreferences.Key.selectedTabs)
-
-        let preferences = NativeShellPreferences(defaults: defaults)
-
-        XCTAssertEqual(preferences.selectedTabs, [.home, .collections, .account, .search])
-        XCTAssertFalse(preferences.selectedTabs.contains(.follow))
-        XCTAssertFalse(preferences.selectedTabs.contains(.hot))
-        XCTAssertFalse(preferences.selectedTabs.contains(.daily))
-        XCTAssertFalse(preferences.selectedTabs.contains(.history))
-    }
-
-    func testDisablingTabsNeverLeavesBottomBarEmpty() {
-        let defaults = makeDefaults()
-        let preferences = NativeShellPreferences(defaults: defaults)
-
-        for tab in NativeAppTab.allCases {
-            preferences.setTabEnabled(tab, enabled: false)
-        }
-
-        XCTAssertEqual(preferences.selectedTabs, [.home])
-    }
-
-    func testLegacyOrderIsPreservedForSupportedBottomTabs() {
-        let defaults = makeDefaults()
-        defaults.set(["Account", "Follow", "OnlineHistory", "Home"], forKey: NativeShellPreferences.Key.selectedTabs)
-        defaults.set("Account,Follow,OnlineHistory,Home", forKey: NativeShellPreferences.Key.tabOrder)
-
-        let preferences = NativeShellPreferences(defaults: defaults)
-
-        XCTAssertEqual(preferences.selectedTabs, [.account, .home])
-        XCTAssertEqual(
-            defaults.stringArray(forKey: NativeShellPreferences.Key.selectedTabs),
-            ["Account", "Home"]
-        )
-        XCTAssertEqual(
-            defaults.string(forKey: NativeShellPreferences.Key.tabOrder),
-            "Account,Home"
-        )
-    }
-
-    func testUnsupportedOnlyLegacySelectionFallsBackToHome() {
-        let defaults = makeDefaults()
-        defaults.set(["Follow", "HotList", "Daily"], forKey: NativeShellPreferences.Key.selectedTabs)
-
-        let preferences = NativeShellPreferences(defaults: defaults)
-
-        XCTAssertEqual(preferences.selectedTabs, [.home])
-        XCTAssertEqual(preferences.startTab, .home)
-    }
-
-    func testHiddenHistoryStartTabMigratesAndPersistsHome() {
-        let defaults = makeDefaults()
-        defaults.set(NativeAppTab.history.rawValue, forKey: NativeShellPreferences.Key.startTab)
-
-        let preferences = NativeShellPreferences(defaults: defaults)
-
-        XCTAssertEqual(preferences.startTab, .home)
-        XCTAssertEqual(
-            defaults.string(forKey: NativeShellPreferences.Key.startTab),
-            NativeAppTab.home.rawValue
-        )
-    }
-
-    func testSearchIsAValidStartTabSelection() {
-        let defaults = makeDefaults()
-        defaults.set(NativeAppTab.search.rawValue, forKey: NativeShellPreferences.Key.startTab)
-
-        let preferences = NativeShellPreferences(defaults: defaults)
-
-        XCTAssertEqual(preferences.startTab, .search)
-        preferences.setStartTab(.collections)
-        XCTAssertEqual(preferences.startTab, .collections)
-    }
-
     func testHapticPreferencesDefaultEnabledAtStandardStrength() {
         let preferences = NativeShellPreferences(defaults: makeDefaults())
 
@@ -479,25 +338,6 @@ final class NativeShellPreferencesTests: XCTestCase {
         XCTAssertTrue(presentations.presentation(for: .daily).isRefreshing)
     }
 
-    func testHomeRefreshIndicatorAppearsForPullOrRefreshAndOtherwiseDisappears() {
-        XCTAssertFalse(NativeHomeRefreshIndicatorPresentation.isVisible(
-            pullDistance: 0,
-            isRefreshing: false
-        ))
-        XCTAssertFalse(NativeHomeRefreshIndicatorPresentation.isVisible(
-            pullDistance: 7.9,
-            isRefreshing: false
-        ))
-        XCTAssertTrue(NativeHomeRefreshIndicatorPresentation.isVisible(
-            pullDistance: 8,
-            isRefreshing: false
-        ))
-        XCTAssertTrue(NativeHomeRefreshIndicatorPresentation.isVisible(
-            pullDistance: 0,
-            isRefreshing: true
-        ))
-    }
-
     func testHomeTopBarHasOnlyCreationAndNotificationControls() {
         XCTAssertEqual(HomeTopBarControl.visibleControls, [.creation, .notifications])
     }
@@ -512,47 +352,6 @@ final class NativeShellPreferencesTests: XCTestCase {
         XCTAssertTrue(unread.showsDot)
         XCTAssertEqual(unread.accessibilityLabel, "通知，3 条未读")
         XCTAssertEqual(unread.accessibilityValue, "3 条未读")
-    }
-
-    func testHomeTabDoubleTapRequiresTwoReselectEventsAndTriggersOncePerPair() {
-        var gate = NativeHomeTabDoubleTapGate(maximumInterval: 0.5)
-
-        XCTAssertFalse(registerHomeTap(at: 10, gate: &gate))
-        XCTAssertTrue(registerHomeTap(at: 10.2, gate: &gate))
-        XCTAssertFalse(registerHomeTap(at: 10.3, gate: &gate))
-    }
-
-    func testHomeTabDoubleTapDebouncesEventsOutsideInterval() {
-        var gate = NativeHomeTabDoubleTapGate(maximumInterval: 0.5)
-
-        XCTAssertFalse(registerHomeTap(at: 10, gate: &gate))
-        XCTAssertFalse(registerHomeTap(at: 10.6, gate: &gate))
-        XCTAssertTrue(registerHomeTap(at: 10.8, gate: &gate))
-    }
-
-    func testHomeTabDoubleTapRejectsNonHomeNonRootAndLockedContexts() {
-        var gate = NativeHomeTabDoubleTapGate(maximumInterval: 0.5)
-        XCTAssertFalse(gate.register(
-            .init(tab: .history, timestamp: 1),
-            isHomeSelected: false,
-            isHomeRoot: true,
-            isAppUnlocked: true
-        ))
-        XCTAssertFalse(gate.register(
-            .init(tab: .home, timestamp: 2),
-            isHomeSelected: true,
-            isHomeRoot: false,
-            isAppUnlocked: true
-        ))
-        XCTAssertFalse(gate.register(
-            .init(tab: .home, timestamp: 2.1),
-            isHomeSelected: true,
-            isHomeRoot: true,
-            isAppUnlocked: false
-        ))
-
-        XCTAssertFalse(registerHomeTap(at: 3, gate: &gate))
-        XCTAssertTrue(registerHomeTap(at: 3.2, gate: &gate))
     }
 
     func testInvalidThemeFallsBackWithoutOverwritingStoredRawValue() {
@@ -599,41 +398,6 @@ final class NativeShellPreferencesTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: NativeShellPreferences.Key.shareActionMode), "share")
     }
 
-    func testExpandedRootDoesNotRenderCompactToolbarTitle() {
-        XCTAssertFalse(NativeRootCompactTitle.shouldRender(collapseProgress: 0))
-        XCTAssertFalse(NativeRootCompactTitle.shouldRender(collapseProgress: 0.49))
-        XCTAssertTrue(NativeRootCompactTitle.shouldRender(collapseProgress: 0.5))
-    }
-
-    func testRootHeaderCrossfadeHasExactEndpointsAndBalancedMidpoint() {
-        XCTAssertEqual(NativeRootHeaderVisibility.expandedOpacity(collapseProgress: 0), 1)
-        XCTAssertEqual(NativeRootHeaderVisibility.compactOpacity(collapseProgress: 0), 0)
-        XCTAssertEqual(NativeRootHeaderVisibility.expandedOpacity(collapseProgress: 0.5), 0.5)
-        XCTAssertEqual(NativeRootHeaderVisibility.compactOpacity(collapseProgress: 0.5), 0.5)
-        XCTAssertEqual(NativeRootHeaderVisibility.expandedOpacity(collapseProgress: 1), 0)
-        XCTAssertEqual(NativeRootHeaderVisibility.compactOpacity(collapseProgress: 1), 1)
-    }
-
-    func testRootHeaderCrossfadeIsMonotonicAndAlwaysSumsToOne() {
-        var previousExpanded = Double.infinity
-        var previousCompact = -Double.infinity
-
-        for progress in stride(from: CGFloat(0), through: 1, by: 0.01) {
-            let expanded = NativeRootHeaderVisibility.expandedOpacity(
-                collapseProgress: progress
-            )
-            let compact = NativeRootHeaderVisibility.compactOpacity(
-                collapseProgress: progress
-            )
-
-            XCTAssertEqual(expanded + compact, 1, accuracy: 0.001)
-            XCTAssertLessThanOrEqual(expanded, previousExpanded)
-            XCTAssertGreaterThanOrEqual(compact, previousCompact)
-            previousExpanded = expanded
-            previousCompact = compact
-        }
-    }
-
     func testRefreshHapticRequiresAChangedExistingSuccessTimestamp() {
         let firstSuccess = Date(timeIntervalSince1970: 100)
         let nextSuccess = Date(timeIntervalSince1970: 200)
@@ -656,80 +420,7 @@ final class NativeShellPreferencesTests: XCTestCase {
         ))
     }
 
-    func testHomeHeaderUsesRealSharedHeightWithoutMovingListViewport() {
-        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.horizontalContentInset, 20)
-        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.expandedTitleHeight, 76)
-        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.channelSelectorHeight, 60)
-        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.expandedHeaderHeight, 136)
-
-        for progress in stride(from: CGFloat(0), through: 1, by: 0.05) {
-            XCTAssertEqual(
-                NativeHomeHeaderLayoutPolicy.listViewportOrigin(
-                    collapseProgress: progress
-                ),
-                0
-            )
-            XCTAssertEqual(
-                NativeHomeHeaderLayoutPolicy.visibleHeaderHeight(
-                    collapseProgress: progress
-                ),
-                136 * (1 - progress),
-                accuracy: 0.001
-            )
-        }
-    }
-
-    func testRecommendationReturnDoesNotReplayAnAlreadyHandledScrollRequest() {
-        XCTAssertFalse(NativeScrollToTopRequestPolicy.shouldHandleChange(
-            previousRequest: 4,
-            newRequest: 4
-        ))
-        XCTAssertFalse(NativeScrollToTopRequestPolicy.shouldHandleChange(
-            previousRequest: 0,
-            newRequest: 0
-        ))
-        XCTAssertTrue(NativeScrollToTopRequestPolicy.shouldHandleChange(
-            previousRequest: 4,
-            newRequest: 5
-        ))
-    }
-
-    func testHomeHeaderCollapseProgressComesFromActualListGeometry() {
-        XCTAssertEqual(NativeHomeFeedScrollMetrics.collapseProgress(
-            contentOffsetY: -20,
-            contentInsetTop: 20
-        ), 0)
-        XCTAssertEqual(NativeHomeFeedScrollMetrics.collapseProgress(
-            contentOffsetY: 48,
-            contentInsetTop: 20
-        ), 0.5, accuracy: 0.001)
-        XCTAssertEqual(NativeHomeFeedScrollMetrics.collapseProgress(
-            contentOffsetY: 200,
-            contentInsetTop: 20
-        ), 1)
-        XCTAssertEqual(NativeHomeFeedScrollMetrics.collapseProgress(
-            contentOffsetY: -50,
-            contentInsetTop: 20
-        ), 0)
-    }
-
-    func testEveryHomeChannelHasUniqueRevealedAndCollapsedTopAnchors() {
-        let revealedAnchors = HomeChannel.allCases.map(NativeHomeListScrollAnchor.revealedTop)
-        let collapsedAnchors = HomeChannel.allCases.map(NativeHomeListScrollAnchor.collapsedTop)
-
-        XCTAssertEqual(revealedAnchors, [
-            .revealedTop(.recommendation),
-            .revealedTop(.following),
-            .revealedTop(.hot),
-            .revealedTop(.daily),
-        ])
-        XCTAssertEqual(collapsedAnchors, [
-            .collapsedTop(.recommendation),
-            .collapsedTop(.following),
-            .collapsedTop(.hot),
-            .collapsedTop(.daily),
-        ])
-        XCTAssertEqual(Set(revealedAnchors + collapsedAnchors).count, 8)
+    func testHomeChromeRangesPlaceSearchBeforeRefreshOverscroll() {
         XCTAssertEqual(
             NativeHomeTopChromeLayout.revealedOffset,
             0
@@ -755,41 +446,6 @@ final class NativeShellPreferencesTests: XCTestCase {
         XCTAssertEqual(
             NativeHomeTopChromeLayout.refreshPullDistance(normalizedOffset: 20),
             0
-        )
-    }
-
-    func testMinimumScrollExtentGuaranteesTheCollapsedDrawerOffset() {
-        XCTAssertEqual(
-            NativeHomeMinimumScrollRangePolicy.extentHeight(
-                currentExtentHeight: 800,
-                maximumNormalizedOffset: 740,
-                requiredMaximumOffset: 56
-            ),
-            116
-        )
-        XCTAssertEqual(
-            NativeHomeMinimumScrollRangePolicy.extentHeight(
-                currentExtentHeight: 200,
-                maximumNormalizedOffset: 56,
-                requiredMaximumOffset: 56
-            ),
-            200
-        )
-        XCTAssertEqual(
-            NativeHomeMinimumScrollRangePolicy.extentHeight(
-                currentExtentHeight: 20,
-                maximumNormalizedOffset: 200,
-                requiredMaximumOffset: 56
-            ),
-            NativeHomeMinimumScrollRangePolicy.minimumExtentHeight
-        )
-        XCTAssertEqual(
-            NativeHomeMinimumScrollRangePolicy.extentHeight(
-                currentExtentHeight: 1,
-                maximumNormalizedOffset: -600,
-                requiredMaximumOffset: 56
-            ),
-            657
         )
     }
 
@@ -839,113 +495,6 @@ final class NativeShellPreferencesTests: XCTestCase {
             isRefreshing: false
         ))
 
-        XCTAssertTrue(NativeHomeSearchDrawerVisibilityPolicy.isRevealed(
-            normalizedOffset: 0
-        ))
-        XCTAssertTrue(NativeHomeSearchDrawerVisibilityPolicy.isRevealed(
-            normalizedOffset: 37
-        ))
-        XCTAssertTrue(NativeHomeSearchDrawerVisibilityPolicy.isRevealed(
-            normalizedOffset: -20
-        ))
-        XCTAssertFalse(NativeHomeSearchDrawerVisibilityPolicy.isRevealed(
-            normalizedOffset: 56
-        ))
-        XCTAssertFalse(NativeHomeSearchDrawerVisibilityPolicy.isRevealed(
-            normalizedOffset: 112
-        ))
-        XCTAssertFalse(NativeHomeSearchDrawerVisibilityPolicy.isRevealed(
-            normalizedOffset: .nan
-        ))
-    }
-
-    func testInitialPullDrawerAlignmentRequiresARealSettledOffsetAndIsBounded() {
-        XCTAssertFalse(NativeHomeInitialTopAlignmentPolicy.isAligned(
-            normalizedOffset: .nan
-        ))
-        XCTAssertFalse(NativeHomeInitialTopAlignmentPolicy.isAligned(
-            normalizedOffset: 0
-        ))
-        XCTAssertTrue(NativeHomeInitialTopAlignmentPolicy.isAligned(
-            normalizedOffset: NativeHomeTopChromeLayout.collapsedOffset
-        ))
-        XCTAssertTrue(NativeHomeInitialTopAlignmentPolicy.isAligned(
-            normalizedOffset: NativeHomeTopChromeLayout.collapsedOffset + 0.5
-        ))
-        XCTAssertFalse(NativeHomeInitialTopAlignmentPolicy.isAligned(
-            normalizedOffset: NativeHomeTopChromeLayout.collapsedOffset + 1
-        ))
-
-        XCTAssertTrue(NativeHomeInitialTopAlignmentPolicy.canAttempt(after: 0))
-        XCTAssertTrue(NativeHomeInitialTopAlignmentPolicy.canAttempt(
-            after: NativeHomeInitialTopAlignmentPolicy.maximumAttempts - 1
-        ))
-        XCTAssertFalse(NativeHomeInitialTopAlignmentPolicy.canAttempt(
-            after: NativeHomeInitialTopAlignmentPolicy.maximumAttempts
-        ))
-    }
-
-    func testPullDrawerSettlementSeparatesUserIntentFromLayoutChanges() {
-        XCTAssertEqual(
-            NativeHomeSearchDrawerSettlementPolicy.decision(
-                previousTarget: .collapsed,
-                normalizedOffset: 20,
-                reason: .interactionEnded,
-                isRefreshing: false
-            ),
-            NativeHomeSearchDrawerSettlementDecision(
-                settledTarget: .revealed,
-                scrollTarget: .revealed
-            )
-        )
-        XCTAssertEqual(
-            NativeHomeSearchDrawerSettlementPolicy.decision(
-                previousTarget: .collapsed,
-                normalizedOffset: -10,
-                reason: .interactionEnded,
-                isRefreshing: false
-            ),
-            NativeHomeSearchDrawerSettlementDecision(
-                settledTarget: .revealed,
-                scrollTarget: nil
-            )
-        )
-        XCTAssertEqual(
-            NativeHomeSearchDrawerSettlementPolicy.decision(
-                previousTarget: .collapsed,
-                normalizedOffset: 0,
-                reason: .layoutChanged,
-                isRefreshing: false
-            ),
-            NativeHomeSearchDrawerSettlementDecision(
-                settledTarget: .collapsed,
-                scrollTarget: .collapsed
-            )
-        )
-        XCTAssertEqual(
-            NativeHomeSearchDrawerSettlementPolicy.decision(
-                previousTarget: .revealed,
-                normalizedOffset: 140,
-                reason: .interactionEnded,
-                isRefreshing: false
-            ),
-            NativeHomeSearchDrawerSettlementDecision(
-                settledTarget: .collapsed,
-                scrollTarget: nil
-            )
-        )
-        XCTAssertEqual(
-            NativeHomeSearchDrawerSettlementPolicy.decision(
-                previousTarget: .revealed,
-                normalizedOffset: 0,
-                reason: .layoutChanged,
-                isRefreshing: true
-            ),
-            NativeHomeSearchDrawerSettlementDecision(
-                settledTarget: .revealed,
-                scrollTarget: nil
-            )
-        )
     }
 
     func testTopBarScrollIntentUsesAsymmetricDirectionThresholds() {
@@ -1028,32 +577,6 @@ final class NativeShellPreferencesTests: XCTestCase {
         XCTAssertEqual(tracker.updateOffset(95.8, isActive: true), .show)
     }
 
-    func testChannelSelectorPinsEdgeChannelsBeforeCenteringMiddleChannels() {
-        let channelIDs = HomeChannel.allCases.map(\.id)
-
-        XCTAssertEqual(
-            NativeChannelSelectorScrollAlignment.alignment(
-                for: HomeChannel.recommendation.id,
-                in: channelIDs
-            ),
-            .leading
-        )
-        XCTAssertEqual(
-            NativeChannelSelectorScrollAlignment.alignment(
-                for: HomeChannel.following.id,
-                in: channelIDs
-            ),
-            .center
-        )
-        XCTAssertEqual(
-            NativeChannelSelectorScrollAlignment.alignment(
-                for: HomeChannel.daily.id,
-                in: channelIDs
-            ),
-            .trailing
-        )
-    }
-
     func testOnlySelectedChannelOwnsScrolling() {
         let selection = HomeChannel.following.id
         let activeChannels = HomeChannel.allCases.filter { channel in
@@ -1124,19 +647,39 @@ final class NativeShellPreferencesTests: XCTestCase {
 
     func testNonScrollableNestedStripDoesNotExcludeChannelSwipe() {
         XCTAssertFalse(NativeChannelSwipeExclusionPolicy.shouldExcludeParentSwipe(
-            isMarkedForExclusion: true,
             nestedContentWidth: 120,
             nestedViewportWidth: 390
         ))
         XCTAssertTrue(NativeChannelSwipeExclusionPolicy.shouldExcludeParentSwipe(
-            isMarkedForExclusion: true,
             nestedContentWidth: 520,
             nestedViewportWidth: 390
         ))
         XCTAssertFalse(NativeChannelSwipeExclusionPolicy.shouldExcludeParentSwipe(
-            isMarkedForExclusion: false,
             nestedContentWidth: nil,
             nestedViewportWidth: nil
+        ))
+    }
+
+    func testChannelSwitcherMountsOnlyTheSelectedPageAndItsNeighbors() {
+        XCTAssertTrue(NativeChannelPresentationPolicy.shouldMount(
+            pageIndex: 0,
+            selectedIndex: 1,
+            channelCount: 4
+        ))
+        XCTAssertTrue(NativeChannelPresentationPolicy.shouldMount(
+            pageIndex: 2,
+            selectedIndex: 1,
+            channelCount: 4
+        ))
+        XCTAssertFalse(NativeChannelPresentationPolicy.shouldMount(
+            pageIndex: 3,
+            selectedIndex: 1,
+            channelCount: 4
+        ))
+        XCTAssertFalse(NativeChannelPresentationPolicy.shouldMount(
+            pageIndex: -1,
+            selectedIndex: 1,
+            channelCount: 4
         ))
     }
 
@@ -1168,15 +711,4 @@ final class NativeShellPreferencesTests: XCTestCase {
         )
     }
 
-    private func registerHomeTap(
-        at timestamp: TimeInterval,
-        gate: inout NativeHomeTabDoubleTapGate
-    ) -> Bool {
-        gate.register(
-            .init(tab: .home, timestamp: timestamp),
-            isHomeSelected: true,
-            isHomeRoot: true,
-            isAppUnlocked: true
-        )
-    }
 }

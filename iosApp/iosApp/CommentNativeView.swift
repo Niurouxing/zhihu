@@ -16,6 +16,7 @@ final class CommentHostModel: ObservableObject, Identifiable {
         route: CommentThreadRouteDTO,
         accountStore: AccountJSONStore,
         repository: CommentRepository? = nil,
+        preloader: NativeCommentPreloader? = nil,
         onPersonNavigate: @escaping (PersonNavigationIntent) -> Void
     ) {
         let sessionID = CommentSessionID()
@@ -23,11 +24,13 @@ final class CommentHostModel: ObservableObject, Identifiable {
         self.accountStore = accountStore
         self.onPersonNavigate = onPersonNavigate
         var openPerson: ((PersonRoutePayload) -> Void)?
+        let resolvedRepository = repository ?? URLSessionCommentRepository(
+            client: ZhihuAPIClient(accountStore: accountStore)
+        )
         store = CommentSessionStore(
             route: route,
-            repository: repository ?? URLSessionCommentRepository(
-                client: ZhihuAPIClient(accountStore: accountStore)
-            ),
+            repository: resolvedRepository,
+            preloadedRootPage: preloader?.takeCachedPage(for: route),
             sessionID: sessionID,
             onOpenPerson: { payload in openPerson?(payload) }
         )
@@ -258,12 +261,10 @@ private struct CommentSheetPresentationModifier: ViewModifier {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
                 .presentationBackground(.clear)
-        } else if #available(iOS 16, *) {
+        } else {
             content
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
-        } else {
-            content
         }
     }
 }
@@ -288,10 +289,8 @@ private struct CommentLevelView: View {
         .listStyle(.plain)
         .scrollDismissesKeyboard(.interactively)
         .background(Color(uiColor: .systemBackground))
-        .coordinateSpace(name: coordinateSpaceName)
         .background(CommentScrollViewAccessor { scrollView = $0 })
-        .onPreferenceChange(CommentRowOffsetPreference.self) { updateAnchor($0) }
-        .onChange(of: store.scrollToStartLevel) { target in
+        .onChange(of: store.scrollToStartLevel) { _, target in
             guard target == level else { return }
             DispatchQueue.main.async {
                 guard let scrollView else { return }
@@ -321,13 +320,6 @@ private struct CommentLevelView: View {
         .accessibilityIdentifier(level == .root ? "comment_root" : "comment_direct_replies")
         .sheet(item: $posterDocument) { document in
             NativeContentPosterShareView(document: document)
-        }
-    }
-
-    private var coordinateSpaceName: String {
-        switch level {
-        case .root: return "comment-list-root"
-        case let .replies(rootCommentID): return "comment-list-replies-\(rootCommentID)"
         }
     }
 
@@ -375,7 +367,6 @@ private struct CommentLevelView: View {
                     onShare: { presentSharePoster(for: comment) }
                 )
                     .id(comment.id)
-                    .background(CommentRowOffsetReader(commentID: comment.id, coordinateSpaceName: coordinateSpaceName))
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         Button {
                             store.beginReply(to: comment.id, level: level)
@@ -453,17 +444,6 @@ private struct CommentLevelView: View {
         default:
             EmptyView()
         }
-    }
-
-    private func updateAnchor(_ offsets: [String: CGFloat]) {
-        guard !offsets.isEmpty else { return }
-        let first = offsets.filter { $0.value >= 0 }.min(by: { $0.value < $1.value })
-            ?? offsets.max(by: { $0.value < $1.value })
-        guard let first else { return }
-        store.updateAnchor(
-            CommentScrollAnchor(commentID: first.key, offsetFromViewportTopPoints: first.value),
-            for: level
-        )
     }
 
 }
@@ -633,7 +613,7 @@ private struct CommentComposerBar: View {
             }
         }
         .background(CommentComposerBackground())
-        .onChange(of: store.composerPresentation) { presentation in
+        .onChange(of: store.composerPresentation) { _, presentation in
             isDraftFocused = presentation.isActive(for: level)
         }
         .onAppear {
@@ -1127,28 +1107,6 @@ private struct CommentScrollViewAccessor: UIViewRepresentable {
                 }
                 resolve?(nil)
             }
-        }
-    }
-}
-
-private struct CommentRowOffsetPreference: PreferenceKey {
-    static var defaultValue: [String: CGFloat] = [:]
-
-    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
-    }
-}
-
-private struct CommentRowOffsetReader: View {
-    let commentID: String
-    let coordinateSpaceName: String
-
-    var body: some View {
-        GeometryReader { geometry in
-            Color.clear.preference(
-                key: CommentRowOffsetPreference.self,
-                value: [commentID: geometry.frame(in: .named(coordinateSpaceName)).minY]
-            )
         }
     }
 }

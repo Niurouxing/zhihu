@@ -3,6 +3,29 @@ import XCTest
 @testable import iosApp
 
 final class NativeMediaGalleryTests: XCTestCase {
+    func testGalleryMountsOnlyTheSelectedPageAndImmediateNeighbors() {
+        XCTAssertTrue(NativeMediaGalleryPresentationPolicy.shouldMount(
+            pageIndex: 3,
+            selectedIndex: 3,
+            pageCount: 8
+        ))
+        XCTAssertTrue(NativeMediaGalleryPresentationPolicy.shouldMount(
+            pageIndex: 2,
+            selectedIndex: 3,
+            pageCount: 8
+        ))
+        XCTAssertTrue(NativeMediaGalleryPresentationPolicy.shouldMount(
+            pageIndex: 4,
+            selectedIndex: 3,
+            pageCount: 8
+        ))
+        XCTAssertFalse(NativeMediaGalleryPresentationPolicy.shouldMount(
+            pageIndex: 5,
+            selectedIndex: 3,
+            pageCount: 8
+        ))
+    }
+
     func testAnimatedImagePolicyRecognizesSupportedFormats() {
         XCTAssertTrue(NativeRemoteMediaPolicy.isAnimatedImage(
             URL(string: "https://pic.zhimg.com/demo.gif?source=answer")!

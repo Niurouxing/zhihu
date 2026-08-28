@@ -297,34 +297,6 @@ final class CommentStoreTests: XCTestCase {
         XCTAssertEqual(snapshots.first?.text, "")
     }
 
-    func testAnchorsAreSignedPerLevelAndMissingIdentityIsExplicit() async {
-        let root = fixtureComment(id: "root", childCount: 1)
-        let repository = CommentRepositoryStub(
-            pages: [
-                .success(CommentPageResult(items: [root], nextURL: nil, isEnd: true)),
-                .success(CommentPageResult(items: [fixtureComment(id: "reply")], nextURL: nil, isEnd: true)),
-            ]
-        )
-        let store = makeStore(repository: repository)
-        store.start()
-        await waitUntil { store.pages[.root]?.items.count == 1 }
-        let rootAnchor = CommentScrollAnchor(commentID: "root", offsetFromViewportTopPoints: -12)
-        store.updateAnchor(rootAnchor, for: .root)
-        store.openReplies(rootCommentID: "root")
-        await waitUntil { store.pages[.replies(rootCommentID: "root")]?.items.count == 1 }
-        let replyAnchor = CommentScrollAnchor(commentID: "reply", offsetFromViewportTopPoints: 9)
-        store.updateAnchor(replyAnchor, for: .replies(rootCommentID: "root"))
-
-        XCTAssertEqual(store.anchorRestorationResult(for: .root), .restored(rootAnchor))
-        XCTAssertEqual(
-            store.anchorRestorationResult(for: .replies(rootCommentID: "root")),
-            .restored(replyAnchor)
-        )
-        let missing = CommentScrollAnchor(commentID: "gone", offsetFromViewportTopPoints: 4)
-        store.updateAnchor(missing, for: .root)
-        XCTAssertEqual(store.anchorRestorationResult(for: .root), .missingAnchor(missing))
-    }
-
     func testDisposeRejectsLatePagePublication() async {
         let repository = CommentRepositoryStub(
             pages: [.success(CommentPageResult(items: [fixtureComment(id: "late")], nextURL: nil, isEnd: true))],

@@ -316,7 +316,7 @@ final class HomeFollowStoreTests: XCTestCase {
         XCTAssertEqual(store.refreshMetadata.lastSuccessfulRefreshAt, initialDate)
 
         let viewedAt = initialDate.addingTimeInterval(30)
-        store.recordLastViewed(at: viewedAt)
+        await store.recordLastViewed(at: viewedAt)
         XCTAssertEqual(store.refreshMetadata.lastViewedAt, viewedAt)
         XCTAssertFalse(store.needsRefreshAfterIdle(at: viewedAt.addingTimeInterval(60 * 60 - 1)))
         XCTAssertTrue(store.needsRefreshAfterIdle(at: viewedAt.addingTimeInterval(60 * 60)))
@@ -339,7 +339,7 @@ final class HomeFollowStoreTests: XCTestCase {
         )
         await store.loadInitialIfNeeded()
 
-        store.accountDidChange()
+        await store.accountDidChange()
 
         XCTAssertTrue(store.items.isEmpty)
         XCTAssertEqual(store.refreshMetadata, .empty)
@@ -360,6 +360,7 @@ final class HomeFollowStoreTests: XCTestCase {
             cacheAccountID: { "account-a" }
         )
         await firstStore.loadInitialIfNeeded()
+        await firstStore.flushPendingCacheWrites()
 
         let restoredRepository = CacheHomeRepositoryStub(pages: [])
         let restoredStore = HomeFeedNativeStore(
@@ -390,7 +391,8 @@ final class HomeFollowStoreTests: XCTestCase {
             now: { clock.now }
         )
         await firstStore.loadInitialIfNeeded()
-        firstStore.recordLastViewed(at: viewedAt)
+        await firstStore.recordLastViewed(at: viewedAt)
+        await firstStore.flushPendingCacheWrites()
 
         clock.now = viewedAt.addingTimeInterval(60 * 60 - 1)
         let beforeBoundaryRepository = CacheHomeRepositoryStub(pages: [])
@@ -467,6 +469,7 @@ final class HomeFollowStoreTests: XCTestCase {
             cacheAccountID: { accountID },
             now: { now }
         )
+        await store.loadInitialIfNeeded()
         XCTAssertEqual(store.items, [feedItem(1)])
 
         configuration = HomeRecommendationRefreshConfiguration(
@@ -477,54 +480,78 @@ final class HomeFollowStoreTests: XCTestCase {
         XCTAssertEqual(store.items, [feedItem(2)])
 
         accountID = "account-b"
-        store.accountDidChange()
+        await store.accountDidChange()
         XCTAssertEqual(store.items, [feedItem(3)])
 
         accountID = nil
-        store.accountDidChange()
+        await store.accountDidChange()
         XCTAssertTrue(store.items.isEmpty)
         let requestCount = await repository.requestCount()
         XCTAssertEqual(requestCount, 0)
     }
 
     func testHomeCacheRejectsSchemaMismatchAndDamagedPayload() throws {
-        let suite = "HomeRecommendationCacheTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "HomeRecommendationCacheTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
         let context = try XCTUnwrap(HomeRecommendationCacheContext(
             accountID: "account-a",
             source: .app
         ))
-        let writer = UserDefaultsHomeRecommendationCachePersistence(
-            defaults: defaults,
-            expectedSchemaVersion: 1
-        )
-        writer.save(cacheSnapshot(
+        let current = cacheSnapshot(
             context: context,
             items: [feedItem(1)],
             now: Date(timeIntervalSince1970: 100)
-        ), for: context)
+        )
+        let legacy = HomeRecommendationCacheSnapshot(
+            schemaVersion: 1,
+            accountID: current.accountID,
+            source: current.source,
+            items: current.items,
+            nextURL: current.nextURL,
+            isEnd: current.isEnd,
+            refreshMetadata: current.refreshMetadata,
+            savedAt: current.savedAt
+        )
+        let writer = FileHomeRecommendationCachePersistence(
+            directoryURL: directory,
+            expectedSchemaVersion: 1
+        )
+        writer.save(legacy, for: context)
 
-        XCTAssertNil(UserDefaultsHomeRecommendationCachePersistence(
-            defaults: defaults,
+        XCTAssertNil(FileHomeRecommendationCachePersistence(
+            directoryURL: directory,
             expectedSchemaVersion: 2
         ).load(for: context))
 
-        defaults.set(
-            Data("damaged-cache".utf8),
-            forKey: UserDefaultsHomeRecommendationCachePersistence.storageKey(for: context)
+        let file = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil
+            ).first
         )
+        try Data("damaged-cache".utf8).write(to: file, options: .atomic)
         XCTAssertNil(writer.load(for: context))
     }
 
     func testHomeCacheRejectsUntrustedPagingURL() throws {
-        let suite = "HomeRecommendationCacheTrustTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "HomeRecommendationCacheTrustTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
         let context = try XCTUnwrap(HomeRecommendationCacheContext(
             accountID: "account-a",
             source: .web
         ))
+        let persistence = FileHomeRecommendationCachePersistence(directoryURL: directory)
+        persistence.save(cacheSnapshot(
+            context: context,
+            items: [feedItem(1)],
+            now: Date(timeIntervalSince1970: 100)
+        ), for: context)
         let snapshot = HomeRecommendationCacheSnapshot(
             schemaVersion: HomeRecommendationCacheSnapshot.currentSchemaVersion,
             accountID: context.accountID,
@@ -535,15 +562,15 @@ final class HomeFollowStoreTests: XCTestCase {
             refreshMetadata: .empty,
             savedAt: Date(timeIntervalSince1970: 100)
         )
-        defaults.set(
-            try JSONEncoder().encode(snapshot),
-            forKey: UserDefaultsHomeRecommendationCachePersistence.storageKey(for: context)
+        let file = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil
+            ).first
         )
+        try JSONEncoder().encode(snapshot).write(to: file, options: .atomic)
 
-        XCTAssertNil(
-            UserDefaultsHomeRecommendationCachePersistence(defaults: defaults)
-                .load(for: context)
-        )
+        XCTAssertNil(persistence.load(for: context))
     }
 
     func testHomeManualRefreshReplacesFirstPageAndRecordsCurrentTime() async {

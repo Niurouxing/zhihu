@@ -95,6 +95,8 @@ final class HostModel: ObservableObject {
     let creationRepository: CreationRepository
     let questionAnswerRepository: QuestionAnswerRepository
     let feedAnswerPreloader: NativeFeedAnswerPreloader
+    let commentRepository: CommentRepository
+    let commentPreloader: NativeCommentPreloader
     let videoRepository: NativeVideoRepository
     let answerOpenedHistory: AnswerOpenedHistory
     let systemSettings: NativeSystemIntegrationSettings
@@ -138,9 +140,7 @@ final class HostModel: ObservableObject {
         libraryRepository = .live(client: client)
         specialRepository = .live(client: client)
         columnRepository = .live(client: client)
-        homeRecommendationCachePersistence = UserDefaultsHomeRecommendationCachePersistence(
-            defaults: defaults
-        )
+        homeRecommendationCachePersistence = FileHomeRecommendationCachePersistence()
         homeRepository = URLSessionHomeFeedRepository(client: client)
         followRepository = URLSessionFollowRepository(client: client)
         hotRepository = URLSessionHotFeedRepository(client: client)
@@ -151,6 +151,9 @@ final class HostModel: ObservableObject {
         let questionAnswerRepository = URLSessionQuestionAnswerRepository(client: client)
         self.questionAnswerRepository = questionAnswerRepository
         feedAnswerPreloader = NativeFeedAnswerPreloader(repository: questionAnswerRepository)
+        let commentRepository = URLSessionCommentRepository(client: client)
+        self.commentRepository = commentRepository
+        commentPreloader = NativeCommentPreloader(repository: commentRepository)
         videoRepository = URLSessionNativeVideoRepository(client: client)
         answerOpenedHistory = UserDefaultsAnswerOpenedHistory(defaults: defaults)
         self.systemSettings = systemSettings
@@ -166,7 +169,10 @@ final class HostModel: ObservableObject {
     func loginCompleted() {
         router.dismissModal()
         account.reloadFromKeychain()
-        Task { await notifications.refreshUnreadCounts() }
+        Task {
+            await apiClient.invalidateCredentialsCache()
+            await notifications.refreshUnreadCounts()
+        }
     }
 
     func openQrAuthorization() {
@@ -211,6 +217,7 @@ final class HostModel: ObservableObject {
         else { throw ZhihuAPIError.invalidResponse }
         let values = try RiskControlCookieCodec.cookieValues(from: cookiesJSON)
         try ZhihuAccountCookieWriter.merge(cookieValues: values, into: accountStore)
+        await apiClient.invalidateCredentialsCache()
         let retry = riskRetries.removeValue(forKey: request.requestId)
         router.dismissModal()
         await retry?()

@@ -46,14 +46,12 @@ struct HomeChannelsNativeView: View {
     @State private var lastSelectedChannelID: HomeChannel.ID
     @State private var scrollToTopRequests: [HomeChannel: UInt] = [:]
     @State private var idleRefreshTask: Task<Void, Never>?
-    @State private var doubleTapRefreshTask: Task<Void, Never>?
-    @State private var doubleTapRefreshGeneration: UInt = 0
     @State private var wasOperationallyVisible = false
     @State private var refreshStatusNow = Date()
     @State private var isTopBarVisible = true
+    @State private var scrollPositionRegistry = NativeHomeScrollPositionRegistry()
 
     let isOperationallyVisible: Bool
-    let doubleTapRefreshRequest: UInt
     let notificationUnreadCount: Int
     let accountAvatarURL: URL?
     let onOpenFeed: (FeedItemRoute) -> Void
@@ -70,7 +68,6 @@ struct HomeChannelsNativeView: View {
         followingStore: FollowNativeStore,
         hotStore: HotFeedStore,
         dailyStore: DailyNativeStore,
-        doubleTapRefreshRequest: UInt,
         isOperationallyVisible: Bool,
         notificationUnreadCount: Int,
         accountAvatarURL: URL?,
@@ -88,7 +85,6 @@ struct HomeChannelsNativeView: View {
         _hotStore = ObservedObject(wrappedValue: hotStore)
         _dailyStore = ObservedObject(wrappedValue: dailyStore)
         _lastSelectedChannelID = State(initialValue: selectedChannelID.wrappedValue)
-        self.doubleTapRefreshRequest = doubleTapRefreshRequest
         self.isOperationallyVisible = isOperationallyVisible
         self.notificationUnreadCount = notificationUnreadCount
         self.accountAvatarURL = accountAvatarURL
@@ -120,6 +116,7 @@ struct HomeChannelsNativeView: View {
         .environment(\.nativeHomeTopBarScrollIntentAction) { intent in
             handleTopBarScrollIntent(intent)
         }
+        .environment(\.nativeHomeScrollPositionRegistry, scrollPositionRegistry)
         .navigationTitle(selectedChannel.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
@@ -130,11 +127,9 @@ struct HomeChannelsNativeView: View {
         }
         .onDisappear {
             transitionOperationalVisibility(to: false)
-            cancelDoubleTapRefresh()
         }
-        .onChange(of: selectedChannelID) { newChannelID in
+        .onChange(of: selectedChannelID) { _, newChannelID in
             guard newChannelID != lastSelectedChannelID else { return }
-            cancelDoubleTapRefresh()
             if wasOperationallyVisible,
                let previous = HomeChannel(rawValue: lastSelectedChannelID) {
                 recordLastViewed(for: previous)
@@ -145,17 +140,13 @@ struct HomeChannelsNativeView: View {
                 scheduleIdleRefreshIfNeeded(for: selectedChannel)
             }
         }
-        .onChange(of: isOperationallyVisible) { _ in
+        .onChange(of: isOperationallyVisible) {
             synchronizeOperationalVisibility()
             if isOperationallyVisible {
                 setTopBarVisible(true, animated: false)
             }
         }
-        .onChange(of: doubleTapRefreshRequest) { request in
-            guard request > 0 else { return }
-            scheduleDoubleTapRefresh()
-        }
-        .onChange(of: scenePhase) { _ in
+        .onChange(of: scenePhase) {
             synchronizeOperationalVisibility()
         }
         .task {
@@ -406,60 +397,6 @@ struct HomeChannelsNativeView: View {
         }
     }
 
-    private func scheduleDoubleTapRefresh() {
-        guard doubleTapRefreshTask == nil, isEffectivelyVisible else { return }
-        idleRefreshTask?.cancel()
-        let channel = selectedChannel
-        doubleTapRefreshGeneration &+= 1
-        let generation = doubleTapRefreshGeneration
-        scrollToTopRequests[channel, default: 0] &+= 1
-
-        doubleTapRefreshTask = Task { @MainActor in
-            defer {
-                if generation == doubleTapRefreshGeneration {
-                    doubleTapRefreshTask = nil
-                }
-            }
-            if channel == .recommendation {
-                guard !Task.isCancelled,
-                      generation == doubleTapRefreshGeneration,
-                      isEffectivelyVisible,
-                      selectedChannelID == channel.id
-                else { return }
-                _ = await recommendationStore.refresh(intent: .returnToTop)
-                return
-            }
-            do {
-                try await Task.sleep(nanoseconds: 500_000_000)
-            } catch {
-                return
-            }
-            guard !Task.isCancelled,
-                  generation == doubleTapRefreshGeneration,
-                  isEffectivelyVisible,
-                  selectedChannelID == channel.id,
-                  await waitUntilIdle(for: channel)
-            else { return }
-            let previousSuccessfulRefresh = successfulRefreshDate(for: channel)
-            await refresh(channel)
-            guard !Task.isCancelled,
-                  generation == doubleTapRefreshGeneration,
-                  selectedChannelID == channel.id,
-                  NativeRefreshHapticPolicy.shouldEmit(
-                    previousSuccessfulRefreshAt: previousSuccessfulRefresh,
-                    currentSuccessfulRefreshAt: successfulRefreshDate(for: channel)
-                  )
-            else { return }
-            hapticFeedback(.refreshSucceeded)
-        }
-    }
-
-    private func cancelDoubleTapRefresh() {
-        doubleTapRefreshGeneration &+= 1
-        doubleTapRefreshTask?.cancel()
-        doubleTapRefreshTask = nil
-    }
-
     private func synchronizeOperationalVisibility() {
         transitionOperationalVisibility(to: isEffectivelyVisible)
     }
@@ -469,7 +406,6 @@ struct HomeChannelsNativeView: View {
         let wasVisible = wasOperationallyVisible
         wasOperationallyVisible = isVisible
         idleRefreshTask?.cancel()
-        if !isVisible { cancelDoubleTapRefresh() }
         if wasVisible {
             recordLastViewed(for: selectedChannel)
         }
@@ -508,7 +444,8 @@ struct HomeChannelsNativeView: View {
 
     private func recordLastViewed(for channel: HomeChannel) {
         switch channel {
-        case .recommendation: recommendationStore.recordLastViewed()
+        case .recommendation:
+            Task { await recommendationStore.recordLastViewed() }
         case .following: followingStore.recordLastViewed()
         case .hot: hotStore.recordLastViewed()
         case .daily: dailyStore.recordLastViewed()

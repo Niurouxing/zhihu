@@ -23,13 +23,6 @@ final class ArticleRoutingTests: XCTestCase {
         XCTAssertEqual(NativeShellRoute.comments(route), .comments(route))
     }
 
-    func testSystemSearchTargetsSearchTabAndPreservesQuery() {
-        let target = NativeSearchTabNavigationTarget(query: " SwiftUI ")
-
-        XCTAssertEqual(target.tab, .search)
-        XCTAssertEqual(target.route, SearchRouteDTO(query: "SwiftUI"))
-    }
-
     func testSearchFocusRequestTokensAdvanceAndSkipReservedZero() {
         XCTAssertEqual(NativeSearchFocusRequestPolicy.nextToken(after: 0), 1)
         XCTAssertEqual(NativeSearchFocusRequestPolicy.nextToken(after: 41), 42)
@@ -77,104 +70,6 @@ final class ArticleRoutingTests: XCTestCase {
             NativeSearchFocusRequestPolicy.pushedRouteRequest(SearchRouteDTO()),
             NativeSearchFocusRequest(token: 1, isActive: true)
         )
-    }
-
-    func testHomeToSearchSelectionIssuesExactlyOneFocusToken() {
-        var token: UInt = 0
-        if NativeSearchFocusRequestPolicy.shouldRequestForTabSelection(
-            previous: .home,
-            next: .search,
-            isSearchRoot: true
-        ) {
-            token = NativeSearchFocusRequestPolicy.nextToken(after: token)
-        }
-        if NativeTabReselectPolicy.isReselect(
-            tappedTab: .search,
-            selectedTabAtTouchBegan: .home
-        ) {
-            token = NativeSearchFocusRequestPolicy.nextToken(after: token)
-        }
-
-        XCTAssertEqual(token, 1)
-    }
-
-    func testSearchTabReselectionIssuesExactlyOneFocusToken() {
-        var token: UInt = 0
-        if NativeSearchFocusRequestPolicy.shouldRequestForTabSelection(
-            previous: .search,
-            next: .search,
-            isSearchRoot: true
-        ) {
-            token = NativeSearchFocusRequestPolicy.nextToken(after: token)
-        }
-        if NativeTabReselectPolicy.isReselect(
-            tappedTab: .search,
-            selectedTabAtTouchBegan: .search
-        ), NativeSearchFocusRequestPolicy.shouldRequestForTabReselection(
-            tab: .search,
-            isSearchRoot: true
-        ) {
-            token = NativeSearchFocusRequestPolicy.nextToken(after: token)
-        }
-
-        XCTAssertEqual(token, 1)
-    }
-
-    func testSearchStartupDoesNotIssueFocusToken() {
-        let token: UInt = 0
-
-        XCTAssertFalse(NativeSearchFocusRequestPolicy.shouldRequestForTabSelection(
-            previous: .search,
-            next: .search,
-            isSearchRoot: true
-        ))
-        XCTAssertEqual(token, 0)
-    }
-
-    func testSystemSearchExplicitlyIssuesExactlyOneFocusToken() {
-        var token: UInt = 0
-
-        token = NativeSearchFocusRequestPolicy.nextToken(after: token)
-
-        XCTAssertEqual(token, 1)
-    }
-
-    func testHotSystemNavigationUsesHomeChannelWhenHomeTabIsVisible() {
-        XCTAssertEqual(
-            NativeHotSystemNavigationPolicy.target(
-                selectedTabs: [.history, .home, .account],
-                currentTab: .history,
-                startTab: .history
-            ),
-            .homeChannel
-        )
-    }
-
-    func testHotSystemNavigationPushesInCurrentTabWhenHomeIsHidden() {
-        XCTAssertEqual(
-            NativeHotSystemNavigationPolicy.target(
-                selectedTabs: [.history, .account],
-                currentTab: .account,
-                startTab: .history
-            ),
-            .hotList(tab: .account)
-        )
-    }
-
-    func testHotSystemNavigationNeverReturnsAnUnavailableTab() {
-        XCTAssertEqual(
-            NativeHotSystemNavigationPolicy.target(
-                selectedTabs: [.collections],
-                currentTab: .home,
-                startTab: .account
-            ),
-            .hotList(tab: .collections)
-        )
-        XCTAssertNil(NativeHotSystemNavigationPolicy.target(
-            selectedTabs: [],
-            currentTab: .home,
-            startTab: .home
-        ))
     }
 
     func testRiskControlOnlyAllowsTrustedHttpsZhihuHosts() {

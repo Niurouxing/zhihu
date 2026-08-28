@@ -43,8 +43,28 @@ actor URLSessionHomeFeedRepository: HomeFeedRepository {
         let authentication: ZhihuRequestAuthentication = source == .web
             ? .accountRequired
             : .accountIfAvailable
+        let endpointCategory: FeedResponseEndpointCategory = source == .web
+            ? .homeWebRecommendations
+            : .homeAppRecommendations
         let data = try await client.data(for: url, authentication: authentication)
-        return try FeedResponseMapper.page(from: data, policy: .search)
+        do {
+            return try FeedResponseMapper.page(
+                from: data,
+                policy: .search,
+                endpointCategory: endpointCategory
+            )
+        } catch FeedResponseError.unexpectedPayload {
+            // A gateway or risk-control edge can occasionally return a 200 HTML
+            // page. Retry once with a fresh URLSession request; the store keeps
+            // the previously published feed if the retry also fails.
+            try await Task.sleep(nanoseconds: 250_000_000)
+            let retryData = try await client.data(for: url, authentication: authentication)
+            return try FeedResponseMapper.page(
+                from: retryData,
+                policy: .search,
+                endpointCategory: endpointCategory
+            )
+        }
     }
 
     func reportOpened(_ item: FeedItemDTO) async {

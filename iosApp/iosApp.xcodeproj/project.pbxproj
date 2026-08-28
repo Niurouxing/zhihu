@@ -56,7 +56,6 @@
 		0B200000000000000000010 /* HotSearchRepositories.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000010 /* HotSearchRepositories.swift */; };
 		0B200000000000000000011 /* HotSearchStores.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000011 /* HotSearchStores.swift */; };
 		0B200000000000000000012 /* NativeAccountFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000012 /* NativeAccountFeature.swift */; };
-		0B200000000000000000013 /* NativeAnswerPager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000013 /* NativeAnswerPager.swift */; };
 		0B200000000000000000014 /* NativeAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000014 /* NativeAppIntents.swift */; };
 		0B200000000000000000015 /* NativeAppLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000015 /* NativeAppLock.swift */; };
 		0B200000000000000000016 /* NativeAppShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B100000000000000000016 /* NativeAppShell.swift */; };
@@ -174,7 +173,6 @@
 		0B100000000000000000010 /* HotSearchRepositories.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotSearchRepositories.swift; sourceTree = "<group>"; };
 		0B100000000000000000011 /* HotSearchStores.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotSearchStores.swift; sourceTree = "<group>"; };
 		0B100000000000000000012 /* NativeAccountFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAccountFeature.swift; sourceTree = "<group>"; };
-		0B100000000000000000013 /* NativeAnswerPager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAnswerPager.swift; sourceTree = "<group>"; };
 		0B100000000000000000014 /* NativeAppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAppIntents.swift; sourceTree = "<group>"; };
 		0B100000000000000000015 /* NativeAppLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAppLock.swift; sourceTree = "<group>"; };
 		0B100000000000000000016 /* NativeAppShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAppShell.swift; sourceTree = "<group>"; };
@@ -303,7 +301,6 @@
 				0C100000000000000000003 /* HomeChannelsNativeView.swift */,
 				0D100000000000000000001 /* NativeHapticFeedback.swift */,
 				0B100000000000000000012 /* NativeAccountFeature.swift */,
-				0B100000000000000000013 /* NativeAnswerPager.swift */,
 				0B100000000000000000014 /* NativeAppIntents.swift */,
 				0B100000000000000000015 /* NativeAppLock.swift */,
 				0B100000000000000000016 /* NativeAppShell.swift */,
@@ -527,7 +524,6 @@
 				0C200000000000000000003 /* HomeChannelsNativeView.swift in Sources */,
 				0D200000000000000000001 /* NativeHapticFeedback.swift in Sources */,
 				0B200000000000000000012 /* NativeAccountFeature.swift in Sources */,
-				0B200000000000000000013 /* NativeAnswerPager.swift in Sources */,
 				0B200000000000000000014 /* NativeAppIntents.swift in Sources */,
 				0B200000000000000000015 /* NativeAppLock.swift in Sources */,
 				0B200000000000000000016 /* NativeAppShell.swift in Sources */,

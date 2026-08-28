@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// Stable SwiftUI owner for one Answer/Article route. Business state lives in the native pager;
-/// comments, media and sharing are delegated upward as typed navigation intents.
+/// Stable owner for one answer/article reading stream. The clicked answer is first;
+/// additional answers are appended vertically by the stream store.
 struct ArticleHostView: View {
-    @StateObject private var pager: AnswerPagerStore
+    @StateObject private var stream: AnswerStreamStore
     @AppStorage("pinAnswerDate") private var pinAnswerDate = false
     let onNavigate: (QANavigationIntent) -> Void
 
@@ -11,15 +11,18 @@ struct ArticleHostView: View {
         route: AnswerRouteDTO,
         repository: QuestionAnswerRepository,
         answerPreloader: NativeFeedAnswerPreloader? = nil,
+        commentPreloader: NativeCommentPreloader? = nil,
         openedHistory: AnswerOpenedHistory,
         diagnostics: PerformanceDiagnosticsClient = .disabled,
         onNavigate: @escaping (QANavigationIntent) -> Void
     ) {
-        _pager = StateObject(
-            wrappedValue: AnswerPagerStore(
+        _stream = StateObject(
+            wrappedValue: AnswerStreamStore(
                 route: route,
                 repository: repository,
                 answerPreloader: answerPreloader,
+                commentPreloader: commentPreloader,
+                initialPaginationDelayNanoseconds: 700_000_000,
                 openedHistory: openedHistory,
                 diagnostics: diagnostics
             )
@@ -28,16 +31,10 @@ struct ArticleHostView: View {
     }
 
     var body: some View {
-        NativeAnswerPager(
-            store: pager,
-            preferences: QAReadingPreferences(pinAnswerDate: pinAnswerDate),
+        NativeAnswerStream(
+            store: stream,
+            pinAnswerDate: pinAnswerDate,
             onNavigate: onNavigate
         )
-    }
-}
-
-extension QAReadingPreferences {
-    init(pinAnswerDate: Bool) {
-        self.pinAnswerDate = pinAnswerDate
     }
 }

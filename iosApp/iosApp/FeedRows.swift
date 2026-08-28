@@ -1,7 +1,45 @@
 import SwiftUI
+import UIKit
 
 private struct NativeFeedNavigationNamespaceKey: EnvironmentKey {
     static let defaultValue: Namespace.ID? = nil
+}
+
+struct NativeFeedTransitionSourceID: Hashable, Sendable {
+    let rawValue: UUID
+
+    init(_ rawValue: UUID = UUID()) {
+        self.rawValue = rawValue
+    }
+}
+
+struct NativeFeedTransitionContext: Hashable, Sendable {
+    let sourceID: NativeFeedTransitionSourceID
+    let contentID: FeedItemID
+}
+
+@MainActor
+final class NativeFeedTransitionRegistry {
+    private var pending: [FeedItemID: NativeFeedTransitionContext] = [:]
+
+    func register(sourceID: NativeFeedTransitionSourceID, contentID: FeedItemID) {
+        pending[contentID] = NativeFeedTransitionContext(
+            sourceID: sourceID,
+            contentID: contentID
+        )
+    }
+
+    func consume(contentID: FeedItemID) -> NativeFeedTransitionContext? {
+        pending.removeValue(forKey: contentID)
+    }
+
+    func reset() {
+        pending.removeAll()
+    }
+}
+
+private struct NativeFeedTransitionRegistryKey: EnvironmentKey {
+    static let defaultValue: NativeFeedTransitionRegistry? = nil
 }
 
 private struct NativeFeedAnswerPreloaderKey: EnvironmentKey {
@@ -18,6 +56,11 @@ extension EnvironmentValues {
         get { self[NativeFeedAnswerPreloaderKey.self] }
         set { self[NativeFeedAnswerPreloaderKey.self] = newValue }
     }
+
+    var nativeFeedTransitionRegistry: NativeFeedTransitionRegistry? {
+        get { self[NativeFeedTransitionRegistryKey.self] }
+        set { self[NativeFeedTransitionRegistryKey.self] = newValue }
+    }
 }
 
 struct NativeFeedAnswerPreview: Equatable, Sendable {
@@ -30,61 +73,104 @@ struct NativeFeedAnswerPreview: Equatable, Sendable {
         summary = FeedTextPresentationPolicy.compact(item.summary)
         author = item.author
     }
+
+    init(_ preview: AnswerPreviewDTO) {
+        title = preview.questionTitle
+        summary = FeedTextPresentationPolicy.compact(preview.excerpt)
+        author = FeedAuthorDTO(
+            memberID: preview.author.memberID,
+            urlToken: preview.author.urlToken,
+            displayName: preview.author.displayName,
+            avatarURL: preview.author.avatarURL,
+            headline: preview.author.headline
+        )
+    }
 }
 
-/// Keeps the first frame of an answer/article destination warm without making
-/// every feed cell own networking state. Visible cells enqueue a small bounded
-/// amount of work; opening a queued item promotes that request immediately.
+/// A small, cancellable content cache shared by feed rows and answer destinations.
+/// Registering a row stores only its lightweight preview. Full content is fetched
+/// after the row has remained visible, and navigation can promote the same task.
 @MainActor
 final class NativeFeedAnswerPreloader {
     private let repository: QuestionAnswerRepository
     private let maximumCachedAnswers: Int
     private let maximumConcurrentPreloads: Int
-    private let maximumPendingPreloads: Int
 
     private var answers: [FeedItemID: AnswerDTO] = [:]
     private var previews: [FeedItemID: NativeFeedAnswerPreview] = [:]
     private var cacheOrder: [FeedItemID] = []
     private var previewOrder: [FeedItemID] = []
-    private var tasks: [FeedItemID: Task<AnswerDTO?, Never>] = [:]
-    private var pendingRoutes: [AnswerRouteDTO] = []
-    private var pendingIDs: Set<FeedItemID> = []
+    private var tasks: [FeedItemID: Task<AnswerDTO, Error>] = [:]
     private var consumingIDs: Set<FeedItemID> = []
+    private var speculativeIDs: Set<FeedItemID> = []
     private var activePreloadCount = 0
+    private var generation: UInt64 = 0
 
     init(
         repository: QuestionAnswerRepository,
-        maximumCachedAnswers: Int = 16,
-        maximumConcurrentPreloads: Int = 3,
-        maximumPendingPreloads: Int = 8
+        maximumCachedAnswers: Int = 4,
+        maximumConcurrentPreloads: Int = 1
     ) {
         self.repository = repository
         self.maximumCachedAnswers = max(1, maximumCachedAnswers)
         self.maximumConcurrentPreloads = max(1, maximumConcurrentPreloads)
-        self.maximumPendingPreloads = max(0, maximumPendingPreloads)
     }
 
     func register(_ item: FeedItemDTO) {
-        guard let route = item.route.answerRoute else { return }
+        guard item.route.answerRoute != nil else { return }
         let id = item.route.navigationTransitionID
         previews[id] = NativeFeedAnswerPreview(item: item)
         touch(id, in: &previewOrder)
         trim(&previews, order: &previewOrder, limit: maximumCachedAnswers)
-        preload(route)
+    }
+
+    /// Transfers a speculative request to navigation ownership before the
+    /// source row disappears. Without this synchronous hand-off SwiftUI can
+    /// cancel the row task between the tap and destination construction,
+    /// forcing the reading page to issue the same request again.
+    func promoteForNavigation(_ item: FeedItemDTO) {
+        register(item)
+        guard let route = item.route.answerRoute else { return }
+        let id = transitionID(for: route)
+        guard answers[id] == nil else { return }
+        if tasks[id] != nil {
+            speculativeIDs.remove(id)
+            return
+        }
+
+        // Foreground navigation supersedes unrelated speculation. Its request
+        // may briefly overlap a task that is finishing cancellation, but it is
+        // never delayed behind work for an off-screen card.
+        cancelSpeculativePreloads()
+        _ = start(route)
+    }
+
+    func prefetch(_ item: FeedItemDTO) async {
+        register(item)
+        guard let route = item.route.answerRoute else { return }
+        let id = transitionID(for: route)
+        guard answers[id] == nil else { return }
+
+        let task: Task<AnswerDTO, Error>
+        if let existing = tasks[id] {
+            task = existing
+        } else {
+            guard activePreloadCount < maximumConcurrentPreloads else { return }
+            speculativeIDs.insert(id)
+            task = start(route)
+        }
+
+        // Once a bounded speculative request has started, let it finish and
+        // populate the cache. Repeatedly cancelling URLSession requests while
+        // scrolling wastes radio/connection setup energy and caused the NECP
+        // cancellation churn visible in device logs.
+        _ = try? await task.value
     }
 
     func cachedAnswer(for route: AnswerRouteDTO) -> AnswerDTO? {
         let id = transitionID(for: route)
         guard let answer = answers[id], answerMatches(answer, route: route) else { return nil }
         touch(id, in: &cacheOrder)
-        return answer
-    }
-
-    func takeCachedAnswer(for route: AnswerRouteDTO) -> AnswerDTO? {
-        let id = transitionID(for: route)
-        guard let answer = answers[id], answerMatches(answer, route: route) else { return nil }
-        answers.removeValue(forKey: id)
-        cacheOrder.removeAll { $0 == id }
         return answer
     }
 
@@ -102,66 +188,92 @@ final class NativeFeedAnswerPreloader {
         return preview
     }
 
-    func answer(for route: AnswerRouteDTO) async -> AnswerDTO? {
-        if let cached = takeCachedAnswer(for: route) { return cached }
+    func answer(for route: AnswerRouteDTO) async throws -> AnswerDTO {
+        if let cached = cachedAnswer(for: route) { return cached }
         let id = transitionID(for: route)
         consumingIDs.insert(id)
-        if let task = tasks[id] { return await task.value }
-
-        if pendingIDs.remove(id) != nil {
-            pendingRoutes.removeAll { transitionID(for: $0) == id }
+        speculativeIDs.remove(id)
+        let task = tasks[id] ?? start(route)
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: { [weak self] in
+            Task { @MainActor in self?.cancelConsumer(id: id) }
         }
-        return await start(route).value
     }
 
-    private func preload(_ route: AnswerRouteDTO) {
+    /// Prepares exactly one following answer for an active reading session.
+    /// It supersedes feed-card speculation but remains a bounded LRU entry, so
+    /// returning to the same answer does not cause another network request.
+    func prefetchForReading(_ route: AnswerRouteDTO) async {
+        if cachedAnswer(for: route) != nil { return }
         let id = transitionID(for: route)
-        guard answers[id] == nil, tasks[id] == nil, !pendingIDs.contains(id) else { return }
-        if activePreloadCount < maximumConcurrentPreloads {
-            _ = start(route)
+        if let task = tasks[id] {
+            _ = try? await task.value
             return
         }
-        guard maximumPendingPreloads > 0 else { return }
-        pendingRoutes.append(route)
-        pendingIDs.insert(id)
-        while pendingRoutes.count > maximumPendingPreloads {
-            let removed = pendingRoutes.removeFirst()
-            pendingIDs.remove(transitionID(for: removed))
-        }
+        cancelSpeculativePreloads()
+        speculativeIDs.insert(id)
+        _ = try? await start(route).value
     }
 
-    private func start(_ route: AnswerRouteDTO) -> Task<AnswerDTO?, Never> {
+    private func start(_ route: AnswerRouteDTO) -> Task<AnswerDTO, Error> {
         let id = transitionID(for: route)
         if let existing = tasks[id] { return existing }
         activePreloadCount += 1
+        let generation = generation
         let repository = repository
-        let task = Task { try? await repository.fetchAnswer(route) }
+        let task = Task { try await repository.fetchAnswer(route) }
         tasks[id] = task
         Task { @MainActor [weak self] in
-            let answer = await task.value
-            self?.finish(answer, route: route)
+            let result = await task.result
+            self?.finish(result, route: route, generation: generation)
         }
         return task
     }
 
-    private func finish(_ answer: AnswerDTO?, route: AnswerRouteDTO) {
+    private func finish(
+        _ result: Result<AnswerDTO, Error>,
+        route: AnswerRouteDTO,
+        generation: UInt64
+    ) {
+        guard generation == self.generation else { return }
         let id = transitionID(for: route)
         tasks[id] = nil
+        speculativeIDs.remove(id)
         activePreloadCount = max(0, activePreloadCount - 1)
-        let wasConsumed = consumingIDs.remove(id) != nil
-        if let answer, answerMatches(answer, route: route), !wasConsumed {
+        consumingIDs.remove(id)
+        if case let .success(answer) = result,
+           answerMatches(answer, route: route) {
             cacheUpdatedAnswer(answer)
         }
-        drainPendingRoutes()
     }
 
-    private func drainPendingRoutes() {
-        while activePreloadCount < maximumConcurrentPreloads, !pendingRoutes.isEmpty {
-            let route = pendingRoutes.removeFirst()
-            let id = transitionID(for: route)
-            pendingIDs.remove(id)
-            guard answers[id] == nil, tasks[id] == nil else { continue }
-            _ = start(route)
+    func cancelSpeculativePreloads() {
+        let cancellableIDs = speculativeIDs.subtracting(consumingIDs)
+        for id in cancellableIDs {
+            tasks[id]?.cancel()
+        }
+        speculativeIDs.subtract(cancellableIDs)
+    }
+
+    func reset() {
+        generation &+= 1
+        tasks.values.forEach { $0.cancel() }
+        tasks.removeAll()
+        answers.removeAll()
+        previews.removeAll()
+        cacheOrder.removeAll()
+        previewOrder.removeAll()
+        consumingIDs.removeAll()
+        speculativeIDs.removeAll()
+        activePreloadCount = 0
+    }
+
+    private func cancelConsumer(id: FeedItemID) {
+        consumingIDs.remove(id)
+        guard speculativeIDs.contains(id) else {
+            tasks[id]?.cancel()
+            return
         }
     }
 
@@ -192,10 +304,16 @@ final class NativeFeedAnswerPreloader {
     }
 }
 
+private struct NativeFeedAnswerPrefetchIdentity: Hashable {
+    let itemID: FeedItemID
+    let isActive: Bool
+    let isVisible: Bool
+}
+
 private extension View {
     @ViewBuilder
     func nativeFeedNavigationTransitionSource(
-        id: FeedItemID,
+        id: NativeFeedTransitionSourceID,
         namespace: Namespace.ID?
     ) -> some View {
         if let namespace {
@@ -340,6 +458,10 @@ struct FeedItemRow: View {
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
     @Environment(\.nativeFeedNavigationNamespace) private var navigationNamespace
     @Environment(\.nativeFeedAnswerPreloader) private var answerPreloader
+    @Environment(\.nativeFeedTransitionRegistry) private var transitionRegistry
+    @Environment(\.nativeChannelIsActive) private var isActiveChannel
+    @State private var transitionSourceID = NativeFeedTransitionSourceID()
+    @State private var isAnswerPrefetchVisible = false
 
     init(
         item: FeedItemDTO,
@@ -354,15 +476,26 @@ struct FeedItemRow: View {
     }
 
     var body: some View {
+        let presentation = cardPresentation
+        let prefetchIdentity = NativeFeedAnswerPrefetchIdentity(
+            itemID: item.id,
+            isActive: isActiveChannel,
+            isVisible: isAnswerPrefetchVisible
+        )
         Button {
+            answerPreloader?.promoteForNavigation(item)
+            transitionRegistry?.register(
+                sourceID: transitionSourceID,
+                contentID: item.route.navigationTransitionID
+            )
             onOpen(item.route)
         } label: {
-            NativeFeedCard(presentation: cardPresentation)
+            NativeFeedCard(presentation: presentation)
                 // The transition owns the visual card only. If it owns the
                 // Button, an interrupted interactive pop can leave the whole
                 // lazy row hidden even though the row still occupies space.
                 .nativeFeedNavigationTransitionSource(
-                    id: item.route.navigationTransitionID,
+                    id: transitionSourceID,
                     namespace: navigationNamespace
                 )
         }
@@ -371,8 +504,22 @@ struct FeedItemRow: View {
             author: item.questionAuthor,
             block: blockQuestionAuthor
         )
-        .accessibilityLabel(cardPresentation.accessibilityDescription)
-        .onAppear { answerPreloader?.register(item) }
+        .accessibilityLabel(presentation.accessibilityDescription)
+        .onScrollVisibilityChange(threshold: 0.55) { isVisible in
+            guard isAnswerPrefetchVisible != isVisible else { return }
+            isAnswerPrefetchVisible = isVisible
+        }
+        .task(id: prefetchIdentity) {
+            guard prefetchIdentity.isActive, prefetchIdentity.isVisible else { return }
+            answerPreloader?.register(item)
+            do {
+                try await Task.sleep(nanoseconds: 650_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await answerPreloader?.prefetch(item)
+        }
     }
 
     private var cardPresentation: FeedCardPresentation {
@@ -511,49 +658,47 @@ private struct FeedCardMediaSection: View {
 
 private struct FeedCardSingleImagePreview: View {
     let image: FeedCardImagePresentation
+    @StateObject private var imageStore = NativeMediaImageStore(maximumPixelSize: 1_400)
 
     var body: some View {
-        AsyncImage(url: image.url) { phase in
-            switch phase {
-            case let .success(loadedImage):
+        Group {
+            if let loadedImage = imageStore.image(for: image.url) {
                 preview(loadedImage)
-                .padding(.top, NativeFeedCardLayout.sectionSpacing)
-            case .empty:
-                // Some Zhihu image hosts can leave AsyncImage waiting for a
-                // long time instead of returning a timely failure. Reserving
-                // the final aspect-ratio box here creates a persistent blank
-                // gap between the excerpt and metadata, so loading previews
-                // deliberately take no part in card layout.
-                EmptyView()
-            case .failure:
-                EmptyView()
-            @unknown default:
-                EmptyView()
+                    .padding(.top, NativeFeedCardLayout.sectionSpacing)
             }
         }
+        // The API frequently omits thumbnail dimensions. Loading through the
+        // bounded media pipeline gives us the decoded aspect ratio before the
+        // preview chooses between full display and a capped crop.
+        .task(id: image.url) {
+            imageStore.retainOnly([image.url])
+            await imageStore.load(image.url)
+        }
+        .onDisappear { imageStore.cancelAll() }
         .accessibilityHidden(true)
     }
 
-    private var layout: FeedSingleImageLayout {
+    private func layout(for loadedImage: UIImage) -> FeedSingleImageLayout {
         FeedSingleImagePresentationPolicy.layout(
-            pixelWidth: image.pixelWidth,
-            pixelHeight: image.pixelHeight
+            pixelWidth: Int(loadedImage.size.width.rounded()),
+            pixelHeight: Int(loadedImage.size.height.rounded())
         )
     }
 
     @ViewBuilder
-    private func preview(_ loadedImage: Image) -> some View {
-        switch layout {
+    private func preview(_ loadedImage: UIImage) -> some View {
+        let renderedImage = Image(uiImage: loadedImage)
+        switch layout(for: loadedImage) {
         case .fit:
             decoratedPreview {
-                loadedImage
+                renderedImage
                     .resizable()
                     .scaledToFit()
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         case let .crop(containerAspectRatio):
             croppedPreview(
-                loadedImage,
+                renderedImage,
                 containerAspectRatio: CGFloat(containerAspectRatio)
             )
         }
