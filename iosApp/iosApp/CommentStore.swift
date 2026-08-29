@@ -1,72 +1,222 @@
 import Foundation
 
 @MainActor
-final class NativeCommentPreloader {
+protocol CommentRootPageLoading: AnyObject {
+    func cachedPage(for route: CommentThreadRouteDTO) -> CommentPageResult?
+    func page(for route: CommentThreadRouteDTO) async throws -> CommentPageResult
+    func cache(_ page: CommentPageResult, for route: CommentThreadRouteDTO)
+    func invalidate(_ route: CommentThreadRouteDTO)
+}
+
+@MainActor
+final class NativeCommentPreloader: CommentRootPageLoading {
+    private struct CachedPage {
+        let result: CommentPageResult
+        let storedAt: TimeInterval
+    }
+
     private let repository: CommentRepository
     private let maximumCachedPages: Int
-    private var pages: [CommentSubjectDTO: CommentPageResult] = [:]
+    private let cacheLifetime: TimeInterval
+    private var pages: [CommentSubjectDTO: CachedPage] = [:]
     private var order: [CommentSubjectDTO] = []
-    private var tasks: [CommentSubjectDTO: Task<CommentPageResult?, Never>] = [:]
+    private var tasks: [CommentSubjectDTO: Task<CommentPageResult, Error>] = [:]
+    private var taskTokens: [CommentSubjectDTO: UUID] = [:]
+    private var speculativeSubjects: Set<CommentSubjectDTO> = []
+    private var consumerTokens: [CommentSubjectDTO: Set<UUID>] = [:]
     private var generation: UInt64 = 0
 
-    init(repository: CommentRepository, maximumCachedPages: Int = 3) {
+    init(
+        repository: CommentRepository,
+        maximumCachedPages: Int = 3,
+        cacheLifetime: TimeInterval = 90
+    ) {
         self.repository = repository
         self.maximumCachedPages = max(1, maximumCachedPages)
+        self.cacheLifetime = max(0, cacheLifetime)
     }
 
     func prefetch(_ route: CommentThreadRouteDTO) async {
         let subject = route.subject
-        guard pages[subject] == nil else {
-            touch(subject)
-            return
-        }
-        let acceptedGeneration = generation
-        let task: Task<CommentPageResult?, Never>
-        if let existing = tasks[subject] {
+        guard cachedPage(for: route) == nil else { return }
+
+        let task: Task<CommentPageResult, Error>
+        if let existing = activeTask(for: subject) {
             task = existing
         } else {
+            // Comment speculation is deliberately serialized. Foreground readers
+            // may promote an existing task, but an off-screen answer never starts
+            // another radio request while unrelated comment work is active.
             guard tasks.isEmpty else { return }
-            let repository = repository
-            task = Task {
-                try? await repository.fetchPage(
-                    route: route,
-                    level: .root,
-                    sort: .score,
-                    nextURL: nil
-                )
-            }
-            tasks[subject] = task
+            speculativeSubjects.insert(subject)
+            task = start(route)
         }
 
-        // A visible answer may leave the lazy viewport while this single
-        // bounded request is in flight. Let it finish into cache instead of
-        // repeatedly tearing down and recreating the same network connection.
-        let result = await task.value
-        guard acceptedGeneration == generation else { return }
-        tasks[subject] = nil
-        guard !Task.isCancelled, let result else { return }
-        pages[subject] = result
+        // Cancellation of the dwell timer must not tear down an already-started
+        // bounded URLSession task. The task finishes once and populates the LRU.
+        _ = try? await task.value
+    }
+
+    func cachedPage(for route: CommentThreadRouteDTO) -> CommentPageResult? {
+        let subject = route.subject
+        guard let page = pages[subject] else { return nil }
+        guard ProcessInfo.processInfo.systemUptime - page.storedAt <= cacheLifetime else {
+            pages[subject] = nil
+            order.removeAll { $0 == subject }
+            return nil
+        }
+        touch(subject)
+        return page.result
+    }
+
+    /// Promotes an in-flight speculative request to foreground ownership. A
+    /// comment screen and its answer dwell-prefetch therefore await the exact
+    /// same task instead of issuing duplicate first-page requests.
+    func page(for route: CommentThreadRouteDTO) async throws -> CommentPageResult {
+        if let cached = cachedPage(for: route) { return cached }
+        let subject = route.subject
+        let consumerToken = UUID()
+        consumerTokens[subject, default: []].insert(consumerToken)
+        speculativeSubjects.remove(subject)
+
+        let task: Task<CommentPageResult, Error>
+        if let existing = activeTask(for: subject) {
+            task = existing
+        } else {
+            cancelSpeculativePreloads()
+            task = start(route)
+        }
+
+        do {
+            let result = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: { [weak self] in
+                Task { @MainActor in
+                    self?.releaseConsumer(
+                        for: subject,
+                        token: consumerToken,
+                        cancelled: true
+                    )
+                }
+            }
+            releaseConsumer(for: subject, token: consumerToken, cancelled: false)
+            return result
+        } catch {
+            releaseConsumer(for: subject, token: consumerToken, cancelled: false)
+            throw error
+        }
+    }
+
+    func cache(_ page: CommentPageResult, for route: CommentThreadRouteDTO) {
+        let subject = route.subject
+        pages[subject] = CachedPage(
+            result: page,
+            storedAt: ProcessInfo.processInfo.systemUptime
+        )
         touch(subject)
         trimIfNeeded()
     }
 
-    func takeCachedPage(for route: CommentThreadRouteDTO) -> CommentPageResult? {
+    func invalidate(_ route: CommentThreadRouteDTO) {
         let subject = route.subject
-        guard let page = pages.removeValue(forKey: subject) else { return nil }
+        pages[subject] = nil
         order.removeAll { $0 == subject }
-        return page
     }
 
     func cancelSpeculativePreloads() {
-        tasks.values.forEach { $0.cancel() }
-        tasks.removeAll()
+        let cancellable = speculativeSubjects.filter { consumerTokens[$0]?.isEmpty != false }
+        for subject in cancellable {
+            tasks[subject]?.cancel()
+            tasks[subject] = nil
+            taskTokens[subject] = nil
+        }
+        speculativeSubjects.subtract(cancellable)
     }
 
     func reset() {
         generation &+= 1
-        cancelSpeculativePreloads()
+        tasks.values.forEach { $0.cancel() }
+        tasks.removeAll()
+        taskTokens.removeAll()
         pages.removeAll()
         order.removeAll()
+        speculativeSubjects.removeAll()
+        consumerTokens.removeAll()
+    }
+
+    private func start(_ route: CommentThreadRouteDTO) -> Task<CommentPageResult, Error> {
+        let subject = route.subject
+        if let existing = activeTask(for: subject) { return existing }
+        let acceptedGeneration = generation
+        let taskToken = UUID()
+        let repository = repository
+        let task = Task {
+            try await repository.fetchPage(
+                route: route,
+                level: .root,
+                sort: .score,
+                nextURL: nil
+            )
+        }
+        tasks[subject] = task
+        taskTokens[subject] = taskToken
+        Task { @MainActor [weak self] in
+            let result = await task.result
+            self?.finish(
+                result,
+                route: route,
+                acceptedGeneration: acceptedGeneration,
+                taskToken: taskToken
+            )
+        }
+        return task
+    }
+
+    private func finish(
+        _ result: Result<CommentPageResult, Error>,
+        route: CommentThreadRouteDTO,
+        acceptedGeneration: UInt64,
+        taskToken: UUID
+    ) {
+        guard acceptedGeneration == generation,
+              taskTokens[route.subject] == taskToken
+        else { return }
+        let subject = route.subject
+        tasks[subject] = nil
+        taskTokens[subject] = nil
+        speculativeSubjects.remove(subject)
+        if case let .success(page) = result {
+            cache(page, for: route)
+        }
+    }
+
+    private func activeTask(
+        for subject: CommentSubjectDTO
+    ) -> Task<CommentPageResult, Error>? {
+        guard let task = tasks[subject] else { return nil }
+        guard !task.isCancelled else {
+            tasks[subject] = nil
+            taskTokens[subject] = nil
+            speculativeSubjects.remove(subject)
+            return nil
+        }
+        return task
+    }
+
+    private func releaseConsumer(
+        for subject: CommentSubjectDTO,
+        token: UUID,
+        cancelled: Bool
+    ) {
+        guard consumerTokens[subject]?.remove(token) != nil else { return }
+        if consumerTokens[subject]?.isEmpty == true {
+            consumerTokens[subject] = nil
+            if cancelled, !speculativeSubjects.contains(subject) {
+                tasks[subject]?.cancel()
+                tasks[subject] = nil
+                taskTokens[subject] = nil
+            }
+        }
     }
 
     private func touch(_ subject: CommentSubjectDTO) {
@@ -105,6 +255,7 @@ final class CommentSessionStore: ObservableObject {
     @Published private(set) var composerPresentation: CommentComposerPresentation = .hidden
 
     private let repository: CommentRepository
+    private let rootPageLoader: (any CommentRootPageLoading)?
     private let onOpenPerson: (PersonRoutePayload) -> Void
     private var drafts: [CommentLevelKey: CommentComposerDraft] = [:]
     private var pageTasks: [CommentLevelKey: Task<Void, Never>] = [:]
@@ -117,11 +268,13 @@ final class CommentSessionStore: ObservableObject {
         route: CommentThreadRouteDTO,
         repository: CommentRepository,
         preloadedRootPage: CommentPageResult? = nil,
+        rootPageLoader: (any CommentRootPageLoading)? = nil,
         sessionID: CommentSessionID = CommentSessionID(),
         onOpenPerson: @escaping (PersonRoutePayload) -> Void
     ) {
         self.route = route
         self.repository = repository
+        self.rootPageLoader = rootPageLoader
         self.sessionID = sessionID
         self.onOpenPerson = onOpenPerson
         let rootKey = CommentPageAcceptanceKey(sessionID: sessionID, level: .root, generation: 0)
@@ -305,6 +458,7 @@ final class CommentSessionStore: ObservableObject {
                 }
                 acceptedPage.activeLikeMutation = nil
                 pages[level] = acceptedPage
+                rootPageLoader?.invalidate(route)
             } catch {
                 guard accepts(mutation, level: level), var acceptedPage = pages[level] else { return }
                 acceptedPage.activeLikeMutation = nil
@@ -367,6 +521,7 @@ final class CommentSessionStore: ObservableObject {
                 }
                 draft = CommentComposerDraft()
                 drafts[level] = draft
+                rootPageLoader?.invalidate(route)
             } catch {
                 guard accepts(snapshot) else { return }
                 if error.isNativeRequestCancellation {
@@ -429,6 +584,9 @@ final class CommentSessionStore: ObservableObject {
 
     private func loadInitial(level: CommentLevelKey, invalidating: Bool) {
         guard !isDisposed else { return }
+        if invalidating, level == .root {
+            rootPageLoader?.invalidate(route)
+        }
         pageTasks[level]?.cancel()
         var page = pages[level] ?? newPage(for: level, generation: 0)
         if !invalidating, page.initialLoad == .loaded || page.initialLoad == .loading { return }
@@ -447,15 +605,30 @@ final class CommentSessionStore: ObservableObject {
         pages[level] = page
         likeTasks[level]?.cancel()
         let acceptanceKey = page.acceptanceKey
+        let requestedSort = rootSort
+        let shouldUsePreparedRootPage = !invalidating
+            && level == .root
+            && requestedSort == .score
+        let repository = repository
+        let route = route
+        let rootPageLoader = rootPageLoader
         pageTasks[level] = Task { [weak self] in
             guard let self else { return }
             do {
-                let result = try await repository.fetchPage(
-                    route: route,
-                    level: level,
-                    sort: rootSort,
-                    nextURL: nil
-                )
+                let result: CommentPageResult
+                if shouldUsePreparedRootPage, let rootPageLoader {
+                    result = try await rootPageLoader.page(for: route)
+                } else {
+                    result = try await repository.fetchPage(
+                        route: route,
+                        level: level,
+                        sort: requestedSort,
+                        nextURL: nil
+                    )
+                    if level == .root, requestedSort == .score {
+                        rootPageLoader?.cache(result, for: route)
+                    }
+                }
                 guard accepts(acceptanceKey), var acceptedPage = pages[level] else { return }
                 acceptedPage.items = unique(result.items)
                 acceptedPage.nextURL = result.nextURL

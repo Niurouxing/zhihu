@@ -1,9 +1,20 @@
 import Foundation
+import SwiftUI
 import XCTest
 @testable import iosApp
 
 @MainActor
 final class CommentStoreTests: XCTestCase {
+    func testCommentAttributedTextKeepsInternalLinkForRootNavigation() throws {
+        let attributed = CommentAttributedText.value(
+            from: #"<p><a href="/question/7">问题</a></p>"#,
+            bodyFont: .body
+        )
+        let links = attributed.runs.compactMap(\.link)
+
+        XCTAssertEqual(links, [try XCTUnwrap(URL(string: "zhihu://questions/7"))])
+    }
+
     func testInitialLoadPublishesUniqueRowsAndDefaultScoreSort() async {
         let comment = fixtureComment(id: "root")
         let repository = CommentRepositoryStub(
@@ -310,6 +321,40 @@ final class CommentStoreTests: XCTestCase {
         XCTAssertTrue(store.pages[.root]?.items.isEmpty == true)
     }
 
+    func testInitialCommentScreenPromotesInFlightPreloadWithoutDuplicateRequest() async throws {
+        let route = CommentThreadRouteDTO(subject: .answer(1))
+        let preparedPage = CommentPageResult(
+            items: [fixtureComment(id: "prepared")],
+            nextURL: nil,
+            isEnd: true
+        )
+        let repository = CommentPreloadGateRepository(result: preparedPage)
+        let preloader = NativeCommentPreloader(repository: repository)
+        let prefetch = Task { await preloader.prefetch(route) }
+
+        for _ in 0..<200 {
+            if await repository.requestCount > 0 { break }
+            await Task.yield()
+        }
+
+        let store = CommentSessionStore(
+            route: route,
+            repository: repository,
+            rootPageLoader: preloader,
+            onOpenPerson: { _ in }
+        )
+        store.start()
+        await repository.release()
+        await prefetch.value
+        await waitUntil { store.pages[.root]?.initialLoad == .loaded }
+
+        let requestCount = await repository.requestCount
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(store.pages[.root]?.items.map(\.id), ["prepared"])
+        XCTAssertEqual(preloader.cachedPage(for: route)?.items.map(\.id), ["prepared"])
+        XCTAssertEqual(preloader.cachedPage(for: route)?.items.map(\.id), ["prepared"])
+    }
+
     private func makeStore(repository: CommentRepository) -> CommentSessionStore {
         CommentSessionStore(
             route: CommentThreadRouteDTO(subject: .answer(1)),
@@ -348,6 +393,43 @@ final class CommentStoreTests: XCTestCase {
             await Task.yield()
         }
         XCTFail("Condition was not satisfied", file: file, line: line)
+    }
+}
+
+private actor CommentPreloadGateRepository: CommentRepository {
+    private let result: CommentPageResult
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+    private var isReleased = false
+    private(set) var requestCount = 0
+
+    init(result: CommentPageResult) {
+        self.result = result
+    }
+
+    func fetchPage(
+        route: CommentThreadRouteDTO,
+        level: CommentLevelKey,
+        sort: CommentSortDTO,
+        nextURL: URL?
+    ) async throws -> CommentPageResult {
+        requestCount += 1
+        if !isReleased {
+            await withCheckedContinuation { continuations.append($0) }
+        }
+        return result
+    }
+
+    func setLiked(_ target: Bool, commentID: String) async throws {}
+
+    func submit(_ snapshot: CommentSubmissionSnapshotDTO) async throws -> CommentDTO {
+        throw CommentTestFailure.missingStub
+    }
+
+    func release() {
+        isReleased = true
+        let pending = continuations
+        continuations.removeAll()
+        pending.forEach { $0.resume() }
     }
 }
 

@@ -15,28 +15,37 @@ struct NativeAnswerStream: View {
                 }
 
                 ForEach(store.answers) { answer in
-                    Color.clear
-                        .frame(height: 1)
-                        .accessibilityHidden(true)
-                        .onScrollVisibilityChange(threshold: 0.5) { isVisible in
-                            guard isVisible else { return }
-                            store.focus(answerID: answer.id)
-                            Task { await store.prepareAnswer(id: answer.id) }
-                        }
-
                     AnswerStreamSection(
                         store: answer,
                         pinAnswerDate: pinAnswerDate,
-                        onNavigate: onNavigate
+                        onNavigate: onNavigate,
+                        onRetry: {
+                            Task { await store.retryAnswer(id: answer.id) }
+                        }
                     )
                     .id(answer.id)
+                    // Loading belongs to the section's own visibility lifecycle.
+                    // Boundary events below only track reading ownership and may
+                    // legitimately be missed when pagination inserts a new row.
+                    .onScrollVisibilityChange(threshold: 0.01) { isVisible in
+                        guard isVisible else { return }
+                        Task { await store.prepareAnswer(id: answer.id) }
+                    }
 
                     Color.clear
                         .frame(height: 1)
                         .accessibilityHidden(true)
                         .onScrollVisibilityChange(threshold: 0.5) { isVisible in
-                            guard isVisible else { return }
-                            Task { await store.reachedEnd(of: answer.id) }
+                            let update = store.answerBoundaryVisibilityChanged(
+                                after: answer.id,
+                                isVisible: isVisible
+                            )
+                            if let answerID = update.answerToPrepare {
+                                Task { await store.prepareAnswer(id: answerID) }
+                            }
+                            if isVisible {
+                                Task { await store.reachedEnd(of: answer.id) }
+                            }
                         }
 
                     if answer.id != store.answers.last?.id {
@@ -54,7 +63,11 @@ struct NativeAnswerStream: View {
         }
         .toolbar(.hidden, for: .navigationBar)
         .task { await store.prepare() }
-        .onDisappear { store.cancelPendingReadingPrefetches() }
+        .onAppear { store.setViewportTrackingActive(true) }
+        .onDisappear {
+            store.setViewportTrackingActive(false)
+            store.cancelPendingReadingPrefetches()
+        }
         .accessibilityIdentifier("answer_stream")
     }
 
@@ -157,6 +170,7 @@ struct AnswerStreamSection: View {
     @ObservedObject var store: AnswerStore
     let pinAnswerDate: Bool
     let onNavigate: (QANavigationIntent) -> Void
+    let onRetry: () -> Void
 
     @State private var showsCollections = false
 
@@ -167,9 +181,7 @@ struct AnswerStreamSection: View {
             } else {
                 switch store.loadState {
                 case let .failed(message):
-                    QAErrorState(message: message, actionTitle: "重试") {
-                        Task { await store.retry() }
-                    }
+                    QAErrorState(message: message, actionTitle: "重试", action: onRetry)
                 case .idle, .loading, .loaded:
                     if let preview = store.initialPreview {
                         loadingPreview(preview)

@@ -7,34 +7,35 @@ import UniformTypeIdentifiers
 final class CommentHostModel: ObservableObject, Identifiable {
     let id: CommentSessionID
     let store: CommentSessionStore
-    @Published private(set) var personModel: PersonHostModel?
-
-    private let accountStore: AccountJSONStore
-    private let onPersonNavigate: (PersonNavigationIntent) -> Void
+    let onOpenContent: (NativeContentDestination) -> Void
 
     init(
         route: CommentThreadRouteDTO,
         accountStore: AccountJSONStore,
         repository: CommentRepository? = nil,
         preloader: NativeCommentPreloader? = nil,
-        onPersonNavigate: @escaping (PersonNavigationIntent) -> Void
+        onOpenContent: @escaping (NativeContentDestination) -> Void
     ) {
         let sessionID = CommentSessionID()
         id = sessionID
-        self.accountStore = accountStore
-        self.onPersonNavigate = onPersonNavigate
-        var openPerson: ((PersonRoutePayload) -> Void)?
+        self.onOpenContent = onOpenContent
         let resolvedRepository = repository ?? URLSessionCommentRepository(
             client: ZhihuAPIClient(accountStore: accountStore)
         )
         store = CommentSessionStore(
             route: route,
             repository: resolvedRepository,
-            preloadedRootPage: preloader?.takeCachedPage(for: route),
+            preloadedRootPage: preloader?.cachedPage(for: route),
+            rootPageLoader: preloader,
             sessionID: sessionID,
-            onOpenPerson: { payload in openPerson?(payload) }
+            onOpenPerson: { payload in
+                onOpenContent(.person(
+                    id: payload.memberID ?? "",
+                    urlToken: payload.urlToken ?? "",
+                    name: payload.displayName
+                ))
+            }
         )
-        openPerson = { [weak self] payload in self?.presentPerson(payload) }
     }
 
     deinit {
@@ -44,24 +45,7 @@ final class CommentHostModel: ObservableObject, Identifiable {
     }
 
     func dispose() {
-        personModel?.dispose()
-        personModel = nil
         store.dispose()
-    }
-
-    func personBindingChanged(isPresented: Bool) {
-        guard !isPresented else { return }
-        personModel?.dispose()
-        personModel = nil
-    }
-
-    private func presentPerson(_ payload: PersonRoutePayload) {
-        personModel?.dispose()
-        personModel = PersonHostModel(
-            routeEntry: PersonRouteEntry(payload: payload),
-            accountStore: accountStore,
-            onNavigate: onPersonNavigate
-        )
     }
 }
 
@@ -72,8 +56,7 @@ struct CommentNavigationPage: View {
     var body: some View {
         CommentThreadContainer(
             store: model.store,
-            personModel: model.personModel,
-            personBindingChanged: model.personBindingChanged
+            onOpenContent: model.onOpenContent
         )
         .accessibilityIdentifier("comment_navigation_page")
     }
@@ -82,21 +65,21 @@ struct CommentNavigationPage: View {
 @available(iOS 16.0, *)
 private struct CommentThreadContainer: View {
     @ObservedObject var store: CommentSessionStore
-    let personModel: PersonHostModel?
-    let personBindingChanged: (Bool) -> Void
+    let onOpenContent: (NativeContentDestination) -> Void
 
     var body: some View {
-        CommentLevelView(store: store, level: .root, close: nil)
-            .navigationDestination(isPresented: rootPersonBinding) {
-                if let personModel { PersonNativeView(model: personModel) }
-            }
+        CommentLevelView(
+            store: store,
+            level: .root,
+            close: nil,
+            onOpenContent: openContent
+        )
         .sheet(item: replyDestinationBinding) { destination in
             CommentReplySheetView(
                 store: store,
                 level: destination.level,
-                personModel: personModel,
-                personBindingChanged: personBindingChanged,
-                close: closeReplies
+                close: closeReplies,
+                onOpenContent: openContent
             )
         }
         .fullScreenCover(
@@ -126,17 +109,6 @@ private struct CommentThreadContainer: View {
         .task { store.start() }
     }
 
-    private var rootPersonBinding: Binding<Bool> {
-        Binding(
-            get: { personModel != nil && store.activeLevel == .root },
-            set: { isPresented in
-                if !isPresented, store.activeLevel == .root {
-                    personBindingChanged(false)
-                }
-            }
-        )
-    }
-
     private var replyDestinationBinding: Binding<CommentReplySheetDestination?> {
         Binding(
             get: { CommentReplySheetDestination(level: store.activeLevel) },
@@ -147,8 +119,19 @@ private struct CommentThreadContainer: View {
     }
 
     private func closeReplies() {
-        personBindingChanged(false)
         store.dismissReplies()
+    }
+
+    private func openContent(_ destination: NativeContentDestination) {
+        // A root navigation push cannot be presented above an active reply
+        // sheet. Close only that presentation layer; its loaded page and draft
+        // remain in the session Store and can be reopened without refetching.
+        if store.activeLevel != .root {
+            store.dismissReplies()
+            DispatchQueue.main.async { onOpenContent(destination) }
+        } else {
+            onOpenContent(destination)
+        }
     }
 }
 
@@ -168,19 +151,20 @@ private struct CommentReplySheetDestination: Identifiable {
 private struct CommentReplySheetView: View {
     @ObservedObject var store: CommentSessionStore
     let level: CommentLevelKey
-    let personModel: PersonHostModel?
-    let personBindingChanged: (Bool) -> Void
     let close: () -> Void
+    let onOpenContent: (NativeContentDestination) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
 
     var body: some View {
         GeometryReader { geometry in
             NavigationStack {
-                CommentLevelView(store: store, level: level, close: close)
-                    .navigationDestination(isPresented: personBinding) {
-                        if let personModel { PersonNativeView(model: personModel) }
-                    }
+                CommentLevelView(
+                    store: store,
+                    level: level,
+                    close: close,
+                    onOpenContent: onOpenContent
+                )
             }
             .contentShape(Rectangle())
             .simultaneousGesture(edgeDismissGesture(containerWidth: geometry.size.width))
@@ -189,17 +173,6 @@ private struct CommentReplySheetView: View {
         .modifier(CommentSheetPresentationModifier())
         .accessibilityIdentifier("comment_reply_sheet")
         .onDisappear(perform: close)
-    }
-
-    private var personBinding: Binding<Bool> {
-        Binding(
-            get: { personModel != nil && store.activeLevel == level },
-            set: { isPresented in
-                if !isPresented, store.activeLevel == level {
-                    personBindingChanged(false)
-                }
-            }
-        )
     }
 
     private func edgeDismissGesture(containerWidth: CGFloat) -> some Gesture {
@@ -274,6 +247,7 @@ private struct CommentLevelView: View {
     @ObservedObject var store: CommentSessionStore
     let level: CommentLevelKey
     let close: (() -> Void)?
+    let onOpenContent: (NativeContentDestination) -> Void
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
     @State private var scrollView: UIScrollView?
     @State private var posterDocument: NativeContentPosterDocument?
@@ -364,7 +338,8 @@ private struct CommentLevelView: View {
                     store: store,
                     comment: comment,
                     interactionLevel: level,
-                    onShare: { presentSharePoster(for: comment) }
+                    onShare: { presentSharePoster(for: comment) },
+                    onOpenContent: onOpenContent
                 )
                     .id(comment.id)
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
@@ -453,17 +428,20 @@ private struct CommentRow: View {
     let comment: CommentDTO
     let interactionLevel: CommentLevelKey?
     let onShare: () -> Void
+    let onOpenContent: (NativeContentDestination) -> Void
 
     init(
         store: CommentSessionStore,
         comment: CommentDTO,
         interactionLevel: CommentLevelKey? = nil,
-        onShare: @escaping () -> Void = {}
+        onShare: @escaping () -> Void = {},
+        onOpenContent: @escaping (NativeContentDestination) -> Void = { _ in }
     ) {
         self.store = store
         self.comment = comment
         self.interactionLevel = interactionLevel
         self.onShare = onShare
+        self.onOpenContent = onOpenContent
     }
 
     var body: some View {
@@ -525,7 +503,10 @@ private struct CommentRow: View {
                 }
             }
 
-            CommentRichText(html: comment.contentHTML)
+            CommentRichText(
+                html: comment.contentHTML,
+                onOpenContent: onOpenContent
+            )
                 .contentShape(Rectangle())
 
             if !comment.media.isEmpty {
@@ -858,6 +839,7 @@ private struct CommentComposerBackground: View {
 
 private struct CommentRichText: View {
     let html: String
+    let onOpenContent: (NativeContentDestination) -> Void
     @Environment(\.nativeContentPresentation) private var contentPresentation
     @ScaledMetric(relativeTo: .body) private var bodyPointSize: CGFloat = 17
 
@@ -868,16 +850,16 @@ private struct CommentRichText: View {
             .font(bodyFont)
             .lineSpacing(contentPresentation.extraLineSpacing(for: pointSize))
             .environment(\.openURL, OpenURLAction { url in
-                guard let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http" else {
+                guard let destination = NativeContentDestinationResolver.resolve(url.absoluteString) else {
                     return .discarded
                 }
-                guard !CommentAttributedText.isKnownInternalZhihuURL(url) else { return .discarded }
-                return .systemAction(url)
+                onOpenContent(destination)
+                return .handled
             })
     }
 }
 
-private enum CommentAttributedText {
+enum CommentAttributedText {
     static func value(from html: String, bodyFont: Font) -> AttributedString {
         let source = CommentHTMLMediaParser.project(html).textHTML
         var result = AttributedString()
@@ -916,8 +898,7 @@ private enum CommentAttributedText {
             if run.style.contains(.strikethrough) { part.strikethroughStyle = .single }
             if run.style.contains(.code) { part.font = bodyFont.monospaced() }
             if let destination = run.link,
-               let url = QABodyLinkResolver.url(destination),
-               !isKnownInternalZhihuURL(url) {
+               let url = QABodyLinkResolver.url(destination) {
                 part.link = url
             }
             result.append(part)
@@ -940,11 +921,6 @@ private enum CommentAttributedText {
                 append(list: nestedList, depth: depth + 1, bodyFont: bodyFont, to: &result)
             }
         }
-    }
-
-    static func isKnownInternalZhihuURL(_ url: URL) -> Bool {
-        guard let host = url.host?.lowercased() else { return false }
-        return host == "zhihu.com" || host.hasSuffix(".zhihu.com")
     }
 }
 

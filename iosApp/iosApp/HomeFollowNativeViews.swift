@@ -560,6 +560,38 @@ enum NativeHomeRefreshTriggerPolicy {
     }
 }
 
+/// A refresh completion can arrive after its channel has been covered, switched,
+/// or rebuilt. The generation makes that completion harmless instead of letting
+/// an old transaction keep forcing the scroll view back to its refresh anchor.
+struct NativeHomeRefreshPresentationState {
+    private(set) var isPending = false
+    private(set) var generation: UInt = 0
+
+    mutating func begin() -> UInt? {
+        guard !isPending else { return nil }
+        isPending = true
+        return advanceGeneration()
+    }
+
+    mutating func complete(generation acceptedGeneration: UInt) -> Bool {
+        guard isPending, generation == acceptedGeneration else { return false }
+        isPending = false
+        return true
+    }
+
+    mutating func invalidate() {
+        isPending = false
+        _ = advanceGeneration()
+    }
+
+    @discardableResult
+    private mutating func advanceGeneration() -> UInt {
+        generation &+= 1
+        if generation == 0 { generation = 1 }
+        return generation
+    }
+}
+
 private struct NativeHomeScrollRuntimeConfiguration: Equatable {
     let isActive: Bool
     let activationRequest: UInt
@@ -633,9 +665,8 @@ private final class NativeHomeScrollRuntimeView: UIView {
     private var isInstallationScheduled = false
     private var isActiveRebindingScheduled = false
     private var isProgrammaticScrollScheduled = false
-    private var isRefreshRequestPending = false
+    private var refreshPresentation = NativeHomeRefreshPresentationState()
     private var didRequestRefreshDuringCurrentInteraction = false
-    private var refreshRequestGeneration: UInt = 0
     private var refreshInteractionStartOffset: CGFloat?
     private var maximumRefreshPullTranslation: CGFloat = 0
     private var pendingRestoredNormalizedOffset: CGFloat?
@@ -686,6 +717,7 @@ private final class NativeHomeScrollRuntimeView: UIView {
 
         if wasActive, !configuration.isActive {
             saveCurrentOffset()
+            cancelRefreshPresentation()
         } else if configuration.isActive,
                   !wasActive || activationRequestChanged {
             scheduleActiveRuntimeRebinding()
@@ -701,12 +733,8 @@ private final class NativeHomeScrollRuntimeView: UIView {
         isInstallationScheduled = false
         isActiveRebindingScheduled = false
         isProgrammaticScrollScheduled = false
-        isRefreshRequestPending = false
-        didRequestRefreshDuringCurrentInteraction = false
-        refreshInteractionStartOffset = nil
-        maximumRefreshPullTranslation = 0
+        cancelRefreshPresentation()
         pendingRestoredNormalizedOffset = nil
-        refreshRequestGeneration &+= 1
     }
 
     private func scheduleInstallation() {
@@ -878,21 +906,31 @@ private final class NativeHomeScrollRuntimeView: UIView {
         maximumRefreshPullTranslation = 0
     }
 
+    private var isRefreshRequestPending: Bool {
+        refreshPresentation.isPending
+    }
+
+    private func cancelRefreshPresentation() {
+        refreshPresentation.invalidate()
+        didRequestRefreshDuringCurrentInteraction = false
+        resetRefreshGestureTracking()
+    }
+
     private func requestRefresh() {
         guard configuration.isActive,
               !configuration.isRefreshInFlight,
               !isRefreshRequestPending,
               !didRequestRefreshDuringCurrentInteraction
         else { return }
-        isRefreshRequestPending = true
+        guard let requestGeneration = refreshPresentation.begin() else { return }
         didRequestRefreshDuringCurrentInteraction = true
         transitionSearchDrawer(to: .revealed)
-        refreshRequestGeneration &+= 1
-        let requestGeneration = refreshRequestGeneration
         onRefreshRequested { [weak self] in
             DispatchQueue.main.async {
                 guard let self,
-                      self.refreshRequestGeneration == requestGeneration
+                      self.refreshPresentation.complete(
+                        generation: requestGeneration
+                      )
                 else { return }
                 self.finishRefreshPresentation()
             }
@@ -908,7 +946,6 @@ private final class NativeHomeScrollRuntimeView: UIView {
     }
 
     private func finishRefreshPresentation() {
-        isRefreshRequestPending = false
         guard let scrollView else { return }
         let offset = normalizedOffset(in: scrollView)
         let isWithinTopRegion = offset
@@ -1154,6 +1191,7 @@ struct NativeHomeChannelScrollView<Content: View>: View {
                 active,
                 emit: reportFloatingControlsIntent
             )
+            if !active { cancelRefreshTask() }
         }
         .onChange(of: runtimeActivationRequest) { _, _ in
             floatingControlsScrollDriver.synchronize(
@@ -1166,9 +1204,7 @@ struct NativeHomeChannelScrollView<Content: View>: View {
                 false,
                 emit: reportFloatingControlsIntent
             )
-            refreshTask?.cancel()
-            refreshTask = nil
-            isPullRefreshInFlight = false
+            cancelRefreshTask()
         }
     }
 
@@ -1218,6 +1254,12 @@ struct NativeHomeChannelScrollView<Content: View>: View {
             }
             completion()
         }
+    }
+
+    private func cancelRefreshTask() {
+        refreshTask?.cancel()
+        refreshTask = nil
+        isPullRefreshInFlight = false
     }
 
 }

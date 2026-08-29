@@ -327,6 +327,70 @@ actor UserDefaultsAnswerOpenedHistory: AnswerOpenedHistory {
     }
 }
 
+struct AnswerViewportUpdate: Equatable {
+    let answerToPrepare: Int64?
+    let focusedAnswer: Int64?
+
+    static let none = Self(answerToPrepare: nil, focusedAnswer: nil)
+}
+
+/// Tracks only transitions of the one-point boundary between adjacent answers.
+/// No per-frame geometry is published: entering a boundary prepares the neighbor,
+/// while leaving it identifies which answer now owns the viewport.
+struct AnswerViewportTracker {
+    private var visibleBoundaries: Set<Int64> = []
+
+    mutating func visibilityChanged(
+        boundaryAfter answerID: Int64,
+        isVisible: Bool,
+        orderedAnswerIDs: [Int64],
+        currentAnswerID: Int64
+    ) -> AnswerViewportUpdate {
+        if isVisible {
+            // A last-row boundary can become visible before pagination appends
+            // its neighbor. Do not remember it until it is a real boundary;
+            // otherwise a later visibility notification would be suppressed.
+            guard let pair = adjacentPair(after: answerID, in: orderedAnswerIDs),
+                  visibleBoundaries.insert(answerID).inserted
+            else { return .none }
+            let prepare: Int64?
+            if currentAnswerID == pair.lower {
+                prepare = pair.upper
+            } else if currentAnswerID == pair.upper {
+                prepare = pair.lower
+            } else {
+                prepare = nil
+            }
+            return AnswerViewportUpdate(answerToPrepare: prepare, focusedAnswer: nil)
+        }
+
+        // SwiftUI initially reports `false` for off-screen markers. Only an exit
+        // after a real visible entry is a reading transition.
+        guard visibleBoundaries.remove(answerID) != nil,
+              let pair = adjacentPair(after: answerID, in: orderedAnswerIDs)
+        else { return .none }
+        let focused: Int64?
+        if currentAnswerID == pair.lower {
+            focused = pair.upper
+        } else if currentAnswerID == pair.upper {
+            focused = pair.lower
+        } else {
+            focused = nil
+        }
+        return AnswerViewportUpdate(answerToPrepare: focused, focusedAnswer: focused)
+    }
+
+    private func adjacentPair(
+        after answerID: Int64,
+        in orderedAnswerIDs: [Int64]
+    ) -> (lower: Int64, upper: Int64)? {
+        guard let index = orderedAnswerIDs.firstIndex(of: answerID),
+              orderedAnswerIDs.indices.contains(index + 1)
+        else { return nil }
+        return (answerID, orderedAnswerIDs[index + 1])
+    }
+}
+
 @MainActor
 final class AnswerStreamStore: ObservableObject {
     enum PaginationState: Equatable {
@@ -361,9 +425,18 @@ final class AnswerStreamStore: ObservableObject {
     private var pendingFollowingAnswerID: Int64?
     private var followingAnswerPrefetchTask: Task<Void, Never>?
     private var scheduledFollowingAnswerIDs: Set<Int64> = []
+    private var viewportTracker = AnswerViewportTracker()
+    private var acceptsViewportEvents = false
 
     var current: AnswerStore {
         answers.first(where: { $0.id == currentAnswerID }) ?? answers[0]
+    }
+
+    /// Stable hand-off point for the forthcoming answer/comments reading scene.
+    /// Gesture code does not need to inspect AnswerStore internals or rebuild
+    /// share metadata independently.
+    var currentCommentRoute: CommentThreadRouteDTO? {
+        current.content.map { commentRoute(for: $0) }
     }
 
     init(
@@ -437,7 +510,7 @@ final class AnswerStreamStore: ObservableObject {
 
     func prepare() async {
         guard let answer = answers.first(where: { $0.id == currentAnswerID }) else { return }
-        await prepareContent(for: answer)
+        guard await prepareContent(for: answer) else { return }
         if initialPaginationDelayNanoseconds > 0 {
             do {
                 try await Task.sleep(nanoseconds: initialPaginationDelayNanoseconds)
@@ -456,8 +529,40 @@ final class AnswerStreamStore: ObservableObject {
         await prepareContent(for: answer)
     }
 
+    func retryAnswer(id: Int64) async {
+        guard let answer = answers.first(where: { $0.id == id }),
+              await prepareContent(for: answer, retry: true)
+        else { return }
+        if answers.first?.id == id {
+            await loadMoreIfNeeded(showsLoadingIndicator: false)
+        }
+    }
+
+    func setViewportTrackingActive(_ isActive: Bool) {
+        acceptsViewportEvents = isActive
+    }
+
+    @discardableResult
+    func answerBoundaryVisibilityChanged(
+        after answerID: Int64,
+        isVisible: Bool
+    ) -> AnswerViewportUpdate {
+        guard acceptsViewportEvents else { return .none }
+        let update = viewportTracker.visibilityChanged(
+            boundaryAfter: answerID,
+            isVisible: isVisible,
+            orderedAnswerIDs: answers.map(\.id),
+            currentAnswerID: currentAnswerID
+        )
+        if let focusedAnswer = update.focusedAnswer {
+            focus(answerID: focusedAnswer)
+        }
+        return update
+    }
+
     func reachedEnd(of answerID: Int64) async {
-        guard let index = answers.firstIndex(where: { $0.id == answerID }),
+        guard answers.first?.content != nil,
+              let index = answers.firstIndex(where: { $0.id == answerID }),
               index >= max(answers.count - 2, 0)
         else { return }
         await loadMoreIfNeeded(showsLoadingIndicator: true)
@@ -631,15 +736,25 @@ final class AnswerStreamStore: ObservableObject {
         )
     }
 
-    private func prepareContent(for answer: AnswerStore) async {
-        await answer.loadIfNeeded()
-        if let questionID = answer.content?.questionID ?? answer.initialRoute.questionID {
+    @discardableResult
+    private func prepareContent(
+        for answer: AnswerStore,
+        retry: Bool = false
+    ) async -> Bool {
+        if retry {
+            await answer.retry()
+        } else {
+            await answer.loadIfNeeded()
+        }
+        guard let content = answer.content else { return false }
+        if let questionID = content.questionID ?? answer.initialRoute.questionID {
             await openedHistory.markOpened(answerID: answer.id, questionID: questionID)
         }
-        if let content = answer.content, currentAnswerID == answer.id {
+        if currentAnswerID == answer.id {
             scheduleCommentPrefetch(for: content)
             scheduleFollowingAnswerPrefetch(after: answer.id)
         }
+        return true
     }
 
     private func scheduleFollowingAnswerPrefetch(after answerID: Int64) {

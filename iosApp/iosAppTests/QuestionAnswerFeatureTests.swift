@@ -436,6 +436,65 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         }
     }
 
+    func testAnswerAndAnswerPageReadsRecoverFromOneTransientNonJSONResponse() async throws {
+        let recorder = QARequestRecorder()
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            let path = request.url?.path ?? ""
+            let attempt = recorder.requests.lazy.filter { $0.url?.path == path }.count
+            if attempt == 1 {
+                return (200, Data("<!doctype html><title>temporary edge response</title>".utf8), [:])
+            }
+            if path.hasSuffix("/feeds") {
+                return (200, QAFixtures.answerPage(next: nil), [:])
+            }
+            return (200, QAFixtures.answer, [:])
+        }
+        let repository = makeRepository()
+
+        let answer = try await repository.fetchAnswer(
+            AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7)
+        )
+        let page = try await repository.fetchQuestionAnswers(
+            questionID: 7,
+            sort: .default,
+            after: nil
+        )
+
+        XCTAssertEqual(answer.route.contentID, 42)
+        XCTAssertEqual(page.items.map(\.answerID), [42])
+        XCTAssertEqual(
+            recorder.requests.filter { $0.url?.path == "/api/v4/answers/42" }.count,
+            2
+        )
+        XCTAssertEqual(
+            recorder.requests.filter { $0.url?.path == "/api/v4/questions/7/feeds" }.count,
+            2
+        )
+    }
+
+    func testPersistentNonJSONAnswerResponseUsesTransientFailureInsteadOfFormatFailure() async {
+        let recorder = QARequestRecorder()
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            return (200, Data("<html>risk control</html>".utf8), [:])
+        }
+        let repository = makeRepository()
+
+        do {
+            _ = try await repository.fetchAnswer(
+                AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7)
+            )
+            XCTFail("Expected the persistent edge response to fail")
+        } catch {
+            XCTAssertEqual(
+                error as? QuestionAnswerRepositoryError,
+                .temporarilyUnavailable
+            )
+        }
+        XCTAssertEqual(recorder.requests.count, 2)
+    }
+
     func testVideoRepositoryPostsWebPlayerContractAndChoosesHighestTrustedBitrate() async throws {
         let recorder = QARequestRecorder()
         QAURLProtocol.setHandler { request in
@@ -876,6 +935,36 @@ final class QuestionAnswerFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testVisibleAnswerPrefetchesWaitForTheBoundedSlotInsteadOfBeingDropped() async throws {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerFetchDelayNanoseconds = 50_000_000
+        repository.answerResultsByID = [
+            42: .success(QAFixtures.answerDTO(id: 42)),
+            43: .success(QAFixtures.answerDTO(id: 43)),
+        ]
+        let preloader = NativeFeedAnswerPreloader(
+            repository: repository,
+            maximumCachedAnswers: 4,
+            maximumConcurrentPreloads: 1
+        )
+        let firstItem = QAFixtures.feedItem(id: 42)
+        let secondItem = QAFixtures.feedItem(id: 43)
+
+        let first = Task { await preloader.prefetch(firstItem) }
+        for _ in 0 ..< 100 where repository.answerFetchCount == 0 {
+            await Task.yield()
+        }
+        let second = Task { await preloader.prefetch(secondItem) }
+
+        await first.value
+        await second.value
+
+        XCTAssertEqual(repository.answerFetchCount, 2)
+        XCTAssertNotNil(preloader.cachedAnswer(for: try XCTUnwrap(firstItem.route.answerRoute)))
+        XCTAssertNotNil(preloader.cachedAnswer(for: try XCTUnwrap(secondItem.route.answerRoute)))
+    }
+
+    @MainActor
     func testPreloaderFailureDoesNotTriggerAnImmediateDuplicateFetch() async {
         let repository = StubQuestionAnswerRepository()
         repository.answerResult = .failure(QAStubError.failed)
@@ -1166,6 +1255,39 @@ final class QuestionAnswerFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testNewlyAppendedAnswerCanLoadWithoutASecondBoundaryTransition() async throws {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerResult = .success(QAFixtures.answerDTO(id: 42))
+        repository.answerResultsByID[43] = .success(QAFixtures.answerDTO(id: 43))
+        repository.answerPageResults = [
+            .success(
+                QuestionAnswerPageDTO(
+                    items: [QAFixtures.preview(43)],
+                    nextURL: nil,
+                    isEnd: true
+                )
+            ),
+        ]
+        let stream = AnswerStreamStore(
+            route: AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7),
+            repository: repository,
+            openedHistory: StubOpenedHistory()
+        )
+
+        await stream.prepare()
+
+        let appended = try XCTUnwrap(stream.answers.first { $0.id == 43 })
+        XCTAssertNil(appended.content)
+
+        // This is the operation driven by the section visibility observer. It
+        // must not depend on the boundary having entered or exited beforehand.
+        await stream.prepareAnswer(id: 43)
+
+        XCTAssertEqual(appended.content?.route.contentID, 43)
+        XCTAssertEqual(appended.loadState, .loaded)
+    }
+
+    @MainActor
     func testStreamDistinguishesAvailableContentEndAndFailedPagination() async {
         let availableRepository = StubQuestionAnswerRepository()
         let availableRoute = AnswerRouteDTO(
@@ -1215,6 +1337,34 @@ final class QuestionAnswerFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testInitialAnswerFailureDoesNotCascadeIntoAnswerPageFailure() async {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerResult = .failure(QAStubError.failed)
+        repository.answerPageResults = [
+            .success(QuestionAnswerPageDTO(items: [], nextURL: nil, isEnd: true)),
+        ]
+        let stream = AnswerStreamStore(
+            route: AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7),
+            repository: repository,
+            openedHistory: StubOpenedHistory()
+        )
+
+        await stream.prepare()
+        await stream.reachedEnd(of: 42)
+
+        XCTAssertEqual(stream.current.loadState, .failed("测试失败"))
+        XCTAssertEqual(stream.paginationState, .idle)
+        XCTAssertEqual(repository.answerPageFetchCount, 0)
+
+        repository.answerResult = .success(QAFixtures.answerDTO)
+        await stream.retryAnswer(id: 42)
+
+        XCTAssertEqual(stream.current.loadState, .loaded)
+        XCTAssertEqual(stream.paginationState, .end)
+        XCTAssertEqual(repository.answerPageFetchCount, 1)
+    }
+
+    @MainActor
     func testStreamFocusChangesCurrentAnswerWithoutChangingReadingOrder() {
         let repository = StubQuestionAnswerRepository()
         let route = AnswerRouteDTO(
@@ -1241,6 +1391,63 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         XCTAssertEqual(stream.answers.map(\.id), [40, 41, 42])
     }
 
+    func testAnswerViewportTrackerFocusesOnlyAfterBoundaryLeavesViewport() {
+        var tracker = AnswerViewportTracker()
+        let ids: [Int64] = [40, 41, 42]
+
+        XCTAssertEqual(
+            tracker.visibilityChanged(
+                boundaryAfter: 40,
+                isVisible: false,
+                orderedAnswerIDs: ids,
+                currentAnswerID: 40
+            ),
+            .none
+        )
+        XCTAssertEqual(
+            tracker.visibilityChanged(
+                boundaryAfter: 40,
+                isVisible: true,
+                orderedAnswerIDs: ids,
+                currentAnswerID: 40
+            ),
+            AnswerViewportUpdate(answerToPrepare: 41, focusedAnswer: nil)
+        )
+        XCTAssertEqual(
+            tracker.visibilityChanged(
+                boundaryAfter: 40,
+                isVisible: false,
+                orderedAnswerIDs: ids,
+                currentAnswerID: 40
+            ),
+            AnswerViewportUpdate(answerToPrepare: 41, focusedAnswer: 41)
+        )
+    }
+
+    func testAnswerViewportTrackerSupportsReverseReadingWithoutGeometryPolling() {
+        var tracker = AnswerViewportTracker()
+        let ids: [Int64] = [40, 41, 42]
+
+        XCTAssertEqual(
+            tracker.visibilityChanged(
+                boundaryAfter: 40,
+                isVisible: true,
+                orderedAnswerIDs: ids,
+                currentAnswerID: 41
+            ),
+            AnswerViewportUpdate(answerToPrepare: 40, focusedAnswer: nil)
+        )
+        XCTAssertEqual(
+            tracker.visibilityChanged(
+                boundaryAfter: 40,
+                isVisible: false,
+                orderedAnswerIDs: ids,
+                currentAnswerID: 41
+            ),
+            AnswerViewportUpdate(answerToPrepare: 40, focusedAnswer: 40)
+        )
+    }
+
     private func makeRepository(
         accountStore: AccountJSONStore = QAAccountStore()
     ) -> URLSessionQuestionAnswerRepository {
@@ -1250,7 +1457,10 @@ final class QuestionAnswerFeatureTests: XCTestCase {
             accountStore: accountStore,
             session: URLSession(configuration: configuration)
         )
-        return URLSessionQuestionAnswerRepository(client: client)
+        return URLSessionQuestionAnswerRepository(
+            client: client,
+            unexpectedPayloadRetryDelayNanoseconds: 0
+        )
     }
 }
 
@@ -1301,6 +1511,26 @@ private enum QAFixtures {
             excerpt: "摘要",
             voteUpCount: id,
             commentCount: 1
+        )
+    }
+
+    static func feedItem(id: Int64) -> FeedItemDTO {
+        FeedItemDTO(
+            id: FeedItemID(kind: .answer, contentID: String(id)),
+            kind: .answer,
+            title: "原生问题",
+            summary: "信息流摘要",
+            details: "1 赞同 · 0 评论",
+            sourceLabel: nil,
+            author: FeedAuthorDTO(
+                memberID: "member",
+                urlToken: "author",
+                displayName: "作者",
+                avatarURL: nil,
+                headline: "简介"
+            ),
+            thumbnailURL: nil,
+            route: .answer(answerID: id, questionID: 7, questionTitle: "原生问题")
         )
     }
 
@@ -1406,7 +1636,9 @@ private final class StubQuestionAnswerRepository: QuestionAnswerRepository, @unc
     var questionResult: Result<QuestionDTO, Error> = .failure(QAStubError.failed)
     var answerPageResults: [Result<QuestionAnswerPageDTO, Error>] = []
     var answerPageDelayNanoseconds: UInt64 = 0
+    var answerFetchDelayNanoseconds: UInt64 = 0
     var answerResult: Result<AnswerDTO, Error> = .failure(QAStubError.failed)
+    var answerResultsByID: [Int64: Result<AnswerDTO, Error>] = [:]
     private(set) var answerFetchCount = 0
     private(set) var answerPageFetchCount = 0
 
@@ -1422,6 +1654,12 @@ private final class StubQuestionAnswerRepository: QuestionAnswerRepository, @unc
     func setQuestionFollowing(_ following: Bool, questionID: Int64) async throws {}
     func fetchAnswer(_ route: AnswerRouteDTO) async throws -> AnswerDTO {
         answerFetchCount += 1
+        if answerFetchDelayNanoseconds > 0 {
+            try await Task.sleep(nanoseconds: answerFetchDelayNanoseconds)
+        }
+        if let result = answerResultsByID[route.contentID] {
+            return try result.get()
+        }
         return try answerResult.get()
     }
     func setVote(_ state: QAVoteState, route: AnswerRouteDTO) async throws -> QAVoteMutationResult {

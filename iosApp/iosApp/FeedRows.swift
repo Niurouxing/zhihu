@@ -92,6 +92,11 @@ struct NativeFeedAnswerPreview: Equatable, Sendable {
 /// after the row has remained visible, and navigation can promote the same task.
 @MainActor
 final class NativeFeedAnswerPreloader {
+    private struct SlotWaiter {
+        let token: UUID
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
     private let repository: QuestionAnswerRepository
     private let maximumCachedAnswers: Int
     private let maximumConcurrentPreloads: Int
@@ -103,12 +108,14 @@ final class NativeFeedAnswerPreloader {
     private var tasks: [FeedItemID: Task<AnswerDTO, Error>] = [:]
     private var consumingIDs: Set<FeedItemID> = []
     private var speculativeIDs: Set<FeedItemID> = []
+    private var slotWaiters: [FeedItemID: SlotWaiter] = [:]
+    private var slotWaiterOrder: [FeedItemID] = []
     private var activePreloadCount = 0
     private var generation: UInt64 = 0
 
     init(
         repository: QuestionAnswerRepository,
-        maximumCachedAnswers: Int = 4,
+        maximumCachedAnswers: Int = 6,
         maximumConcurrentPreloads: Int = 1
     ) {
         self.repository = repository
@@ -132,12 +139,17 @@ final class NativeFeedAnswerPreloader {
         register(item)
         guard let route = item.route.answerRoute else { return }
         let id = transitionID(for: route)
-        guard answers[id] == nil else { return }
+        guard answers[id] == nil else {
+            cancelSpeculativePreloads()
+            return
+        }
         if tasks[id] != nil {
             speculativeIDs.remove(id)
+            cancelSpeculativePreloads()
             return
         }
 
+        resumeSlotWaiter(for: id, shouldContinue: true)
         // Foreground navigation supersedes unrelated speculation. Its request
         // may briefly overlap a task that is finishing cancellation, but it is
         // never delayed behind work for an off-screen card.
@@ -151,11 +163,19 @@ final class NativeFeedAnswerPreloader {
         let id = transitionID(for: route)
         guard answers[id] == nil else { return }
 
+        while answers[id] == nil,
+              tasks[id] == nil,
+              activePreloadCount >= maximumConcurrentPreloads {
+            guard await waitForPreloadSlot(id: id) else { return }
+            guard !Task.isCancelled else { return }
+        }
+        if cachedAnswer(for: route) != nil { return }
+
         let task: Task<AnswerDTO, Error>
         if let existing = tasks[id] {
             task = existing
         } else {
-            guard activePreloadCount < maximumConcurrentPreloads else { return }
+            guard !Task.isCancelled else { return }
             speculativeIDs.insert(id)
             task = start(route)
         }
@@ -164,7 +184,7 @@ final class NativeFeedAnswerPreloader {
         // populate the cache. Repeatedly cancelling URLSession requests while
         // scrolling wastes radio/connection setup energy and caused the NECP
         // cancellation churn visible in device logs.
-        _ = try? await task.value
+        _ = try? await resolve(task, route: route)
     }
 
     func cachedAnswer(for route: AnswerRouteDTO) -> AnswerDTO? {
@@ -193,9 +213,11 @@ final class NativeFeedAnswerPreloader {
         let id = transitionID(for: route)
         consumingIDs.insert(id)
         speculativeIDs.remove(id)
+        resumeSlotWaiter(for: id, shouldContinue: true)
+        cancelSpeculativePreloads()
         let task = tasks[id] ?? start(route)
         return try await withTaskCancellationHandler {
-            try await task.value
+            try await resolve(task, route: route)
         } onCancel: { [weak self] in
             Task { @MainActor in self?.cancelConsumer(id: id) }
         }
@@ -208,12 +230,15 @@ final class NativeFeedAnswerPreloader {
         if cachedAnswer(for: route) != nil { return }
         let id = transitionID(for: route)
         if let task = tasks[id] {
-            _ = try? await task.value
+            speculativeIDs.remove(id)
+            cancelSpeculativePreloads()
+            _ = try? await resolve(task, route: route)
             return
         }
+        resumeSlotWaiter(for: id, shouldContinue: true)
         cancelSpeculativePreloads()
         speculativeIDs.insert(id)
-        _ = try? await start(route).value
+        _ = try? await resolve(start(route), route: route)
     }
 
     private func start(_ route: AnswerRouteDTO) -> Task<AnswerDTO, Error> {
@@ -246,6 +271,7 @@ final class NativeFeedAnswerPreloader {
            answerMatches(answer, route: route) {
             cacheUpdatedAnswer(answer)
         }
+        resumeNextSlotWaiterIfPossible()
     }
 
     func cancelSpeculativePreloads() {
@@ -254,10 +280,18 @@ final class NativeFeedAnswerPreloader {
             tasks[id]?.cancel()
         }
         speculativeIDs.subtract(cancellableIDs)
+        let waiters = Array(slotWaiters.values)
+        slotWaiters.removeAll()
+        slotWaiterOrder.removeAll()
+        waiters.forEach { $0.continuation.resume(returning: false) }
     }
 
     func reset() {
         generation &+= 1
+        let waiters = Array(slotWaiters.values)
+        slotWaiters.removeAll()
+        slotWaiterOrder.removeAll()
+        waiters.forEach { $0.continuation.resume(returning: false) }
         tasks.values.forEach { $0.cancel() }
         tasks.removeAll()
         answers.removeAll()
@@ -267,6 +301,74 @@ final class NativeFeedAnswerPreloader {
         consumingIDs.removeAll()
         speculativeIDs.removeAll()
         activePreloadCount = 0
+    }
+
+    private func resolve(
+        _ task: Task<AnswerDTO, Error>,
+        route: AnswerRouteDTO
+    ) async throws -> AnswerDTO {
+        let answer = try await task.value
+        guard answerMatches(answer, route: route) else {
+            throw QuestionAnswerRepositoryError.malformedContent
+        }
+        // Do not wait for the independent task-cleanup observer to publish the
+        // value. A tap can occur in that one-run-loop gap and would otherwise
+        // build the destination from its excerpt despite completed network I/O.
+        cacheUpdatedAnswer(answer)
+        return answer
+    }
+
+    private func waitForPreloadSlot(id: FeedItemID) async -> Bool {
+        let token = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                    return
+                }
+                if activePreloadCount < maximumConcurrentPreloads
+                    || tasks[id] != nil
+                    || answers[id] != nil {
+                    continuation.resume(returning: true)
+                    return
+                }
+                // A lazy row should own at most one wait request. A duplicate
+                // view for the same stable content ID can rely on that owner.
+                guard slotWaiters[id] == nil else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                slotWaiters[id] = SlotWaiter(token: token, continuation: continuation)
+                slotWaiterOrder.append(id)
+            }
+        } onCancel: { [weak self] in
+            Task { @MainActor in
+                self?.cancelSlotWaiter(id: id, token: token)
+            }
+        }
+    }
+
+    private func cancelSlotWaiter(id: FeedItemID, token: UUID) {
+        guard let waiter = slotWaiters[id], waiter.token == token else { return }
+        slotWaiters[id] = nil
+        slotWaiterOrder.removeAll { $0 == id }
+        waiter.continuation.resume(returning: false)
+    }
+
+    private func resumeSlotWaiter(for id: FeedItemID, shouldContinue: Bool) {
+        guard let waiter = slotWaiters.removeValue(forKey: id) else { return }
+        slotWaiterOrder.removeAll { $0 == id }
+        waiter.continuation.resume(returning: shouldContinue)
+    }
+
+    private func resumeNextSlotWaiterIfPossible() {
+        guard activePreloadCount < maximumConcurrentPreloads else { return }
+        while let id = slotWaiterOrder.first {
+            slotWaiterOrder.removeFirst()
+            guard let waiter = slotWaiters.removeValue(forKey: id) else { continue }
+            waiter.continuation.resume(returning: true)
+            return
+        }
     }
 
     private func cancelConsumer(id: FeedItemID) {
@@ -505,7 +607,10 @@ struct FeedItemRow: View {
             block: blockQuestionAuthor
         )
         .accessibilityLabel(presentation.accessibilityDescription)
-        .onScrollVisibilityChange(threshold: 0.55) { isVisible in
+        // A ratio above one half makes a media-rich card taller than the
+        // viewport permanently ineligible. A low threshold plus the dwell
+        // timer starts useful work early while fast flings still do no I/O.
+        .onScrollVisibilityChange(threshold: 0.25) { isVisible in
             guard isAnswerPrefetchVisible != isVisible else { return }
             isAnswerPrefetchVisible = isVisible
         }

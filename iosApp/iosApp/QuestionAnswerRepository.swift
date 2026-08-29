@@ -155,9 +155,14 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
 
     private let client: ZhihuAPIClient
     private let decoder: JSONDecoder
+    private let unexpectedPayloadRetryDelayNanoseconds: UInt64
 
-    init(client: ZhihuAPIClient) {
+    init(
+        client: ZhihuAPIClient,
+        unexpectedPayloadRetryDelayNanoseconds: UInt64 = 250_000_000
+    ) {
         self.client = client
+        self.unexpectedPayloadRetryDelayNanoseconds = unexpectedPayloadRetryDelayNanoseconds
         decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
     }
@@ -167,16 +172,15 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
             path: "/api/v4/questions/\(route.questionID)",
             query: [URLQueryItem(name: "include", value: Self.questionInclude)]
         )
-        let data = try await client.data(for: url, authentication: .accountRequired)
-        do {
-            let question = try decoder.decode(QuestionResponse.self, from: data).dto()
-            guard question.id == route.questionID else {
-                throw QuestionAnswerRepositoryError.malformedQuestion
-            }
-            return question
-        } catch {
+        let response: QuestionResponse = try await decodedReadResponse(
+            from: url,
+            malformedError: .malformedQuestion
+        )
+        let question = try response.dto()
+        guard question.id == route.questionID else {
             throw QuestionAnswerRepositoryError.malformedQuestion
         }
+        return question
     }
 
     func fetchQuestionAnswers(
@@ -214,27 +218,23 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
                 ]
             )
         }
-        let data = try await client.data(for: url, authentication: .accountRequired)
-        do {
-            let response = try decoder.decode(QuestionAnswersResponse.self, from: data)
-            var seen = Set<Int64>()
-            let items = response.data
-                .compactMap(\.value)
-                .compactMap(\.answerPreview)
-                .filter { $0.questionID == questionID && seen.insert($0.answerID).inserted }
-            let continuationURL = try response.paging?.next.flatMap(URL.init(string:)).map {
-                try continuation($0, requiredPrefix: "/api/v4/questions/\(questionID)/feeds")
-            }
-            return QuestionAnswerPageDTO(
-                items: items,
-                nextURL: continuationURL,
-                isEnd: response.paging?.isEnd == true || continuationURL == nil
-            )
-        } catch let error as QuestionAnswerRepositoryError {
-            throw error
-        } catch {
-            throw QuestionAnswerRepositoryError.malformedAnswerPage
+        let response: QuestionAnswersResponse = try await decodedReadResponse(
+            from: url,
+            malformedError: .malformedAnswerPage
+        )
+        var seen = Set<Int64>()
+        let items = response.data
+            .compactMap(\.value)
+            .compactMap(\.answerPreview)
+            .filter { $0.questionID == questionID && seen.insert($0.answerID).inserted }
+        let continuationURL = try response.paging?.next.flatMap(URL.init(string:)).map {
+            try continuation($0, requiredPrefix: "/api/v4/questions/\(questionID)/feeds")
         }
+        return QuestionAnswerPageDTO(
+            items: items,
+            nextURL: continuationURL,
+            isEnd: response.paging?.isEnd == true || continuationURL == nil
+        )
     }
 
     func setQuestionFollowing(_ following: Bool, questionID: Int64) async throws {
@@ -251,20 +251,23 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
             ? "/api/v4/answers/\(route.contentID)"
             : "/api/v4/articles/\(route.contentID)"
         let include = route.kind == .answer ? Self.answerInclude : Self.articleInclude
-        let data = try await client.data(
-            for: endpoint(path: path, query: [URLQueryItem(name: "include", value: include)]),
-            authentication: .accountRequired
+        let url = try endpoint(
+            path: path,
+            query: [URLQueryItem(name: "include", value: include)]
         )
-        do {
-            switch route.kind {
-            case .answer:
-                let response = try decoder.decode(AnswerResponse.self, from: data)
-                return try response.dto(route: route)
-            case .article:
-                return try decoder.decode(ArticleResponse.self, from: data).dto(route: route)
-            }
-        } catch {
-            throw QuestionAnswerRepositoryError.malformedContent
+        switch route.kind {
+        case .answer:
+            let response: AnswerResponse = try await decodedReadResponse(
+                from: url,
+                malformedError: .malformedContent
+            )
+            return try response.dto(route: route)
+        case .article:
+            let response: ArticleResponse = try await decodedReadResponse(
+                from: url,
+                malformedError: .malformedContent
+            )
+            return try response.dto(route: route)
         }
     }
 
@@ -375,6 +378,96 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
         else { throw QuestionAnswerRepositoryError.untrustedContinuation }
         return url
     }
+
+    /// Zhihu's read endpoints occasionally answer with a successful HTTP status
+    /// but a gateway/risk-control document instead of JSON. Retry that exact,
+    /// idempotent GET once; ordinary schema mismatches are never retried, so a
+    /// real API contract change remains visible and normal reads do no extra work.
+    private func decodedReadResponse<Response: Decodable>(
+        from url: URL,
+        malformedError: QuestionAnswerRepositoryError
+    ) async throws -> Response {
+        let data = try await client.data(for: url, authentication: .accountRequired)
+        do {
+            return try decoder.decode(Response.self, from: data)
+        } catch {
+            switch unexpectedResponseKind(data: data, decodingError: error) {
+            case .none:
+                throw malformedError
+            case .authentication:
+                throw ZhihuAPIError.authenticationRequired
+            case .transient:
+                break
+            }
+        }
+
+        if unexpectedPayloadRetryDelayNanoseconds > 0 {
+            try await Task.sleep(nanoseconds: unexpectedPayloadRetryDelayNanoseconds)
+        }
+        let retryData = try await client.data(for: url, authentication: .accountRequired)
+        do {
+            return try decoder.decode(Response.self, from: retryData)
+        } catch {
+            switch unexpectedResponseKind(data: retryData, decodingError: error) {
+            case .authentication:
+                throw ZhihuAPIError.authenticationRequired
+            case .transient:
+                throw QuestionAnswerRepositoryError.temporarilyUnavailable
+            case .none:
+                throw malformedError
+            }
+        }
+    }
+
+    private func unexpectedResponseKind(
+        data: Data,
+        decodingError: Error
+    ) -> UnexpectedResponseKind {
+        guard let first = firstPayloadByte(in: data), first == 0x7B || first == 0x5B else {
+            return .transient
+        }
+        if let decodingError = decodingError as? DecodingError,
+           case .dataCorrupted = decodingError {
+            return .transient
+        }
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              root["error"] != nil || root["error_code"] != nil || root["errorCode"] != nil
+        else { return .none }
+
+        let error = root["error"] as? [String: Any]
+        let description = [
+            error?["name"],
+            error?["message"],
+            root["name"],
+            root["message"],
+        ]
+            .compactMap { $0 as? String }
+            .joined(separator: " ")
+            .lowercased()
+        if description.contains("authentication")
+            || description.contains("unauthorized")
+            || description.contains("login")
+            || description.contains("登录") {
+            return .authentication
+        }
+        return .transient
+    }
+
+    private func firstPayloadByte(in data: Data) -> UInt8? {
+        var bytes = data[...]
+        if bytes.starts(with: [0xEF, 0xBB, 0xBF]) {
+            bytes = bytes.dropFirst(3)
+        }
+        return bytes.first { byte in
+            byte != 0x09 && byte != 0x0A && byte != 0x0D && byte != 0x20
+        }
+    }
+
+    private enum UnexpectedResponseKind {
+        case none
+        case transient
+        case authentication
+    }
 }
 
 enum QuestionAnswerRepositoryError: LocalizedError, Equatable {
@@ -386,6 +479,7 @@ enum QuestionAnswerRepositoryError: LocalizedError, Equatable {
     case malformedContent
     case malformedMutation
     case malformedCollections
+    case temporarilyUnavailable
     case unsupportedAction
 
     var errorDescription: String? {
@@ -398,6 +492,7 @@ enum QuestionAnswerRepositoryError: LocalizedError, Equatable {
         case .malformedContent: return "正文数据格式无法识别"
         case .malformedMutation: return "操作结果格式无法识别"
         case .malformedCollections: return "收藏夹数据格式无法识别"
+        case .temporarilyUnavailable: return "知乎暂时没有返回可用内容，请重试"
         case .unsupportedAction: return "当前内容不支持这个操作"
         }
     }

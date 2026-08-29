@@ -81,6 +81,99 @@ private extension View {
             self
         }
     }
+
+    func restoringNativeInteractivePopGesture() -> some View {
+        background {
+            NativeInteractivePopGestureBridge()
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+        }
+    }
+}
+
+/// SwiftUI can leave `interactivePopGestureRecognizer` disabled when the top
+/// destination hides its navigation bar (the answer reader does this). Install
+/// one route-local delegate so every native link still participates in the same
+/// unbounded NavigationStack and gets the system edge-driven interactive pop.
+private struct NativeInteractivePopGestureBridge: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> NativeInteractivePopGestureController {
+        NativeInteractivePopGestureController()
+    }
+
+    func updateUIViewController(
+        _ uiViewController: NativeInteractivePopGestureController,
+        context: Context
+    ) {
+        uiViewController.scheduleInstallation()
+    }
+
+    static func dismantleUIViewController(
+        _ uiViewController: NativeInteractivePopGestureController,
+        coordinator: ()
+    ) {
+        uiViewController.uninstall()
+    }
+}
+
+private final class NativeInteractivePopGestureController: UIViewController,
+    UIGestureRecognizerDelegate {
+    private weak var installedGesture: UIGestureRecognizer?
+    private weak var previousDelegate: UIGestureRecognizerDelegate?
+    private var isInstallationScheduled = false
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        scheduleInstallation()
+    }
+
+    func scheduleInstallation() {
+        guard !isInstallationScheduled else { return }
+        isInstallationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isInstallationScheduled = false
+            self.installIfTopDestination()
+        }
+    }
+
+    func uninstall() {
+        guard let installedGesture else { return }
+        if installedGesture.delegate === self {
+            installedGesture.delegate = previousDelegate
+        }
+        installedGesture.isEnabled = (navigationController?.viewControllers.count ?? 0) > 1
+        self.installedGesture = nil
+        previousDelegate = nil
+        isInstallationScheduled = false
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === installedGesture,
+              let navigationController,
+              navigationController.viewControllers.count > 1,
+              let topView = navigationController.topViewController?.view,
+              view.isDescendant(of: topView)
+        else { return false }
+        return true
+    }
+
+    private func installIfTopDestination() {
+        guard view.window != nil,
+              let navigationController,
+              navigationController.viewControllers.count > 1,
+              let topView = navigationController.topViewController?.view,
+              view.isDescendant(of: topView),
+              let gesture = navigationController.interactivePopGestureRecognizer
+        else { return }
+
+        if installedGesture !== gesture {
+            uninstall()
+            installedGesture = gesture
+            previousDelegate = gesture.delegate
+        }
+        gesture.delegate = self
+        gesture.isEnabled = true
+    }
 }
 
 struct NativeSearchFocusRequest: Equatable {
@@ -406,6 +499,7 @@ struct NativeAppShell: View {
                             sourceID: entry.transition?.sourceID,
                             namespace: feedNavigationNamespace
                         )
+                        .restoringNativeInteractivePopGesture()
                 }
         }
     }
@@ -472,7 +566,7 @@ struct NativeAppShell: View {
                 accountStore: hostModel.accountStore,
                 repository: hostModel.commentRepository,
                 preloader: hostModel.commentPreloader,
-                onPersonNavigate: handlePersonIntent
+                onOpenContent: openContent
             )
         case let .search(route):
             SearchNativeView(
@@ -786,14 +880,14 @@ private struct NativeCommentNavigationRouteView: View {
         accountStore: AccountJSONStore,
         repository: CommentRepository,
         preloader: NativeCommentPreloader,
-        onPersonNavigate: @escaping (PersonNavigationIntent) -> Void
+        onOpenContent: @escaping (NativeContentDestination) -> Void
     ) {
         _model = StateObject(wrappedValue: CommentHostModel(
             route: route,
             accountStore: accountStore,
             repository: repository,
             preloader: preloader,
-            onPersonNavigate: onPersonNavigate
+            onOpenContent: onOpenContent
         ))
     }
 

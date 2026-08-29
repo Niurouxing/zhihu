@@ -400,6 +400,20 @@ final class NativeShellPreferencesTests: XCTestCase {
         ))
     }
 
+    func testHomeRefreshPresentationInvalidatesACompletionAfterDeactivation() throws {
+        var presentation = NativeHomeRefreshPresentationState()
+        let coveredPageGeneration = try XCTUnwrap(presentation.begin())
+
+        presentation.invalidate()
+
+        XCTAssertFalse(presentation.isPending)
+        let activePageGeneration = try XCTUnwrap(presentation.begin())
+        XCTAssertFalse(presentation.complete(generation: coveredPageGeneration))
+        XCTAssertTrue(presentation.isPending)
+        XCTAssertTrue(presentation.complete(generation: activePageGeneration))
+        XCTAssertFalse(presentation.isPending)
+    }
+
     func testCollapsedSearchDrawerRevealsOnlyAfterItsPullThreshold() {
         let collapsedOffset = NativeHomePullRegionLayout.collapsedOffset
         XCTAssertEqual(
