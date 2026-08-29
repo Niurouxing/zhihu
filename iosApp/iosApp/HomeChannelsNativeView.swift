@@ -1,35 +1,6 @@
 import SwiftUI
 import UIKit
 
-struct HomeChannelRefreshPresentation: Equatable {
-    let metadata: FeedChannelRefreshMetadata
-    let isRefreshing: Bool
-
-    func statusText(now: Date) -> String {
-        HomeChannelRefreshStatusText.text(
-            lastSuccessfulRefreshAt: metadata.lastSuccessfulRefreshAt,
-            isRefreshing: isRefreshing,
-            now: now
-        )
-    }
-}
-
-struct HomeChannelRefreshPresentationMap: Equatable {
-    let recommendation: HomeChannelRefreshPresentation
-    let following: HomeChannelRefreshPresentation
-    let hot: HomeChannelRefreshPresentation
-    let daily: HomeChannelRefreshPresentation
-
-    func presentation(for channel: HomeChannel) -> HomeChannelRefreshPresentation {
-        switch channel {
-        case .recommendation: return recommendation
-        case .following: return following
-        case .hot: return hot
-        case .daily: return daily
-        }
-    }
-}
-
 @available(iOS 16.0, *)
 @MainActor
 struct HomeChannelsNativeView: View {
@@ -47,8 +18,10 @@ struct HomeChannelsNativeView: View {
     @State private var scrollToTopRequests: [HomeChannel: UInt] = [:]
     @State private var idleRefreshTask: Task<Void, Never>?
     @State private var wasOperationallyVisible = false
-    @State private var refreshStatusNow = Date()
-    @State private var isTopBarVisible = true
+    @State private var areFloatingControlsVisible = true
+    @State private var scrollRuntimeActivationRequest: UInt = 0
+    @State private var transientChannel: HomeChannel?
+    @State private var channelIndicatorDismissTask: Task<Void, Never>?
     @State private var scrollPositionRegistry = NativeHomeScrollPositionRegistry()
 
     let isOperationallyVisible: Bool
@@ -107,26 +80,43 @@ struct HomeChannelsNativeView: View {
                 channelContent(channel)
             }
 
-            homeTopBar
-                .offset(y: isTopBarVisible ? 0 : -NativeHomeTopChromeLayout.height)
-                .opacity(isTopBarVisible ? 1 : 0)
-                .allowsHitTesting(isTopBarVisible)
+            homeFloatingControls
+                .offset(y: areFloatingControlsVisible ? 0 : -10)
+                .scaleEffect(
+                    areFloatingControlsVisible ? 1 : 0.96,
+                    anchor: .top
+                )
+                .opacity(areFloatingControlsVisible ? 1 : 0)
+                .allowsHitTesting(areFloatingControlsVisible)
                 .zIndex(10)
+
+            if let transientChannel {
+                transientChannelIndicator(for: transientChannel)
+                    .transition(
+                        .scale(scale: 0.94, anchor: .top)
+                            .combined(with: .opacity)
+                    )
+                    .zIndex(20)
+            }
         }
-        .environment(\.nativeHomeTopBarScrollIntentAction) { intent in
-            handleTopBarScrollIntent(intent)
+        .environment(\.nativeHomeFloatingControlsScrollIntentAction) { event in
+            handleFloatingControlsScrollEvent(event)
         }
+        .environment(
+            \.nativeHomeScrollRuntimeActivationRequest,
+            scrollRuntimeActivationRequest
+        )
         .environment(\.nativeHomeScrollPositionRegistry, scrollPositionRegistry)
         .navigationTitle(selectedChannel.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
         .onAppear {
             lastSelectedChannelID = selectedChannelID
-            setTopBarVisible(true, animated: false)
-            synchronizeOperationalVisibility()
+            synchronizeOperationalVisibility(forceRuntimeActivation: true)
         }
         .onDisappear {
             transitionOperationalVisibility(to: false)
+            dismissChannelIndicator(animated: false)
         }
         .onChange(of: selectedChannelID) { _, newChannelID in
             guard newChannelID != lastSelectedChannelID else { return }
@@ -135,104 +125,115 @@ struct HomeChannelsNativeView: View {
                 recordLastViewed(for: previous)
             }
             lastSelectedChannelID = newChannelID
-            setTopBarVisible(true, animated: true)
+            if let channel = HomeChannel(rawValue: newChannelID) {
+                presentChannelIndicator(channel)
+            }
             if wasOperationallyVisible {
                 scheduleIdleRefreshIfNeeded(for: selectedChannel)
             }
         }
         .onChange(of: isOperationallyVisible) {
             synchronizeOperationalVisibility()
-            if isOperationallyVisible {
-                setTopBarVisible(true, animated: false)
-            }
         }
         .onChange(of: scenePhase) {
             synchronizeOperationalVisibility()
         }
-        .task {
-            await runRefreshStatusClock()
-        }
         .accessibilityIdentifier("home_channels_native")
     }
 
-    private var homeTopBar: some View {
-        ZStack {
-            Color(uiColor: .systemBackground)
-
-            HStack(spacing: 12) {
+    private var homeFloatingControls: some View {
+        HStack(spacing: 12) {
+            HomeFloatingSurface(in: Circle()) {
                 Button(action: onOpenAccount) {
                     accountToolbarLabel
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(.plain)
-                .frame(width: 44, height: 44)
-                .background(.ultraThinMaterial, in: Circle())
+                .frame(
+                    width: NativeHomeFloatingControlsLayout.controlHeight,
+                    height: NativeHomeFloatingControlsLayout.controlHeight
+                )
                 .contentShape(Circle())
                 .accessibilityLabel("账号")
                 .accessibilityIdentifier("home_account_entry")
+            }
 
-                Spacer(minLength: 52)
+            Spacer(minLength: 100)
 
+            HomeFloatingSurface(in: Capsule()) {
                 HStack(spacing: 2) {
-                    homeToolbarButton(.creation)
-                        .frame(width: 42, height: 42)
-                    homeToolbarButton(.notifications)
-                        .frame(width: 42, height: 42)
+                    ForEach(HomeFloatingControl.visibleControls) { control in
+                        homeFloatingButton(control)
+                            .frame(width: 42, height: 42)
+                    }
                 }
                 .padding(.horizontal, 3)
-                .background(.ultraThinMaterial, in: Capsule())
+                .padding(.vertical, 1)
             }
-            .padding(.horizontal, 12)
-
-            channelMenu
         }
-        .frame(height: NativeHomeTopChromeLayout.height)
-        .overlay(alignment: .bottom) {
-            Divider().opacity(0.28)
-        }
-        .accessibilityIdentifier("home_top_chrome")
+        .padding(.horizontal, NativeHomeFloatingControlsLayout.horizontalInset)
+        .frame(height: NativeHomeFloatingControlsLayout.height)
+        .accessibilityIdentifier("home_floating_controls")
     }
 
-    private var channelMenu: some View {
-        Menu {
-            ForEach(HomeChannel.allCases) { channel in
-                Button {
-                    selectChannel(channel)
-                } label: {
-                    Label(
-                        channel.title,
-                        systemImage: channel == selectedChannel
-                            ? "checkmark"
-                            : channel.systemImage
-                    )
-                }
-                .disabled(channel == selectedChannel)
-            }
-
-            Divider()
-
-            Text(
-                currentRefreshPresentations
-                    .presentation(for: selectedChannel)
-                    .statusText(now: refreshStatusNow)
-            )
-        } label: {
-            HStack(spacing: 6) {
-                Text(selectedChannel.title)
-                    .font(.headline)
-                Image(systemName: "chevron.down")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 12)
-            .frame(minHeight: 40)
-            .contentShape(Rectangle())
+    private func transientChannelIndicator(for channel: HomeChannel) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: channel.systemImage)
+                .font(.caption.weight(.semibold))
+            Text(channel.title)
+                .font(.subheadline.weight(.semibold))
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("首页频道，当前为\(selectedChannel.title)")
-        .accessibilityHint("向下轻拉可显示搜索")
-        .accessibilityAction(named: Text("搜索知乎"), onOpenSearch)
-        .accessibilityIdentifier("home_channel_menu")
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 14)
+        .frame(height: 36)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.08), radius: 5, y: 2)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: NativeHomeFloatingControlsLayout.height,
+            alignment: .top
+        )
+        .padding(.top, 4)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .id(channel.id)
+    }
+
+    private func presentChannelIndicator(_ channel: HomeChannel) {
+        channelIndicatorDismissTask?.cancel()
+        if reduceMotion {
+            transientChannel = channel
+        } else {
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.86)) {
+                transientChannel = channel
+            }
+        }
+        channelIndicatorDismissTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 800_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            dismissChannelIndicator(animated: true)
+        }
+    }
+
+    private func dismissChannelIndicator(animated: Bool) {
+        channelIndicatorDismissTask?.cancel()
+        channelIndicatorDismissTask = nil
+        guard transientChannel != nil else { return }
+        if animated, !reduceMotion {
+            withAnimation(.easeOut(duration: 0.16)) {
+                transientChannel = nil
+            }
+        } else {
+            transientChannel = nil
+        }
     }
 
     private var accountToolbarLabel: some View {
@@ -289,7 +290,7 @@ struct HomeChannelsNativeView: View {
     }
 
     @ViewBuilder
-    private func homeToolbarButton(_ control: HomeTopBarControl) -> some View {
+    private func homeFloatingButton(_ control: HomeFloatingControl) -> some View {
         switch control {
         case .creation:
             Button(action: onOpenCreation) {
@@ -321,29 +322,31 @@ struct HomeChannelsNativeView: View {
         }
     }
 
-    private func selectChannel(_ channel: HomeChannel) {
-        guard selectedChannelID != channel.id else { return }
-        selectedChannelID = channel.id
-        hapticFeedback(.selection)
-    }
-
     private var selectedChannel: HomeChannel {
         HomeChannel(rawValue: selectedChannelID) ?? .recommendation
     }
 
-    private func handleTopBarScrollIntent(_ intent: NativeHomeTopBarScrollIntent) {
-        guard isEffectivelyVisible else { return }
-        setTopBarVisible(intent == .show, animated: true)
+    private func handleFloatingControlsScrollEvent(
+        _ event: NativeHomeFloatingControlsScrollEvent
+    ) {
+        guard isEffectivelyVisible, event.channel == selectedChannel else { return }
+        setFloatingControlsVisible(
+            event.intent == .show,
+            animated: true
+        )
     }
 
-    private func setTopBarVisible(_ isVisible: Bool, animated: Bool) {
-        guard isTopBarVisible != isVisible else { return }
+    private func setFloatingControlsVisible(
+        _ isVisible: Bool,
+        animated: Bool
+    ) {
+        guard areFloatingControlsVisible != isVisible else { return }
         if animated, !reduceMotion {
             withAnimation(.easeOut(duration: 0.17)) {
-                isTopBarVisible = isVisible
+                areFloatingControlsVisible = isVisible
             }
         } else {
-            isTopBarVisible = isVisible
+            areFloatingControlsVisible = isVisible
         }
     }
 
@@ -397,12 +400,25 @@ struct HomeChannelsNativeView: View {
         }
     }
 
-    private func synchronizeOperationalVisibility() {
-        transitionOperationalVisibility(to: isEffectivelyVisible)
+    private func synchronizeOperationalVisibility(
+        forceRuntimeActivation: Bool = false
+    ) {
+        transitionOperationalVisibility(
+            to: isEffectivelyVisible,
+            forceRuntimeActivation: forceRuntimeActivation
+        )
     }
 
-    private func transitionOperationalVisibility(to isVisible: Bool) {
-        guard isVisible != wasOperationallyVisible else { return }
+    private func transitionOperationalVisibility(
+        to isVisible: Bool,
+        forceRuntimeActivation: Bool = false
+    ) {
+        guard isVisible != wasOperationallyVisible else {
+            if isVisible, forceRuntimeActivation {
+                requestScrollRuntimeActivation()
+            }
+            return
+        }
         let wasVisible = wasOperationallyVisible
         wasOperationallyVisible = isVisible
         idleRefreshTask?.cancel()
@@ -410,9 +426,16 @@ struct HomeChannelsNativeView: View {
             recordLastViewed(for: selectedChannel)
         }
         if isVisible {
-            setTopBarVisible(true, animated: false)
+            requestScrollRuntimeActivation()
             scheduleIdleRefreshIfNeeded(for: selectedChannel)
+        } else {
+            dismissChannelIndicator(animated: false)
         }
+    }
+
+    private func requestScrollRuntimeActivation() {
+        let nextRequest = scrollRuntimeActivationRequest &+ 1
+        scrollRuntimeActivationRequest = nextRequest == 0 ? 1 : nextRequest
     }
 
     private func waitUntilIdle(for channel: HomeChannel) async -> Bool {
@@ -479,47 +502,36 @@ struct HomeChannelsNativeView: View {
         }
     }
 
-    private var currentRefreshPresentations: HomeChannelRefreshPresentationMap {
-        HomeChannelRefreshPresentationMap(
-            recommendation: HomeChannelRefreshPresentation(
-                metadata: recommendationStore.refreshMetadata,
-                isRefreshing: recommendationStore.isRefreshing
-            ),
-            following: HomeChannelRefreshPresentation(
-                metadata: followingStore.refreshMetadata,
-                isRefreshing: followingStore.isMomentsRefreshing
-            ),
-            hot: HomeChannelRefreshPresentation(
-                metadata: hotStore.refreshMetadata,
-                isRefreshing: hotStore.isRefreshing
-            ),
-            daily: HomeChannelRefreshPresentation(
-                metadata: dailyStore.refreshMetadata,
-                isRefreshing: dailyStore.isRefreshing
-            )
-        )
-    }
-
-    private func runRefreshStatusClock() async {
-        refreshStatusNow = Date()
-        while !Task.isCancelled {
-            do {
-                try await Task.sleep(nanoseconds: 60_000_000_000)
-            } catch {
-                return
-            }
-            refreshStatusNow = Date()
-        }
-    }
-
 }
 
-enum HomeTopBarControl: String, CaseIterable, Identifiable {
+private struct HomeFloatingSurface<Surface: InsettableShape, Content: View>: View {
+    let surface: Surface
+    let content: Content
+
+    init(
+        in surface: Surface,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.surface = surface
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .background(.ultraThinMaterial, in: surface)
+            .overlay {
+                surface.strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+            }
+            .shadow(color: .black.opacity(0.08), radius: 5, y: 2)
+    }
+}
+
+enum HomeFloatingControl: String, CaseIterable, Identifiable {
     case creation
     case notifications
 
     var id: String { rawValue }
-    static let visibleControls: [HomeTopBarControl] = [.creation, .notifications]
+    static let visibleControls: [HomeFloatingControl] = [.creation, .notifications]
 }
 
 struct HomeNotificationIndicatorPresentation: Equatable {
@@ -535,23 +547,5 @@ struct HomeNotificationIndicatorPresentation: Equatable {
     }
     var accessibilityValue: String {
         unreadCount > 0 ? "\(unreadCount) 条未读" : "无未读通知"
-    }
-}
-
-enum HomeChannelRefreshStatusText {
-    static func text(
-        lastSuccessfulRefreshAt: Date?,
-        isRefreshing: Bool,
-        now: Date
-    ) -> String {
-        if isRefreshing { return "更新中…" }
-        guard let lastSuccessfulRefreshAt else { return "尚未更新" }
-
-        let elapsed = max(0, now.timeIntervalSince(lastSuccessfulRefreshAt))
-        if elapsed < 60 { return "刚刚更新" }
-        if elapsed < 60 * 60 {
-            return "\(max(1, Int(elapsed / 60))) 分钟前更新"
-        }
-        return "\(max(1, Int(elapsed / (60 * 60)))) 小时前更新"
     }
 }

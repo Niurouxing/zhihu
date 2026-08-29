@@ -5,7 +5,6 @@ struct NativeAnswerStream: View {
     @ObservedObject var store: AnswerStreamStore
     let pinAnswerDate: Bool
     let onNavigate: (QANavigationIntent) -> Void
-    @State private var posterDocument: NativeContentPosterDocument?
 
     var body: some View {
         ScrollView {
@@ -53,32 +52,7 @@ struct NativeAnswerStream: View {
                 paginationFooter
             }
         }
-        .navigationTitle(store.current.initialRoute.kind == .answer ? "回答" : "文章")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                if let content = store.current.content {
-                    Menu {
-                        Button {
-                            UIPasteboard.general.url = content.sourceURL
-                        } label: {
-                            Label("复制链接", systemImage: "doc.on.doc")
-                        }
-                        Button {
-                            posterDocument = NativeContentPosterDocument(answer: content)
-                        } label: {
-                            Label("分享内容海报", systemImage: "photo.on.rectangle.angled")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                    }
-                    .accessibilityLabel("更多操作")
-                }
-            }
-        }
-        .sheet(item: $posterDocument) { document in
-            NativeContentPosterShareView(document: document)
-        }
+        .toolbar(.hidden, for: .navigationBar)
         .task { await store.prepare() }
         .onDisappear { store.cancelPendingReadingPrefetches() }
         .accessibilityIdentifier("answer_stream")

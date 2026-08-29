@@ -28,7 +28,6 @@ struct HotListNativeView: View {
             channel: .hot,
             isActive: isActiveChannel,
             scrollToTopRequest: scrollToTopRequest,
-            isRefreshing: store.isRefreshing,
             onOpenSearch: onOpenSearch,
             onRefresh: refresh
         ) {

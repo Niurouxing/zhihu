@@ -656,7 +656,7 @@ final class HomeFollowStoreTests: XCTestCase {
         XCTAssertFalse(store.isLoading)
     }
 
-    func testHomeRefreshPublishesFirstBatchFeedbackThenKeepsOverflow() async {
+    func testHomeAutomaticRefreshPublishesFirstBatchFeedbackThenKeepsOverflow() async {
         let initialDate = Date(timeIntervalSince1970: 4_000)
         let refreshDate = initialDate.addingTimeInterval(100)
         let clock = FeedRefreshTestClock(initialDate)
@@ -688,7 +688,7 @@ final class HomeFollowStoreTests: XCTestCase {
         await store.loadInitialIfNeeded()
         clock.now = refreshDate
 
-        let refresh = Task { await store.refresh(intent: .pull) }
+        let refresh = Task { await store.refresh(intent: .automatic) }
         await repository.waitUntilDelayedRequestStarts()
 
         XCTAssertEqual(store.items.map(\.id.contentID), ["10", "11", "12", "13"])
@@ -706,6 +706,36 @@ final class HomeFollowStoreTests: XCTestCase {
         )
         XCTAssertEqual(store.refreshMetadata.lastSuccessfulRefreshAt, refreshDate)
         XCTAssertEqual(store.refreshFeedbackSequence, 1)
+        XCTAssertFalse(store.isRefreshing)
+    }
+
+    func testHomePullRefreshCompletesAfterFirstVisiblePageAndLeavesContinuation() async {
+        let nextURL = URL(string: "https://api.zhihu.com/topstory/recommend?offset=10")!
+        let repository = HomeRefreshLoopRepositoryStub(pages: [
+            FeedPageDTO(items: [feedItem(1)], nextURL: nil, isEnd: true),
+            FeedPageDTO(
+                items: [feedItem(10), feedItem(11)],
+                nextURL: nextURL,
+                isEnd: false
+            ),
+            FeedPageDTO(items: [feedItem(12)], nextURL: nil, isEnd: true),
+        ])
+        let store = HomeFeedNativeStore(
+            repository: repository,
+            configuration: {
+                HomeRecommendationRefreshConfiguration(source: .app, targetItemCount: 6)
+            }
+        )
+        await store.loadInitialIfNeeded()
+
+        let outcome = await store.refresh(intent: .pull)
+        let requestCount = await repository.requestCount()
+
+        XCTAssertEqual(outcome, .published)
+        XCTAssertEqual(store.items, [feedItem(10), feedItem(11)])
+        XCTAssertTrue(store.hasNextPage)
+        XCTAssertEqual(store.nextPageLoadID, nextURL.absoluteString)
+        XCTAssertEqual(requestCount, 2)
         XCTAssertFalse(store.isRefreshing)
     }
 
@@ -857,7 +887,7 @@ final class HomeFollowStoreTests: XCTestCase {
         let store = HomeFeedNativeStore(repository: repository)
         await store.loadInitialIfNeeded()
 
-        let outcome = await store.refresh(intent: .pull)
+        let outcome = await store.refresh(intent: .automatic)
         let requestCount = await repository.requestCount()
 
         XCTAssertEqual(outcome, .published)

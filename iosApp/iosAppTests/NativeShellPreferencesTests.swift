@@ -207,6 +207,12 @@ final class NativeShellPreferencesTests: XCTestCase {
         ])
         XCTAssertEqual(HomeChannel.allCases.map(\.id), HomeChannel.allCases.map(\.rawValue))
         XCTAssertEqual(HomeChannel.allCases.map(\.title), ["推荐", "关注", "热榜", "日报"])
+        XCTAssertEqual(HomeChannel.allCases.map(\.systemImage), [
+            "sparkles",
+            "person.2.fill",
+            "flame.fill",
+            "newspaper.fill",
+        ])
     }
 
     func testChannelSwipeRequiresHorizontalIntentAndEnoughDistance() {
@@ -259,87 +265,8 @@ final class NativeShellPreferencesTests: XCTestCase {
         ), 2)
     }
 
-    func testHomeChannelRefreshStatusCoversLoadingAndRelativeTimeBoundaries() {
-        let now = Date(timeIntervalSince1970: 10_000)
-
-        XCTAssertEqual(HomeChannelRefreshStatusText.text(
-            lastSuccessfulRefreshAt: nil,
-            isRefreshing: false,
-            now: now
-        ), "尚未更新")
-        XCTAssertEqual(HomeChannelRefreshStatusText.text(
-            lastSuccessfulRefreshAt: nil,
-            isRefreshing: true,
-            now: now
-        ), "更新中…")
-        XCTAssertEqual(HomeChannelRefreshStatusText.text(
-            lastSuccessfulRefreshAt: now.addingTimeInterval(-30),
-            isRefreshing: false,
-            now: now
-        ), "刚刚更新")
-        XCTAssertEqual(HomeChannelRefreshStatusText.text(
-            lastSuccessfulRefreshAt: now.addingTimeInterval(-4 * 60),
-            isRefreshing: false,
-            now: now
-        ), "4 分钟前更新")
-        XCTAssertEqual(HomeChannelRefreshStatusText.text(
-            lastSuccessfulRefreshAt: now.addingTimeInterval(-60 * 60),
-            isRefreshing: false,
-            now: now
-        ), "1 小时前更新")
-        XCTAssertEqual(HomeChannelRefreshStatusText.text(
-            lastSuccessfulRefreshAt: now.addingTimeInterval(-2 * 60 * 60),
-            isRefreshing: false,
-            now: now
-        ), "2 小时前更新")
-    }
-
-    func testHomeRefreshPresentationMapKeepsEveryChannelMetadataAndLoadingState() {
-        let recommendationDate = Date(timeIntervalSince1970: 101)
-        let followingDate = Date(timeIntervalSince1970: 202)
-        let hotDate = Date(timeIntervalSince1970: 303)
-        let dailyDate = Date(timeIntervalSince1970: 404)
-        let presentations = HomeChannelRefreshPresentationMap(
-            recommendation: .init(
-                metadata: .init(lastSuccessfulRefreshAt: recommendationDate, lastViewedAt: nil),
-                isRefreshing: false
-            ),
-            following: .init(
-                metadata: .init(lastSuccessfulRefreshAt: followingDate, lastViewedAt: nil),
-                isRefreshing: true
-            ),
-            hot: .init(
-                metadata: .init(lastSuccessfulRefreshAt: hotDate, lastViewedAt: nil),
-                isRefreshing: false
-            ),
-            daily: .init(
-                metadata: .init(lastSuccessfulRefreshAt: dailyDate, lastViewedAt: nil),
-                isRefreshing: true
-            )
-        )
-
-        XCTAssertEqual(
-            presentations.presentation(for: .recommendation).metadata.lastSuccessfulRefreshAt,
-            recommendationDate
-        )
-        XCTAssertEqual(
-            presentations.presentation(for: .following).metadata.lastSuccessfulRefreshAt,
-            followingDate
-        )
-        XCTAssertTrue(presentations.presentation(for: .following).isRefreshing)
-        XCTAssertEqual(
-            presentations.presentation(for: .hot).metadata.lastSuccessfulRefreshAt,
-            hotDate
-        )
-        XCTAssertEqual(
-            presentations.presentation(for: .daily).metadata.lastSuccessfulRefreshAt,
-            dailyDate
-        )
-        XCTAssertTrue(presentations.presentation(for: .daily).isRefreshing)
-    }
-
-    func testHomeTopBarHasOnlyCreationAndNotificationControls() {
-        XCTAssertEqual(HomeTopBarControl.visibleControls, [.creation, .notifications])
+    func testHomeFloatingSurfaceHasOnlyCreationAndNotificationControls() {
+        XCTAssertEqual(HomeFloatingControl.visibleControls, [.creation, .notifications])
     }
 
     func testHomeNotificationIndicatorOnlyShowsDotForUnreadNotifications() {
@@ -420,107 +347,235 @@ final class NativeShellPreferencesTests: XCTestCase {
         ))
     }
 
-    func testHomeChromeRangesPlaceSearchBeforeRefreshOverscroll() {
+    func testHomePullRegionsKeepSearchAndRefreshFeedbackCompact() {
         XCTAssertEqual(
-            NativeHomeTopChromeLayout.revealedOffset,
+            NativeHomePullRegionLayout.revealedOffset,
             0
         )
         XCTAssertEqual(
-            NativeHomeTopChromeLayout.collapsedOffset,
-            NativeHomeTopChromeLayout.refreshRevealHeight
+            NativeHomePullRegionLayout.collapsedOffset,
+            NativeHomeFloatingControlsLayout.contentClearance
         )
         XCTAssertEqual(
-            NativeHomeTopChromeLayout.hiddenLeadingContentHeight,
-            NativeHomeTopChromeLayout.refreshRevealHeight
-                + NativeHomeTopChromeLayout.searchDrawerHeight
+            NativeHomePullRegionLayout.leadingContentHeight,
+            NativeHomeFloatingControlsLayout.contentClearance
+                + NativeHomePullRegionLayout.searchDrawerHeight
+        )
+        XCTAssertEqual(
+            NativeHomeFloatingControlsLayout.contentClearance,
+            NativeHomeFloatingControlsLayout.height
         )
         XCTAssertGreaterThan(
-            NativeHomeTopChromeLayout.searchDrawerHeight,
-            NativeHomeTopChromeLayout.searchFieldHeight
-                + NativeHomeTopChromeLayout.searchBottomInset
-        )
-        XCTAssertEqual(
-            NativeHomeTopChromeLayout.refreshPullDistance(normalizedOffset: -20),
-            20
-        )
-        XCTAssertEqual(
-            NativeHomeTopChromeLayout.refreshPullDistance(normalizedOffset: 20),
-            0
+            NativeHomePullRegionLayout.searchDrawerHeight,
+            NativeHomePullRegionLayout.searchFieldHeight
+                + NativeHomePullRegionLayout.searchBottomInset
         )
     }
 
-    func testSearchDrawerSnapsOpenAfterAShallowPullAndClosedBelowThreshold() {
+    func testHomeRefreshTriggerNeedsOnlyAShortPullBeyondRevealedSearch() {
+        let collapsedOffset = NativeHomePullRegionLayout.collapsedOffset
+        let threshold = collapsedOffset
+            + NativeHomeRefreshTriggerPolicy.pullDistanceBeyondSearch
+
+        XCTAssertFalse(NativeHomeRefreshTriggerPolicy.shouldRequestRefresh(
+            interactionStartOffset: collapsedOffset,
+            maximumDownwardTranslation: threshold - 0.1,
+            hasSearchDrawer: true,
+            isActive: true,
+            isRefreshInFlight: false
+        ))
+        XCTAssertTrue(NativeHomeRefreshTriggerPolicy.shouldRequestRefresh(
+            interactionStartOffset: collapsedOffset,
+            maximumDownwardTranslation: threshold,
+            hasSearchDrawer: true,
+            isActive: true,
+            isRefreshInFlight: false
+        ))
+        XCTAssertFalse(NativeHomeRefreshTriggerPolicy.shouldRequestRefresh(
+            interactionStartOffset: collapsedOffset,
+            maximumDownwardTranslation: threshold + 20,
+            hasSearchDrawer: true,
+            isActive: true,
+            isRefreshInFlight: true
+        ))
+    }
+
+    func testCollapsedSearchDrawerRevealsOnlyAfterItsPullThreshold() {
+        let collapsedOffset = NativeHomePullRegionLayout.collapsedOffset
         XCTAssertEqual(
             NativeHomeSearchDrawerSnapPolicy.target(
-                normalizedOffset: 37,
+                normalizedOffset: collapsedOffset
+                    - NativeHomeSearchDrawerSnapPolicy.revealDistance,
+                currentAnchor: .collapsed,
                 isRefreshing: false
             ),
             .revealed
         )
         XCTAssertEqual(
             NativeHomeSearchDrawerSnapPolicy.target(
-                normalizedOffset: 39,
+                normalizedOffset: collapsedOffset
+                    - NativeHomeSearchDrawerSnapPolicy.revealDistance
+                    + 1,
+                currentAnchor: .collapsed,
                 isRefreshing: false
             ),
             .collapsed
         )
+    }
+
+    func testRevealedSearchDrawerClosesAfterASlightUpwardMovement() {
+        let collapseDistance = NativeHomeSearchDrawerSnapPolicy.collapseDistance
         XCTAssertEqual(
             NativeHomeSearchDrawerSnapPolicy.target(
-                normalizedOffset: 0,
+                normalizedOffset: collapseDistance - 0.1,
+                currentAnchor: .revealed,
                 isRefreshing: false
             ),
             .revealed
         )
         XCTAssertEqual(
             NativeHomeSearchDrawerSnapPolicy.target(
-                normalizedOffset: 56,
+                normalizedOffset: collapseDistance,
+                currentAnchor: .revealed,
+                isRefreshing: false
+            ),
+            .collapsed
+        )
+    }
+
+    func testSearchDrawerSnapPolicyHonorsSettledBoundsAndRefreshState() {
+        XCTAssertEqual(
+            NativeHomeSearchDrawerSnapPolicy.target(
+                normalizedOffset: NativeHomePullRegionLayout.revealedOffset,
+                currentAnchor: .collapsed,
+                isRefreshing: false
+            ),
+            .revealed
+        )
+        XCTAssertEqual(
+            NativeHomeSearchDrawerSnapPolicy.target(
+                normalizedOffset: NativeHomePullRegionLayout.collapsedOffset,
+                currentAnchor: .revealed,
                 isRefreshing: false
             ),
             .collapsed
         )
         XCTAssertNil(NativeHomeSearchDrawerSnapPolicy.target(
             normalizedOffset: -20,
+            currentAnchor: .revealed,
             isRefreshing: true
         ))
         XCTAssertNil(NativeHomeSearchDrawerSnapPolicy.target(
             normalizedOffset: -20,
+            currentAnchor: .revealed,
             isRefreshing: false
         ))
         XCTAssertNil(NativeHomeSearchDrawerSnapPolicy.target(
-            normalizedOffset: 112,
+            normalizedOffset: NativeHomePullRegionLayout.collapsedOffset + 56,
+            currentAnchor: .collapsed,
             isRefreshing: false
         ))
         XCTAssertNil(NativeHomeSearchDrawerSnapPolicy.target(
             normalizedOffset: .nan,
+            currentAnchor: .collapsed,
             isRefreshing: false
         ))
-
     }
 
-    func testTopBarScrollIntentUsesAsymmetricDirectionThresholds() {
-        var tracker = NativeHomeTopBarScrollIntentTracker()
-        tracker.updateInteraction(isInteracting: true, offset: 100)
-
-        XCTAssertNil(tracker.updateOffset(110, isActive: true))
-        XCTAssertNil(tracker.updateOffset(117.9, isActive: true))
-        XCTAssertEqual(tracker.updateOffset(118.5, isActive: true), .hide)
-
-        XCTAssertNil(tracker.updateOffset(115.1, isActive: true))
-        XCTAssertEqual(tracker.updateOffset(114, isActive: true), .show)
+    func testSearchDrawerBoundaryStateTracksRefreshAndDeepScrollRegions() {
+        XCTAssertEqual(
+            NativeHomeSearchDrawerSnapPolicy.boundaryAnchor(normalizedOffset: -20),
+            .revealed
+        )
+        XCTAssertEqual(
+            NativeHomeSearchDrawerSnapPolicy.boundaryAnchor(
+                normalizedOffset: NativeHomePullRegionLayout.revealedOffset
+            ),
+            .revealed
+        )
+        XCTAssertNil(NativeHomeSearchDrawerSnapPolicy.boundaryAnchor(
+            normalizedOffset: NativeHomePullRegionLayout.collapsedOffset / 2
+        ))
+        XCTAssertEqual(
+            NativeHomeSearchDrawerSnapPolicy.boundaryAnchor(
+                normalizedOffset: NativeHomePullRegionLayout.collapsedOffset + 1
+            ),
+            .collapsed
+        )
+        XCTAssertNil(NativeHomeSearchDrawerSnapPolicy.boundaryAnchor(
+            normalizedOffset: .nan
+        ))
     }
 
-    func testTopBarScrollIntentResetsDistanceWhenDirectionReverses() {
-        var tracker = NativeHomeTopBarScrollIntentTracker()
-        tracker.updateInteraction(isInteracting: true, offset: 100)
+    func testSearchDrawerRestorationNormalizesInterruptedOffsetsToAnAnchor() {
+        let maximumOffset: CGFloat = 300
 
-        XCTAssertNil(tracker.updateOffset(112, isActive: true))
-        XCTAssertNil(tracker.updateOffset(110, isActive: true))
-        XCTAssertNil(tracker.updateOffset(108.5, isActive: true))
-        XCTAssertEqual(tracker.updateOffset(108, isActive: true), .show)
+        XCTAssertEqual(
+            NativeHomeSearchDrawerRestorationPolicy.resolve(
+                restoredNormalizedOffset: nil,
+                maximumNormalizedOffset: maximumOffset
+            ),
+            NativeHomeSearchDrawerRestoredPosition(
+                normalizedOffset: NativeHomePullRegionLayout.collapsedOffset,
+                anchor: .collapsed
+            )
+        )
+        XCTAssertEqual(
+            NativeHomeSearchDrawerRestorationPolicy.resolve(
+                restoredNormalizedOffset: 12,
+                maximumNormalizedOffset: maximumOffset
+            ),
+            NativeHomeSearchDrawerRestoredPosition(
+                normalizedOffset: NativeHomePullRegionLayout.revealedOffset,
+                anchor: .revealed
+            )
+        )
+        XCTAssertEqual(
+            NativeHomeSearchDrawerRestorationPolicy.resolve(
+                restoredNormalizedOffset: 44,
+                maximumNormalizedOffset: maximumOffset
+            ),
+            NativeHomeSearchDrawerRestoredPosition(
+                normalizedOffset: NativeHomePullRegionLayout.collapsedOffset,
+                anchor: .collapsed
+            )
+        )
+        XCTAssertEqual(
+            NativeHomeSearchDrawerRestorationPolicy.resolve(
+                restoredNormalizedOffset: 220,
+                maximumNormalizedOffset: maximumOffset
+            ),
+            NativeHomeSearchDrawerRestoredPosition(
+                normalizedOffset: 220,
+                anchor: .collapsed
+            )
+        )
     }
 
-    func testTopBarScrollIntentIgnoresInactiveAndProgrammaticMovement() {
-        var tracker = NativeHomeTopBarScrollIntentTracker()
+    func testFloatingControlsScrollIntentUsesAsymmetricDirectionThresholds() {
+        var tracker = NativeHomeFloatingControlsScrollIntentTracker()
+        tracker.updateInteraction(isInteracting: true, offset: 200)
+
+        XCTAssertNil(tracker.updateOffset(210, isActive: true))
+        XCTAssertNil(tracker.updateOffset(217.9, isActive: true))
+        XCTAssertEqual(tracker.updateOffset(218.5, isActive: true), .hide)
+
+        XCTAssertNil(tracker.updateOffset(211.1, isActive: true))
+        XCTAssertEqual(tracker.updateOffset(210.4, isActive: true), .show)
+    }
+
+    func testFloatingControlsScrollIntentResetsDistanceWhenDirectionReverses() {
+        var tracker = NativeHomeFloatingControlsScrollIntentTracker()
+        tracker.updateInteraction(isInteracting: true, offset: 200)
+
+        XCTAssertNil(tracker.updateOffset(212, isActive: true))
+        XCTAssertNil(tracker.updateOffset(210, isActive: true))
+        XCTAssertNil(tracker.updateOffset(204.6, isActive: true))
+        XCTAssertEqual(tracker.updateOffset(203.9, isActive: true), .show)
+    }
+
+    func testFloatingControlsScrollIntentIgnoresInactiveAndProgrammaticMovement() {
+        var tracker = NativeHomeFloatingControlsScrollIntentTracker()
         tracker.updateInteraction(isInteracting: false, offset: 20)
 
         XCTAssertNil(tracker.updateOffset(200, isActive: true))
@@ -528,53 +583,72 @@ final class NativeShellPreferencesTests: XCTestCase {
         XCTAssertNil(tracker.updateOffset(.infinity, isActive: true))
     }
 
-    func testTopBarScrollIntentAlwaysShowsAtTop() {
-        var tracker = NativeHomeTopBarScrollIntentTracker()
-        tracker.updateInteraction(isInteracting: false, offset: 80)
+    func testFloatingControlsScrollIntentAlwaysShowsThroughPullRegions() {
+        var tracker = NativeHomeFloatingControlsScrollIntentTracker()
+        tracker.updateInteraction(isInteracting: false, offset: 200)
 
+        XCTAssertEqual(
+            tracker.updateOffset(NativeHomePullRegionLayout.collapsedOffset, isActive: true),
+            .show
+        )
         XCTAssertEqual(tracker.updateOffset(1, isActive: true), .show)
         XCTAssertEqual(tracker.updateOffset(-20, isActive: true), .show)
     }
 
-    func testTopBarScrollIntentWaitsUntilPullDrawerIsFullyOutOfView() {
-        var tracker = NativeHomeTopBarScrollIntentTracker()
-        tracker.updateInteraction(isInteracting: true, offset: 0)
+    func testFloatingControlsWaitUntilFeedMovesBeyondItsTopPosition() {
+        var tracker = NativeHomeFloatingControlsScrollIntentTracker()
+        let collapsedOffset = NativeHomePullRegionLayout.collapsedOffset
+        tracker.updateInteraction(isInteracting: true, offset: collapsedOffset)
 
-        XCTAssertEqual(tracker.updateOffset(0.4, isActive: true), .show)
-        XCTAssertNil(tracker.updateOffset(80, isActive: true))
-        XCTAssertNil(
-            tracker.updateOffset(
-                NativeHomeTopChromeLayout.hiddenLeadingContentHeight - 0.1,
-                isActive: true
-            )
-        )
         XCTAssertEqual(
-            tracker.updateOffset(
-                NativeHomeTopChromeLayout.hiddenLeadingContentHeight + 0.5,
-                isActive: true
-            ),
+            tracker.updateOffset(collapsedOffset + 0.4, isActive: true),
+            .show
+        )
+        XCTAssertNil(tracker.updateOffset(collapsedOffset + 17.9, isActive: true))
+        XCTAssertEqual(
+            tracker.updateOffset(collapsedOffset + 18.5, isActive: true),
             .hide
         )
     }
 
-    func testTopBarScrollIntentAccumulatesSubToleranceMovement() {
-        var tracker = NativeHomeTopBarScrollIntentTracker()
-        tracker.updateInteraction(isInteracting: true, offset: 100)
+    func testFloatingControlsScrollIntentAccumulatesSubToleranceMovement() {
+        var tracker = NativeHomeFloatingControlsScrollIntentTracker()
+        tracker.updateInteraction(isInteracting: true, offset: 200)
 
-        XCTAssertNil(tracker.updateOffset(99.7, isActive: true))
-        XCTAssertNil(tracker.updateOffset(99.4, isActive: true))
-        XCTAssertNil(tracker.updateOffset(99.1, isActive: true))
-        XCTAssertNil(tracker.updateOffset(98.8, isActive: true))
-        XCTAssertNil(tracker.updateOffset(98.5, isActive: true))
-        XCTAssertNil(tracker.updateOffset(98.2, isActive: true))
-        XCTAssertNil(tracker.updateOffset(97.9, isActive: true))
-        XCTAssertNil(tracker.updateOffset(97.6, isActive: true))
-        XCTAssertNil(tracker.updateOffset(97.3, isActive: true))
-        XCTAssertNil(tracker.updateOffset(97, isActive: true))
-        XCTAssertNil(tracker.updateOffset(96.7, isActive: true))
-        XCTAssertNil(tracker.updateOffset(96.4, isActive: true))
-        XCTAssertNil(tracker.updateOffset(96.1, isActive: true))
-        XCTAssertEqual(tracker.updateOffset(95.8, isActive: true), .show)
+        for step in 1...27 {
+            XCTAssertNil(
+                tracker.updateOffset(
+                    200 - CGFloat(step) * 0.3,
+                    isActive: true
+                )
+            )
+        }
+        XCTAssertEqual(tracker.updateOffset(191.6, isActive: true), .show)
+    }
+
+    func testFloatingControlsSettleShortFlicksAndAlwaysRecoverAtTop() {
+        var tracker = NativeHomeFloatingControlsScrollIntentTracker()
+        tracker.updateInteraction(isInteracting: true, offset: 200)
+        XCTAssertNil(tracker.updateOffset(204, isActive: true))
+        XCTAssertEqual(
+            tracker.endInteraction(offset: 204, verticalPanVelocity: -240),
+            .hide
+        )
+
+        tracker.updateInteraction(isInteracting: true, offset: 204)
+        XCTAssertEqual(
+            tracker.endInteraction(offset: 202, verticalPanVelocity: 220),
+            .show
+        )
+
+        tracker.updateInteraction(isInteracting: true, offset: 80)
+        XCTAssertEqual(
+            tracker.endInteraction(
+                offset: NativeHomePullRegionLayout.collapsedOffset,
+                verticalPanVelocity: 0
+            ),
+            .show
+        )
     }
 
     func testOnlySelectedChannelOwnsScrolling() {

@@ -316,6 +316,8 @@ final class HomeFeedNativeStore: ObservableObject {
     @Published private(set) var items: [FeedItemDTO] = []
     @Published private(set) var isLoading = false
     @Published private(set) var isRefreshing = false
+    @Published private(set) var isLoadingNextPage = false
+    @Published private(set) var paginationTriggerSequence: UInt = 0
     @Published private(set) var errorMessage: String?
     @Published private(set) var refreshMetadata: FeedChannelRefreshMetadata
     @Published private(set) var refreshFeedbackSequence: UInt = 0
@@ -448,6 +450,7 @@ final class HomeFeedNativeStore: ObservableObject {
         let currentGeneration = generation
         let source = loadedSource ?? configuration().source
         isLoading = true
+        isLoadingNextPage = true
         errorMessage = nil
         let startedAt = ProcessInfo.processInfo.systemUptime
         do {
@@ -486,7 +489,7 @@ final class HomeFeedNativeStore: ObservableObject {
                     refreshSource: source.rawValue,
                     errorKind: "cancelled"
                 ))
-                isLoading = false
+                finishPaginationOperation(generation: currentGeneration)
                 return
             }
             diagnostics.record(.init(
@@ -501,7 +504,7 @@ final class HomeFeedNativeStore: ObservableObject {
             errorMessage = error.localizedDescription
             failedOperation = .nextPage
         }
-        if currentGeneration == generation { isLoading = false }
+        finishPaginationOperation(generation: currentGeneration)
     }
 
     func retry() async {
@@ -516,6 +519,20 @@ final class HomeFeedNativeStore: ObservableObject {
         Task { await repository.reportOpened(item) }
     }
 
+    private func finishPaginationOperation(generation operationGeneration: UInt64) {
+        guard operationGeneration == generation else { return }
+        isLoading = false
+        isLoadingNextPage = false
+        rearmPagination()
+    }
+
+    /// Re-arms visible trailing rows after an initial load, refresh, or page load.
+    /// The continuation URL alone is not sufficient because a refresh can return
+    /// the same URL and the same row identifiers as the previous feed snapshot.
+    private func rearmPagination() {
+        paginationTriggerSequence &+= 1
+    }
+
     private func loadInitialPage() async {
         guard !isLoading else { return }
         generation &+= 1
@@ -523,6 +540,7 @@ final class HomeFeedNativeStore: ObservableObject {
         let source = configuration().source
         isLoading = true
         isRefreshing = false
+        isLoadingNextPage = false
         errorMessage = nil
         do {
             let page = try await repository.fetchPage(source: source, after: nil)
@@ -546,6 +564,7 @@ final class HomeFeedNativeStore: ObservableObject {
             if error.isNativeRequestCancellation {
                 isLoading = false
                 isRefreshing = false
+                rearmPagination()
                 return
             }
             errorMessage = error.localizedDescription
@@ -554,6 +573,7 @@ final class HomeFeedNativeStore: ObservableObject {
         if currentGeneration == generation {
             isLoading = false
             isRefreshing = false
+            rearmPagination()
         }
     }
 
@@ -565,6 +585,7 @@ final class HomeFeedNativeStore: ObservableObject {
         let refreshConfiguration = configuration()
         isLoading = true
         isRefreshing = hasLoaded
+        isLoadingNextPage = false
         errorMessage = nil
         let startedAt = ProcessInfo.processInfo.systemUptime
 
@@ -587,6 +608,7 @@ final class HomeFeedNativeStore: ObservableObject {
         if generation == refreshGeneration {
             isLoading = false
             isRefreshing = false
+            rearmPagination()
         }
         diagnostics.record(.init(
             durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
@@ -675,6 +697,11 @@ final class HomeFeedNativeStore: ObservableObject {
                     await persistSuccessfulSnapshot()
                 }
 
+                if publishedFirstBatch,
+                   intent.completionScope == .firstDisplayablePage {
+                    break
+                }
+
                 if accumulatedItems.count >= refreshConfiguration.targetItemCount
                     || page.isEnd
                     || page.nextURL == nil
@@ -733,6 +760,8 @@ final class HomeFeedNativeStore: ObservableObject {
         generation &+= 1
         isLoading = false
         isRefreshing = false
+        isLoadingNextPage = false
+        rearmPagination()
     }
 
     private func resetForCacheContextChange() {
@@ -744,10 +773,12 @@ final class HomeFeedNativeStore: ObservableObject {
         loadedSource = nil
         failedOperation = nil
         errorMessage = nil
+        isLoadingNextPage = false
         cachedItemCount = 0
         cachedNextURL = nil
         cachedIsEnd = false
         refreshMetadata = refreshTracker.clearing()
+        rearmPagination()
     }
 
     @discardableResult
@@ -769,6 +800,7 @@ final class HomeFeedNativeStore: ObservableObject {
         cachedItemCount = snapshot.items.count
         cachedNextURL = snapshot.nextURL
         cachedIsEnd = snapshot.isEnd
+        rearmPagination()
         return true
     }
 

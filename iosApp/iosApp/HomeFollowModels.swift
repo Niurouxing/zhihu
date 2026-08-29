@@ -49,6 +49,24 @@ enum HomeRecommendationRefreshIntent: Equatable, Sendable {
             return false
         }
     }
+
+    /// A user pull is a bounded, visible transaction: once the first useful
+    /// page is committed the refresh control can leave immediately and normal
+    /// pagination owns the remaining pages. Background/recovery refreshes may
+    /// still fill the configured initial window before completing.
+    var completionScope: HomeRecommendationRefreshCompletionScope {
+        switch self {
+        case .pull:
+            return .firstDisplayablePage
+        case .automatic, .returnToTop, .sourceChanged, .retry:
+            return .configuredItemWindow
+        }
+    }
+}
+
+enum HomeRecommendationRefreshCompletionScope: Equatable, Sendable {
+    case firstDisplayablePage
+    case configuredItemWindow
 }
 
 enum HomeRecommendationRefreshOutcome: Equatable, Sendable {

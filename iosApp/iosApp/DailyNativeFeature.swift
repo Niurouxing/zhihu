@@ -402,7 +402,6 @@ struct DailyNativeView: View {
             channel: .daily,
             isActive: isActiveChannel,
             scrollToTopRequest: scrollToTopRequest,
-            isRefreshing: store.isRefreshing,
             onOpenSearch: onOpenSearch,
             onRefresh: refresh
         ) {
