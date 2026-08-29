@@ -103,6 +103,42 @@ final class FeedInfrastructureTests: XCTestCase {
         )
     }
 
+    func testAnswerProjectionSkipsInvalidThumbnailRenditionsAndKeepsMatchingGeometry() throws {
+        let data = Data(
+            #"""
+            {
+              "data": [{
+                "target": {
+                  "id": "42",
+                  "type": "answer",
+                  "excerpt": "回答摘要",
+                  "thumbnail": "https://picx.zhimg.com/original.jpg",
+                  "thumbnail_info": {
+                    "thumbnails": [
+                      {"url": "", "width": 1, "height": 1},
+                      {"url": "//picx.zhimg.com/answer_720w.jpg", "width": 1280, "height": 720}
+                    ]
+                  },
+                  "question": {"id": "7", "title": "问题标题"}
+                }
+              }],
+              "paging": {"is_end": true, "next": null}
+            }
+            """#.utf8
+        )
+
+        let item = try XCTUnwrap(
+            FeedResponseMapper.page(from: data, policy: .search).items.first
+        )
+
+        XCTAssertEqual(
+            item.thumbnailURL,
+            URL(string: "https://picx.zhimg.com/answer_720w.jpg")
+        )
+        XCTAssertEqual(item.thumbnailPixelWidth, 1280)
+        XCTAssertEqual(item.thumbnailPixelHeight, 720)
+    }
+
     func testSingleImagePresentationFitsLandscapeAndBoundsTallPortraits() {
         XCTAssertEqual(
             FeedSingleImagePresentationPolicy.layout(
@@ -611,7 +647,8 @@ final class FeedInfrastructureTests: XCTestCase {
         XCTAssertEqual(items.first(where: { $0.name == "offset" })?.value, "0")
         XCTAssertEqual(
             items.first(where: { $0.name == "include" })?.value,
-            "data[*].content,excerpt,headline,target.author.badge_v2,target.question.author"
+            "data[*].content,excerpt,headline,target.thumbnail,target.thumbnail_info,"
+                + "target.author.badge_v2,target.question.author"
         )
         XCTAssertTrue(request.value(forHTTPHeaderField: "Cookie")?.contains("z_c0=login-cookie") == true)
         XCTAssertEqual(request.value(forHTTPHeaderField: "x-xsrftoken"), "token")

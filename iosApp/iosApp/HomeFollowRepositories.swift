@@ -131,11 +131,11 @@ enum HomeFollowRequestURL {
     private static let webRecommendationInitialURL = URL(
         string: "https://www.zhihu.com/api/v3/feed/topstory/recommend"
             + "?desktop=true&limit=10&offset=0"
-            + "&include=data[*].content,excerpt,headline,target.author.badge_v2,target.question.author"
     )!
 
     private static let include =
-        "data[*].content,excerpt,headline,target.author.badge_v2,target.question.author"
+        "data[*].content,excerpt,headline,target.thumbnail,target.thumbnail_info,"
+            + "target.author.badge_v2,target.question.author"
     private static let standardPageSize = "20"
     private static let recommendationPageSize = String(
         HomeRecommendationRefreshConfiguration.requestLimit
@@ -169,9 +169,11 @@ enum HomeFollowRequestURL {
             throw ZhihuAPIError.malformedPayload
         }
         var items = components.queryItems ?? []
-        if !items.contains(where: { $0.name == "include" }) {
-            items.append(URLQueryItem(name: "include", value: include))
-        }
+        // Paging URLs can carry the projection used to create the previous
+        // page. Replace it with the app-owned projection so newly required
+        // card fields also apply to every continuation page.
+        items.removeAll { $0.name == "include" }
+        items.append(URLQueryItem(name: "include", value: include))
         var replacedLimit = false
         items = items.compactMap { item in
             guard item.name == "limit" else { return item }

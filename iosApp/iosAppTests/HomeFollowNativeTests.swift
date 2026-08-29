@@ -192,7 +192,8 @@ final class HomeFollowMapperTests: XCTestCase {
         XCTAssertEqual(firstItems.filter { $0.name == "limit" }.map(\.value), ["10"])
         XCTAssertEqual(
             firstItems.first(where: { $0.name == "include" })?.value,
-            "data[*].content,excerpt,headline,target.author.badge_v2,target.question.author"
+            "data[*].content,excerpt,headline,target.thumbnail,target.thumbnail_info,"
+                + "target.author.badge_v2,target.question.author"
         )
         XCTAssertEqual(continuationItems.filter { $0.name == "limit" }.map(\.value), ["10"])
         XCTAssertEqual(continuationItems.first(where: { $0.name == "offset" })?.value, "40")

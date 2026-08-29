@@ -476,18 +476,31 @@ private struct FeedTargetPayload: Decodable {
     var pinContentItems: [PinContentItem] { content?.items ?? [] }
 
     var thumbnailURL: URL? {
-        // `thumbnail` is commonly the qhd original while `thumbnail_info`
-        // contains a feed-sized CDN rendition. Prefer the rendition whose
-        // dimensions we also publish, avoiding both excess transfer and a URL /
-        // geometry mismatch in the card preview.
-        (thumbnailInfo?.thumbnails.first?.url ?? thumbnail ?? thumbnailExtraInfo?.url)
-            .flatMap(validHTTPSURL)
+        thumbnailCandidate?.url
     }
     var thumbnailPixelWidth: Int? {
-        thumbnailInfo?.thumbnails.first?.width.flatMap { $0 > 0 ? $0 : nil }
+        thumbnailCandidate?.pixelWidth
     }
     var thumbnailPixelHeight: Int? {
-        thumbnailInfo?.thumbnails.first?.height.flatMap { $0 > 0 ? $0 : nil }
+        thumbnailCandidate?.pixelHeight
+    }
+
+    /// Keeps URL and geometry from the same rendition. Invalid or empty
+    /// `thumbnail_info` entries no longer suppress the original thumbnail.
+    private var thumbnailCandidate: ThumbnailCandidate? {
+        for thumbnail in thumbnailInfo?.thumbnails ?? [] {
+            guard let url = thumbnail.url.flatMap(validHTTPSURL) else { continue }
+            return ThumbnailCandidate(
+                url: url,
+                pixelWidth: thumbnail.width.flatMap { $0 > 0 ? $0 : nil },
+                pixelHeight: thumbnail.height.flatMap { $0 > 0 ? $0 : nil }
+            )
+        }
+        for rawURL in [thumbnail, thumbnailExtraInfo?.url] {
+            guard let url = rawURL.flatMap(validHTTPSURL) else { continue }
+            return ThumbnailCandidate(url: url, pixelWidth: nil, pixelHeight: nil)
+        }
+        return nil
     }
 
     func feedMedia(contentID: String) -> [FeedMediaDTO] {
@@ -541,6 +554,12 @@ private struct FeedTargetPayload: Decodable {
             let width: Int?
             let height: Int?
         }
+    }
+
+    private struct ThumbnailCandidate {
+        let url: URL
+        let pixelWidth: Int?
+        let pixelHeight: Int?
     }
 
     struct Question: Decodable {
@@ -711,7 +730,11 @@ private struct JSONIdentifier: Decodable {
 }
 
 private func validHTTPSURL(_ value: String) -> URL? {
-    guard let url = URL(string: value), url.scheme?.lowercased() == "https" else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalized = trimmed.hasPrefix("//") ? "https:\(trimmed)" : trimmed
+    guard let url = URL(string: normalized), url.scheme?.lowercased() == "https" else {
+        return nil
+    }
     return url
 }
 

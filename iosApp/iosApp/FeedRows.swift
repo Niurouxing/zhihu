@@ -661,7 +661,12 @@ private struct FeedCardSingleImagePreview: View {
     @StateObject private var imageStore = NativeMediaImageStore(maximumPixelSize: 1_400)
 
     var body: some View {
-        Group {
+        ZStack(alignment: .topLeading) {
+            // A stable zero-height host keeps the loading task mounted without
+            // reserving a blank image box before the bitmap is available.
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .frame(height: 0)
             if let loadedImage = imageStore.image(for: image.url) {
                 preview(loadedImage)
                     .padding(.top, NativeFeedCardLayout.sectionSpacing)
